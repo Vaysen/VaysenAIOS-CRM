@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: vaysen-ai-crm-postgres-local
+    environment:
+      POSTGRES_USER: vaysen-crm
+      POSTGRES_PASSWORD: vaysen-crm_password
+      POSTGRES_DB: vaysen-crm_pilot
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - vaysen-crm_pilot_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaysen-crm -d vaysen-crm_pilot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaysen-ai-crm-redis-local
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - vaysen-crm_pilot_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  reacher:
+    image: reacherhq/backend:latest
+    container_name: vaysen-ai-crm-reacher-local
+    ports:
+      - "127.0.0.1:18080:8080"
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: vaysen-ai-crm-searxng-local
+    environment:
+      BASE_URL: http://localhost:18888/
+      INSTANCE_NAME: Vaysen AI CRM Local Search
+    ports:
+      - "127.0.0.1:18888:8080"
+    volumes:
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: vaysen-ai-crm-n8n-local
+    environment:
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://localhost:5678}
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678}
+      GENERIC_TIMEZONE: Asia/Shanghai
+      N8N_ENCRYPTION_KEY: vaysen-crm-local-n8n-change-me
+      ZHIPU_BASE_URL: https://open.bigmodel.cn/api/paas/v4
+      ZHIPU_MODEL: glm-4-flash-250414
+      VAYSEN_CRM_API_BASE_URL: http://host.docker.internal:4000/api
+      REACHER_API_URL: http://reacher:8080
+    ports:
+      - "0.0.0.0:5678:5678"
+    volumes:
+      - vaysen-crm_pilot_n8n_data:/home/node/.n8n
+      - ./workflows:/workflows
+    restart: unless-stopped
+
+volumes:
+  vaysen-crm_pilot_postgres_data:
+  vaysen-crm_pilot_redis_data:
+  vaysen-crm_pilot_n8n_data:

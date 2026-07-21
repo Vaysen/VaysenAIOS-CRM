@@ -1,0 +1,26 @@
+use_default_settings: true
+
+general:
+  instance_name: Vaysen AI CRM Local Search
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  default_lang: en-US
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  limiter: false
+  public_instance: false
+  method: "GET"
+  secret_key: "vaysen-crm-local-search-change-me"
+
+ui:
+  default_theme: simple
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 15.0

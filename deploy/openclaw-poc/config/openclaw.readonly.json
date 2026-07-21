@@ -1,0 +1,39 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token"
+    }
+  },
+  "tools": {
+    "profile": "minimal",
+    "deny": [
+      "group:runtime",
+      "group:fs",
+      "group:ui",
+      "group:nodes",
+      "group:automation",
+      "group:messaging",
+      "group:plugins",
+      "exec",
+      "process",
+      "code_execution",
+      "bash",
+      "write",
+      "edit",
+      "apply_patch",
+      "browser",
+      "canvas",
+      "nodes",
+      "gateway",
+      "message"
+    ],
+    "exec": {
+      "mode": "deny"
+    },
+    "elevated": {
+      "enabled": false
+    }
+  }
+}

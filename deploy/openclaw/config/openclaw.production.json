@@ -1,0 +1,141 @@
+{
+  "logging": {
+    "level": "warn",
+    "consoleLevel": "warn",
+    "maxFileBytes": 5242880,
+    "redactSensitive": "tools"
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "port": 18789,
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/opt/vaysen-workspace",
+      "skipBootstrap": true,
+      "model": {
+        "primary": "zhipu-cn/${ZHIPU_MODEL}"
+      }
+    },
+    "list": [
+      {
+        "id": "vaysen-crm",
+        "name": "Vaysen AI CRM Assistant",
+        "workspace": "/opt/vaysen-workspace",
+        "model": "zhipu-cn/${ZHIPU_MODEL}"
+      }
+    ]
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "zhipu-cn": {
+        "baseUrl": "${ZHIPU_BASE_URL}",
+        "apiKey": "${ZHIPU_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "${ZHIPU_MODEL}",
+            "name": "Vaysen AI CRM Zhipu GLM",
+            "compat": {
+              "maxTokensField": "max_tokens"
+            },
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "session": {
+    "dmScope": "per-account-channel-peer"
+  },
+  "channels": {
+    "openclaw-weixin": {
+      "enabled": true,
+      "replyProgressMessages": false,
+      "botAgent": "Vaysen AI CRM-Trade-OS/1.0"
+    }
+  },
+  "plugins": {
+    "enabled": true,
+    "allow": [
+      "admin-http-rpc",
+      "openclaw-weixin",
+      "vaysen-crm"
+    ],
+    "entries": {
+      "admin-http-rpc": {
+        "enabled": true
+      },
+      "openclaw-weixin": {
+        "enabled": true
+      },
+      "vaysen-crm": {
+        "enabled": true,
+        "config": {
+          "apiBaseUrl": "http://backend:4000",
+          "keyId": "${OPENCLAW_CRM_HMAC_KEY_ID}",
+          "hmacSecret": "${OPENCLAW_CRM_HMAC_SECRET}",
+          "requestTimeoutMs": 15000
+        }
+      }
+    }
+  },
+  "tools": {
+    "profile": "coding",
+    "alsoAllow": [
+      "crm_work_brief",
+      "crm_customer_search",
+      "crm_customer_get",
+      "crm_customer_add_note",
+      "crm_customer_update",
+      "crm_customer_set_stage",
+      "crm_task_create",
+      "crm_order_list",
+      "crm_order_create_draft",
+      "crm_order_update_stage",
+      "crm_quote_list",
+      "crm_quote_create_draft",
+      "crm_product_search",
+      "crm_start_background_research",
+      "crm_prepare_quote_delivery",
+      "crm_whatsapp_messages_read",
+      "crm_whatsapp_send_text",
+      "crm_whatsapp_send_quote",
+      "crm_email_messages_read",
+      "crm_email_send",
+      "crm_email_reply",
+      "browser",
+      "heartbeat_respond",
+      "tts"
+    ],
+    "deny": [
+      "exec",
+      "process",
+      "gateway",
+      "nodes",
+      "message"
+    ],
+    "fs": {
+      "workspaceOnly": true
+    },
+    "elevated": {
+      "enabled": false
+    }
+  }
+}

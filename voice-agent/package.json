@@ -1,0 +1,8 @@
+{
+  "name": "vaysen-ai-crm-voice-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20 <21" },
+  "scripts": { "start": "node src/server.mjs", "check": "node --check src/server.mjs" }
+}

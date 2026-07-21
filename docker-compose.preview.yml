@@ -1,0 +1,122 @@
+# ============================================================
+# Vaysen AI CRM — Preview Deployment
+# Safe preview mode: no real email/WhatsApp, no AI auto-send
+# Usage: docker compose -f docker-compose.preview.yml --env-file .env.preview up -d
+# ============================================================
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: vaysen-pg
+    env_file:
+      - .env.preview
+    environment:
+      POSTGRES_USER: ${DB_USER:-vaysen-crm}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-vaysen-crm_password}
+      POSTGRES_DB: ${DB_NAME:-vaysen-crm_pilot}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-vaysen-crm} -d ${DB_NAME:-vaysen-crm_pilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaysen-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vaysen-backend
+    env_file:
+      - .env.preview
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-vaysen-crm}:${DB_PASSWORD:-vaysen-crm_password}@postgres:5432/${DB_NAME:-vaysen-crm_pilot}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      JWT_SECRET: ${JWT_SECRET:-preview-jwt-secret-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-preview-jwt-refresh-change-me}
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-00000000000000000000000000000000}
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:4000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:4001}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:4001}
+      PORT: "4000"
+      NODE_ENV: production
+      APP_MODE: preview
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-true}
+      # Safety switches
+      EMAIL_SEND_ENABLED: ${EMAIL_SEND_ENABLED:-false}
+      WHATSAPP_SEND_ENABLED: ${WHATSAPP_SEND_ENABLED:-false}
+      AI_EXTERNAL_CALLS_ENABLED: ${AI_EXTERNAL_CALLS_ENABLED:-false}
+      MARKETING_EMAIL_WORKERS_ENABLED: ${MARKETING_EMAIL_WORKERS_ENABLED:-false}
+      # Entrypoint already runs migrate+seed; skip double execution
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_SEED: ${RUN_SEED:-true}
+      # AI (placeholder — no external calls in preview)
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      ZHIPU_BASE_URL: ${ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      ZHIPU_MODEL: ${ZHIPU_MODEL:-glm-4-flash-250414}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+      - logs_data:/app/logs
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* are build-time in Next.js — must be set at build time
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api}
+    container_name: vaysen-frontend
+    environment:
+      NODE_ENV: production
+      PORT: "4001"
+    ports:
+      - "4001:4001"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Nginx reverse proxy — uncomment for single-port access via :80
+  nginx:
+    image: nginx:alpine
+    container_name: vaysen-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/conf.d/vaysen-preview.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  redis_data:
+  uploads_data:
+  logs_data:

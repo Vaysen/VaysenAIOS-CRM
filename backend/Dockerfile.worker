@@ -1,0 +1,50 @@
+ARG NODE_IMAGE=node:20.18.0-slim
+FROM ${NODE_IMAGE}
+
+WORKDIR /app
+ENV PATH="/app/node_modules/.bin:${PATH}"
+
+# Prisma must detect the same OpenSSL ABI during generation that exists at
+# runtime. This is a single-stage worker image, so installing it here covers
+# both phases and prevents the libssl.so.1.1 restart loop.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+# 生产构建必须使用锁文件复现（npm ci），禁止 npm install --legacy-peer-deps 临时修补。
+RUN npm ci
+
+COPY tsconfig.json nest-cli.json ./
+COPY src/ ./src/
+COPY prisma/ ./prisma/
+COPY tools/ ./tools/
+
+RUN npm run prisma:generate
+RUN npm run build
+
+# Fail the image build if Prisma selected a native engine with an unavailable
+# shared-library dependency. A TCP-only worker probe cannot detect this.
+RUN set -eu; \
+    engine="$(find node_modules/.prisma/client -maxdepth 1 -name 'libquery_engine*.node' -print -quit)"; \
+    test -n "$engine"; \
+    ldd "$engine"; \
+    ! ldd "$engine" | grep -F 'not found'
+
+# worker 运行时不需要 TypeScript/Jest/Nest CLI 等开发依赖。
+RUN npm prune --omit=dev
+
+RUN echo "=== Build verification ===" && ls -la dist/src/worker.js && echo "=== dist structure ===" && find dist -maxdepth 3 -type f -name "*.js" | sort
+
+COPY entrypoint.sh ./
+COPY scripts/worker-healthcheck.cjs ./scripts/worker-healthcheck.cjs
+RUN chmod +x entrypoint.sh
+
+RUN groupadd -r appuser \
+    && useradd -r -g appuser appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["node", "dist/src/worker.js"]

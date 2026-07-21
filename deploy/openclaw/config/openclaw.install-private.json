@@ -1,0 +1,16 @@
+{
+  "plugins": {
+    "enabled": true,
+    "entries": {
+      "vaysen-crm": {
+        "enabled": true,
+        "config": {
+          "apiBaseUrl": "http://backend:4000",
+          "keyId": "${OPENCLAW_CRM_HMAC_KEY_ID}",
+          "hmacSecret": "${OPENCLAW_CRM_HMAC_SECRET}",
+          "requestTimeoutMs": 15000
+        }
+      }
+    }
+  }
+}

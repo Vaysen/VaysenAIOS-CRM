@@ -1,0 +1,31 @@
+name: Public release gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.18.0
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:public-release
+      - run: npm run verify:node-engines
+      - run: npm audit --omit=dev --audit-level=critical
+      - run: npm --prefix backend run typecheck
+      - run: npm --prefix frontend run typecheck
+      - run: npm --prefix electron ci
+      - run: npm --prefix electron audit --omit=dev --audit-level=critical
+      - run: npm --prefix electron run typecheck

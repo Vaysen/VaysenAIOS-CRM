@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1430"
+   height="360"
+   viewBox="0 0 1430 360"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg19"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <title
+     id="title">Vaysen AI reverse horizontal logo</title>
+  <desc
+     id="desc">White horizontal lockup for dark website navigation.</desc>
+  <defs
+     id="defs8">
+    <linearGradient
+       id="vaysen-navy"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#0B2E57"
+         id="stop1" />
+      <stop
+         offset="0.58"
+         stop-color="#123C6D"
+         id="stop2" />
+      <stop
+         offset="1"
+         stop-color="#174A84"
+         id="stop3" />
+    </linearGradient>
+    <linearGradient
+       id="vaysen-blue"
+       x1="0"
+       y1="1"
+       x2="1"
+       y2="0">
+      <stop
+         offset="0"
+         stop-color="#037FD6"
+         id="stop4" />
+      <stop
+         offset="1"
+         stop-color="#1D97DB"
+         id="stop5" />
+    </linearGradient>
+    <linearGradient
+       id="vaysen-orbit"
+       x1="55"
+       y1="350"
+       x2="450"
+       y2="175"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#536B7A"
+         id="stop6" />
+      <stop
+         offset="0.28"
+         stop-color="#037FD6"
+         id="stop7" />
+      <stop
+         offset="1"
+         stop-color="#1D97DB"
+         id="stop8" />
+    </linearGradient>
+  </defs>
+  <g
+     transform="translate(20 8) scale(.67)"
+     id="g10">
+    <g
+       id="mark">
+      <g
+         id="globe"
+         fill="none"
+         stroke="#FFFFFF"
+         stroke-linecap="round"
+         opacity="0.58">
+        <circle
+           cx="256"
+           cy="229"
+           r="167"
+           stroke-width="9"
+           id="circle8" />
+        <ellipse
+           cx="256"
+           cy="229"
+           rx="72"
+           ry="167"
+           stroke-width="7"
+           id="ellipse8" />
+        <path
+           d="M110 147c42 35 86 52 146 52s104-17 146-52"
+           stroke-width="7"
+           id="path8" />
+        <path
+           d="M94 247c51 9 105 13 162 13s111-4 162-13"
+           stroke-width="7"
+           id="path9" />
+        <path
+           d="M113 329c41-33 88-49 143-49s102 16 143 49"
+           stroke-width="7"
+           id="path10" />
+      </g>
+      <path
+         id="letter-v"
+         d="M92 103h78l86 191 86-191h78L256 427Z"
+         fill="#FFFFFF" />
+      <path
+         id="orbit"
+         d="M63 290c-40 96 29 143 118 98 100-51 202-100 269-202"
+         fill="none"
+         stroke="#FFFFFF"
+         stroke-width="12"
+         stroke-linecap="round" />
+      <circle
+         id="origin-dot"
+         cx="171"
+         cy="392"
+         r="20"
+         fill="#FFFFFF" />
+      <path
+         id="growth-arrow"
+         d="m433 172 49-15-15 50-12-20Z"
+         fill="#FFFFFF" />
+    </g>
+  </g>
+  <g
+     transform="translate(405 120) scale(1.02)"
+     id="g19">
+    <g
+       id="wordmark"
+       fill-rule="evenodd"
+       clip-rule="evenodd">
+      <g
+         fill="#FFFFFF"
+         id="g16">
+        <path
+           d="M0 5h22l32 75L86 5h22l-42 95H42Z"
+           id="path11" />
+        <path
+           d="M176 5h22l47 95h-25l-9-21h-48l-9 21h-25Zm-2 52h26l-13-30Z"
+           id="path12" />
+        <path
+           d="M262 5h25l31 38 31-38h25l-44 59v36h-24V64Z"
+           id="path13" />
+        <path
+           d="M505 5v20h-81c-5 0-8 3-8 9s3 9 8 9h54c18 0 27 10 27 28s-9 29-27 29h-84V80h81c6 0 9-3 9-9s-3-9-9-9h-53c-19 0-28-10-28-28S403 5 422 5Z"
+           id="path14" />
+        <path
+           d="M530 5h100v20h-76v18h65v19h-65v18h76v20H530Z"
+           id="path15" />
+        <path
+           d="M655 5h25l62 63V5h24v95h-24l-63-63v63h-24Z"
+           id="path16" />
+      </g>
+      <g
+         fill="#FFFFFF"
+         id="g18">
+        <path
+           d="M835 5h22l47 95h-25l-9-21h-48l-9 21h-25Zm-2 52h26l-13-30Z"
+           id="path17" />
+        <path
+           d="M930 5h24v95h-24Z"
+           id="path18" />
+      </g>
+    </g>
+  </g>
+</svg>

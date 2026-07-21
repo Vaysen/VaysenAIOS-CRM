@@ -1,0 +1,111 @@
+{
+  "id": "ai-lead-scoring-test-v2",
+  "name": "AI Lead Scoring Test",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { company_name: 'PackPro Distribution', country: 'United States', website: 'https://example.invalid', category: 'packaging distributor', notes: 'Sample fixture: repeat-volume buyer of custom poly mailers and kraft paper bags; never auto-send.' } }];"
+      },
+      "id": "sample-lead",
+      "name": "Sample Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ZHIPU_BASE_URL}}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.ZHIPU_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.ZHIPU_MODEL, messages: [{ role: 'system', content: 'You score B2B export leads for Example Trading Company, a supplier of poly mailers, kraft paper bags, garbage bags, zip-lock bags and customizable flexible packaging. Return strict JSON only with keys: fit_score, intent_level, target_market, assigned_market, tags, summary, next_action.' }, { role: 'user', content: JSON.stringify($json) }], stream: false }) }}"
+      },
+      "id": "zhipu-score",
+      "name": "Zhipu GLM Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $json.choices?.[0]?.message?.content || '{}';\nlet parsed;\ntry {\n  parsed = JSON.parse(content.replace(/^```json\\s*/i, '').replace(/```$/,'').trim());\n} catch (e) {\n  parsed = { raw_ai_output: content, parse_error: e.message };\n}\nreturn [{ json: parsed }];"
+      },
+      "id": "parse-score",
+      "name": "Parse Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sample Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample Lead": {
+      "main": [
+        [
+          {
+            "node": "Zhipu GLM Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zhipu GLM Score": {
+      "main": [
+        [
+          {
+            "node": "Parse Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

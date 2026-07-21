@@ -1,0 +1,48 @@
+{
+  "name": "vaysen-crm-desktop",
+  "version": "1.4.29",
+  "productName": "Vaysen AI CRM",
+  "description": "Vaysen AI CRM desktop client for self-hosted B2B sales operations",
+  "main": "dist/main/app.js",
+  "author": "Vaysen AI",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20 <21",
+    "npm": ">=10 <11"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:functional": "jest --ci --coverage=false",
+    "dev": "concurrently \"npm run dev:ts\" \"npm run dev:electron\"",
+    "dev:ts": "tsc --watch",
+    "dev:electron": "wait-on dist/main/app.js && cross-env NODE_ENV=development electron .",
+    "build": "tsc",
+    "build:frontend": "node scripts/build-frontend.js",
+    "release:prepare": "npm run build:frontend && npm run typecheck && npm test -- --ci && npm run verify:update-chain -- --strict && npm run build",
+    "dist": "npm run release:prepare && electron-builder --win",
+    "pack": "npm run release:prepare && electron-builder --win --dir",
+    "verify:update-chain": "node scripts/verify-update-chain.mjs",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.3.9",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.0",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "jest": "^29.7.0",
+    "rcedit": "4.0.1",
+    "ts-jest": "^29.4.11",
+    "typescript": "^5.7.0",
+    "wait-on": "^8.0.1"
+  }
+}

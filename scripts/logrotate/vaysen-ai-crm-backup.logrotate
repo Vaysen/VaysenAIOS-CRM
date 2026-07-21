@@ -1,0 +1,11 @@
+# Vaysen AI CRM — 主机级日志轮转配置（容器日志已由 docker-compose json-file 驱动轮转）
+# 安装：将本文件放到 /etc/logrotate.d/vaysen-ai-crm-backup
+/var/log/vaysen-ai-crm-backup.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}

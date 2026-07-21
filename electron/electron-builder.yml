@@ -1,0 +1,50 @@
+appId: ai.vaysen.crm
+productName: Vaysen AI CRM
+copyright: Copyright © 2026 Vaysen AI contributors
+
+directories:
+  output: ../release
+  buildResources: build
+
+# Windows 10 without Developer Mode cannot unpack electron-builder's mixed
+# macOS/Windows winCodeSign archive because it contains Unix symlinks. Disable
+# that implicit path and apply the same reviewed metadata/icon via the locked
+# Node rcedit package in afterPack.
+afterPack: scripts/after-pack-rcedit.js
+
+files:
+  - dist/**/*
+  - node_modules/**/*
+  - package.json
+  - "!**/*.{ts,map}"
+  - "!src/**/*"
+
+extraResources:
+  - from: ../frontend/electron-export
+    to: frontend-out
+    filter: ["**/*"]
+  - from: build/icon.ico
+    to: brand/icon.ico
+
+win:
+  icon: build/icon.ico
+  # Keep the on-disk process name ASCII for reliable Windows resource editing;
+  # product name, installer name and shortcuts remain branded and localized.
+  executableName: vaysen-crm-desktop
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+nsis:
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Vaysen AI CRM

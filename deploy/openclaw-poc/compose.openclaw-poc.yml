@@ -1,0 +1,59 @@
+name: vaysen-openclaw-readonly-poc
+
+# TASK-116B: isolated, non-production OpenClaw gateway scaffold.
+# This file is intentionally NOT merged into docker-compose.prod.yml.
+# It starts only when the explicit profile is selected and exposes no host port.
+services:
+  openclaw-gateway:
+    image: "${OPENCLAW_IMAGE:?Set OPENCLAW_IMAGE to an approved official image digest}"
+    pull_policy: always
+    profiles:
+      - openclaw-poc-readonly
+    user: "1000:1000"
+    init: true
+    read_only: true
+    restart: "no"
+    environment:
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /etc/openclaw/openclaw.json
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_POC_GATEWAY_TOKEN:?Set a long random PoC gateway token}"
+      OPENCLAW_LOG_LEVEL: info
+    volumes:
+      - openclaw_poc_state:/home/node/.openclaw
+      - ./config/openclaw.readonly.json:/etc/openclaw/openclaw.json:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+      - /home/node/.openclaw/workspace:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - openclaw_poc_internal
+    command:
+      - node
+      - dist/index.js
+      - gateway
+      - --bind
+      - loopback
+      - --port
+      - "18789"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  openclaw_poc_internal:
+    internal: true
+
+volumes:
+  openclaw_poc_state:

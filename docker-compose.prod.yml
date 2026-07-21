@@ -1,0 +1,490 @@
+x-direct-runtime-env: &direct-runtime-env
+  # Docker client proxy defaults are injected into newly created containers
+  # unless the service explicitly overrides them. Build proxies are never a
+  # valid production egress contract: they can disappear after a release and
+  # can silently break HTTPS CONNECT for Zhipu, Weixin and WhatsApp.
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+
+x-backend-env: &backend-env
+  <<: *direct-runtime-env
+  DATABASE_URL: postgresql://vaysen-crm:${DB_PASSWORD}@postgres:5432/vaysen-crm_pilot?schema=public
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  JWT_SECRET: ${JWT_SECRET}
+  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+  EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY}
+  BREVO_INBOUND_WEBHOOK_TOKEN: ${BREVO_INBOUND_WEBHOOK_TOKEN:-}
+  BREVO_INBOUND_DOMAIN: ${BREVO_INBOUND_DOMAIN:-}
+  FRONTEND_URL: ${FRONTEND_URL}
+  API_BASE_URL: ${API_BASE_URL}
+  CORS_ORIGIN: ${CORS_ORIGIN:-${FRONTEND_URL}}
+  # 外发邮件绝不能使用上方内网地址；未配置公网 HTTPS 回调时自动关闭跟踪并采用回复退订。
+  PUBLIC_TRACKING_BASE_URL: ${PUBLIC_TRACKING_BASE_URL:-}
+  PUBLIC_UNSUBSCRIBE_URL: ${PUBLIC_UNSUBSCRIBE_URL:-}
+  PORT: "4000"
+  NODE_ENV: production
+  ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
+  AI_EXTERNAL_CALLS_ENABLED: ${AI_EXTERNAL_CALLS_ENABLED:-true}
+  ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+  ZHIPU_BASE_URL: ${ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+  ZHIPU_MODEL: ${ZHIPU_MODEL:-glm-4-flash-250414}
+  BUSINESS_BRAND_NAME: ${BUSINESS_BRAND_NAME:-Example Trading Company}
+  BUSINESS_DESCRIPTION: ${BUSINESS_DESCRIPTION:-International B2B packaging manufacturer and exporter}
+  BUSINESS_PRODUCT_FOCUS: ${BUSINESS_PRODUCT_FOCUS:-poly mailers, kraft paper bags, garbage bags, zip-lock bags and customizable packaging}
+  BUSINESS_TARGET_CUSTOMER_PROFILE: ${BUSINESS_TARGET_CUSTOMER_PROFILE:-brands, wholesalers, distributors, e-commerce sellers, retail chains, logistics companies and procurement teams buying customizable packaging in repeat volume}
+  ENABLE_AI_DIAGNOSTICS: ${ENABLE_AI_DIAGNOSTICS:-false}
+  # Baileys-only egress proxy. Keep the generic HTTP(S)_PROXY variables empty
+  # so Zhipu/OpenClaw and every other runtime continue to use direct egress.
+  WHATSAPP_PROXY: ${WHATSAPP_PROXY:-}
+  WHATSAPP_RESTORE_SESSIONS: ${WHATSAPP_RESTORE_SESSIONS:-true}
+  DEEP_RESEARCH_RECONCILE_ENABLED: ${DEEP_RESEARCH_RECONCILE_ENABLED:-true}
+  EVOLUTION_API_ENABLED: ${EVOLUTION_API_ENABLED:-false}
+  EVOLUTION_API_URL: ${EVOLUTION_API_URL:-}
+  EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-}
+  EVOLUTION_WEBHOOK_SECRET: ${EVOLUTION_WEBHOOK_SECRET:-}
+  BACKEND_URL: ${BACKEND_URL:-}
+  EMAIL_AI_PROVIDER: ${EMAIL_AI_PROVIDER:-zhipu}
+  EMAIL_AI_API_KEY: ${EMAIL_AI_API_KEY:-}
+  EMAIL_AI_BASE_URL: ${EMAIL_AI_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+  EMAIL_AI_MODEL: ${EMAIL_AI_MODEL:-glm-4-flash-250414}
+  ZHIPU_EMAIL_API_KEY: ${ZHIPU_EMAIL_API_KEY:-}
+  ZHIPU_PROSPECT_API_KEY: ${ZHIPU_PROSPECT_API_KEY:-}
+  ZHIPU_RESEARCH_API_KEY: ${ZHIPU_RESEARCH_API_KEY:-}
+  ZHIPU_IMPORT_API_KEY: ${ZHIPU_IMPORT_API_KEY:-}
+  REACHER_API_URL: ${REACHER_API_URL:-http://reacher:8080}
+  REACHER_API_TOKEN: ${REACHER_API_TOKEN:-}
+  SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+  FIRECRAWL_API_URL: ${FIRECRAWL_API_URL:-https://api.firecrawl.dev}
+  FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+  SERPER_API_KEY: ${SERPER_API_KEY:-}
+  BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+  TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+  N8N_URL: ${N8N_URL:-http://n8n:5678}
+  IMAGE_PROCESSOR_URL: ${IMAGE_PROCESSOR_URL:-http://python-service:5000}
+  EXTERNAL_LEAD_ARCHIVE_ENABLED: ${EXTERNAL_LEAD_ARCHIVE_ENABLED:-false}
+  EXTERNAL_LEAD_ARCHIVE_PATH: ${EXTERNAL_LEAD_ARCHIVE_PATH:-}
+  EMAIL_COMPOSE_CONCURRENCY: ${EMAIL_COMPOSE_CONCURRENCY:-2}
+  EMAIL_VALIDATE_CONCURRENCY: ${EMAIL_VALIDATE_CONCURRENCY:-5}
+  EMAIL_SEND_CONCURRENCY: ${EMAIL_SEND_CONCURRENCY:-5}
+  DEEP_RESEARCH_CONCURRENCY: ${DEEP_RESEARCH_CONCURRENCY:-1}
+  RELEASE_COMMIT: ${RELEASE_COMMIT:-unknown}
+  RELEASE_COMMIT_SHORT: ${RELEASE_COMMIT_SHORT:-unknown}
+  RELEASE_TAG: ${RELEASE_TAG:-unknown}
+  EMAIL_SEND_DISABLED: ${EMAIL_SEND_DISABLED:-false}
+  EMAIL_SEED_TEST_ENABLED: ${EMAIL_SEED_TEST_ENABLED:-false}
+  EMAIL_SEED_TEST_ADDRESS: ${EMAIL_SEED_TEST_ADDRESS:-}
+  EMAIL_SEED_TEST_APPROVED_ADDRESSES: ${EMAIL_SEED_TEST_APPROVED_ADDRESSES:-}
+  EMAIL_SEED_TEST_INTERVAL: ${EMAIL_SEED_TEST_INTERVAL:-100}
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-worker-common: &worker-common
+  build:
+    context: ./backend
+    dockerfile: Dockerfile.worker
+    args:
+      NODE_IMAGE: ${NODE_IMAGE:?NODE_IMAGE must be pinned to an approved digest}
+    labels:
+      org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
+  # 不可变版本标签 + Git SHA（由 deploy.sh 解析 RELEASE_COMMIT 后注入）
+  image: vaysen-crm-backend-worker:${RELEASE_COMMIT_SHORT:-local}
+  labels:
+    org.opencontainers.image.revision: "${RELEASE_COMMIT:-unknown}"
+  environment:
+    <<: *backend-env
+    RUN_MIGRATIONS: "false"
+    RUN_SEED: "false"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "node", "scripts/worker-healthcheck.cjs"]
+    interval: 10s
+    timeout: 8s
+    retries: 18
+    start_period: 20s
+  networks:
+    - vaysen-crm
+  logging: *default-logging
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be pinned to an approved digest}
+    container_name: vaysen-crm-postgres
+    environment:
+      POSTGRES_USER: vaysen-crm
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: vaysen-crm_pilot
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaysen-crm -d vaysen-crm_pilot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+  redis:
+    image: ${REDIS_IMAGE:?REDIS_IMAGE must be pinned to an approved digest}
+    container_name: vaysen-crm-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+  reacher:
+    image: ${REACHER_IMAGE:?REACHER_IMAGE must be pinned to an approved digest}
+    container_name: vaysen-crm-reacher
+    expose:
+      - "8080"
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment: *direct-runtime-env
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+  searxng:
+    image: ${SEARXNG_IMAGE:?SEARXNG_IMAGE must be pinned to an approved digest}
+    container_name: vaysen-crm-searxng
+    entrypoint:
+      - /usr/local/bin/vaysen-crm-configure-searxng.sh
+    expose:
+      - "8080"
+    ports:
+      - "127.0.0.1:18888:8080"
+    environment:
+      <<: *direct-runtime-env
+      SEARXNG_BASE_URL: ${SEARXNG_PUBLIC_URL:-http://127.0.0.1:18888/}
+    volumes:
+      - searxng_data:/etc/searxng
+      - ./scripts/configure-searxng.sh:/usr/local/bin/vaysen-crm-configure-searxng.sh:ro
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+  n8n:
+    image: ${N8N_IMAGE:?N8N_IMAGE must be pinned to an approved digest}
+    container_name: vaysen-crm-n8n
+    environment:
+      <<: *direct-runtime-env
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      GENERIC_TIMEZONE: Asia/Shanghai
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+      ZHIPU_BASE_URL: ${ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      ZHIPU_MODEL: ${ZHIPU_MODEL:-glm-4-flash-250414}
+      VAYSEN_CRM_API_BASE_URL: http://backend:4000/api
+      REACHER_API_URL: http://reacher:8080
+      SEARXNG_URL: http://searxng:8080
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+    depends_on:
+      - backend
+      - reacher
+      - searxng
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+  python-service:
+    build:
+      context: ./python-service
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:?PYTHON_IMAGE must be pinned to an approved digest}
+        U2NET_MODEL_URL: ${U2NET_MODEL_URL:-https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx}
+      labels:
+        org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
+    image: vaysen-crm-python-service:${RELEASE_COMMIT_SHORT:-local}
+    labels:
+      org.opencontainers.image.revision: "${RELEASE_COMMIT:-unknown}"
+    container_name: vaysen-crm-python-service
+    environment: *direct-runtime-env
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/ready"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?NODE_IMAGE must be pinned to an approved digest}
+        RELEASE_COMMIT: ${RELEASE_COMMIT:-unknown}
+      labels:
+        org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
+    # 不可变版本标签 + Git SHA
+    image: vaysen-crm-backend:${RELEASE_COMMIT_SHORT:-local}
+    labels:
+      org.opencontainers.image.revision: "${RELEASE_COMMIT:-unknown}"
+    container_name: vaysen-crm-backend
+    environment:
+      <<: *backend-env
+      # deploy.sh owns the single bounded production migration step. Runtime
+      # startup must never race it or repeat it outside the rollback boundary.
+      RUN_MIGRATIONS: "false"
+      RUN_SEED: "false"
+      OPENCLAW_ENABLED: ${OPENCLAW_ENABLED:-true}
+      OPENCLAW_RELEASE_VERSION: ${OPENCLAW_RUNTIME_VERSION:-2026.7.1}
+      OPENCLAW_GATEWAY_URL: http://openclaw-gateway:18789
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_OWNER_EMAIL: ${OPENCLAW_OWNER_EMAIL}
+      OPENCLAW_OWNER_COMPANY_SLUG: ${OPENCLAW_OWNER_COMPANY_SLUG}
+      OPENCLAW_WECHAT_OWNER_PEER_SHA256: ${OPENCLAW_WECHAT_OWNER_PEER_SHA256:-}
+      OPENCLAW_CRM_HMAC_KEY_ID: ${OPENCLAW_CRM_HMAC_KEY_ID}
+      OPENCLAW_CRM_HMAC_SECRET: ${OPENCLAW_CRM_HMAC_SECRET}
+    expose:
+      - "4000"
+    volumes:
+      - ${APP_DATA_DIR:?APP_DATA_DIR must be an approved absolute host path}/uploads:/app/uploads
+      - ${APP_DATA_DIR:?APP_DATA_DIR must be an approved absolute host path}/.customizer-assets:/app/.customizer-assets
+      - ${APP_DATA_DIR:?APP_DATA_DIR must be an approved absolute host path}/.whatsapp-sessions:/app/.whatsapp-sessions
+    # 后端在 raw Express 暴露 /health（绕过 api 前缀），健康检查必须命中 /health。
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      python-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+      - openclaw
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:?OPENCLAW_IMAGE must be the reviewed OpenClaw digest}
+    container_name: vaysen-crm-openclaw-gateway
+    labels:
+      org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
+    user: "${OPENCLAW_DATA_UID:-1000}:${OPENCLAW_DATA_GID:-1000}"
+    init: true
+    read_only: true
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["umask 077; exec node dist/index.js gateway --bind lan --port 18789"]
+    environment:
+      <<: *direct-runtime-env
+      HOME: /home/node
+      NODE_ENV: production
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_CRM_HMAC_KEY_ID: ${OPENCLAW_CRM_HMAC_KEY_ID}
+      OPENCLAW_CRM_HMAC_SECRET: ${OPENCLAW_CRM_HMAC_SECRET}
+      OPENCLAW_RUNTIME_VERSION: ${OPENCLAW_RUNTIME_VERSION:-2026.7.1}
+      OPENCLAW_WEIXIN_PLUGIN_VERSION: ${OPENCLAW_WEIXIN_PLUGIN_VERSION:-2.4.6}
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      npm_config_cache: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+      NPM_CONFIG_BIN_LINKS: "false"
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+      ZHIPU_BASE_URL: ${ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      ZHIPU_MODEL: ${ZHIPU_MODEL:-glm-4-flash-250414}
+      NO_PROXY: backend,openclaw-gateway,localhost,127.0.0.1
+      no_proxy: backend,openclaw-gateway,localhost,127.0.0.1
+    expose:
+      - "18789"
+    volumes:
+      - ${APP_DATA_DIR:?APP_DATA_DIR must be an approved absolute host path}/openclaw:/home/node/.openclaw
+      - ./deploy/openclaw/config:/opt/vaysen-config:ro
+      - ./deploy/openclaw/workspace:/opt/vaysen-workspace:ro
+      - ./deploy/openclaw/plugins:/opt/vaysen-plugins:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700
+      - /home/node/.cache:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - openclaw
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  worker-email-compose:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-email-compose
+    command: ["node", "dist/src/worker-email-compose"]
+
+  worker-email-validate:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-email-validate
+    command: ["node", "dist/src/worker-email-validate"]
+
+  worker-email-send:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-email-send
+    command: ["node", "dist/src/worker-email-send"]
+
+  worker-prospect-search:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-prospect-search
+    command: ["node", "dist/src/worker-prospect-search"]
+
+  worker-deep-research:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-deep-research
+    command: ["node", "dist/src/worker-deep-research"]
+
+  worker-maintenance:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-maintenance
+    command: ["node", "dist/src/worker-maintenance"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?NODE_IMAGE must be pinned to an approved digest}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vaysen AI CRM}
+      labels:
+        org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
+    # 不可变版本标签 + Git SHA（实际监听端口见下方 expose: 3000）
+    image: vaysen-crm-frontend:${RELEASE_COMMIT_SHORT:-local}
+    labels:
+      org.opencontainers.image.revision: "${RELEASE_COMMIT:-unknown}"
+    container_name: vaysen-crm-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vaysen AI CRM}
+    # 实际监听端口固定为 3000（由 frontend/Dockerfile 的 PORT=3000 决定），
+    # 与 nginx upstream（frontend:3000）保持一致。
+    expose:
+      - "3000"
+    # 前端镜像 runner 阶段未安装 curl；复用镜像内的资产感知探针，
+    # 避免 HTML 200 但 CSS/JS 缺失的假健康。
+    healthcheck:
+      test: ["CMD", "node", "scripts/runtime-healthcheck.cjs"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  nginx:
+    image: ${NGINX_IMAGE:?NGINX_IMAGE must be pinned to an approved digest}
+    container_name: vaysen-crm-nginx
+    # Bind the edge container to every immutable release revision.  Without a
+    # release-varying service field Compose may leave nginx running while the
+    # frontend/backend containers are replaced, retaining stale Docker DNS
+    # addresses for its upstreams.
+    labels:
+      org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
+    ports:
+      # 同时绑定稳定的 ZeroTier 地址与当前物理局域网地址；禁止 wildcard，
+      # 因此不会监听公网或其他宿主网卡。
+      - "${LAN_BIND_IP:-127.0.0.1}:80:80"
+      - "${LOCAL_LAN_BIND_IP:?LOCAL_LAN_BIND_IP must be an approved RFC1918 host address}:80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - frontend
+      - backend
+    # Docker client proxy settings can be injected into container environments.
+    # Nginx has no outbound Internet dependency; its health probe must never
+    # send loopback/internal traffic to that proxy.
+    healthcheck:
+      test: ["CMD", "wget", "-Y", "off", "--spider", "-q", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - vaysen-crm
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_data:
+  searxng_data:
+
+networks:
+  vaysen-crm:
+    driver: bridge
+  openclaw:
+    driver: bridge

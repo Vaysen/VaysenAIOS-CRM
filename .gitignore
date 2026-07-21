@@ -1,0 +1,49 @@
+# 本机 Windows 打包/安装验收产物体积较大，不进入源码提交。
+/release/
+/release-acceptance/
+/release-*/
+
+# 运行时密钥与服务器数据不得进入独立部署仓库。
+/**/.env
+/**/.env.*
+!/**/.env.example
+!/**/.env.preview.example
+/**/.runtime/
+/**/.whatsapp-sessions/
+/**/*.dump
+/*.dump
+/**/data/
+/**/uploads/
+/research-output/
+
+# 可重建依赖、编译和测试产物。
+/**/node_modules/
+/backend/dist/
+/electron/dist/
+/frontend/.next/
+/frontend/.next-web/
+/frontend/.next_del_*/
+/frontend/out/
+/frontend/electron-export/
+/frontend/output_old_*/
+/frontend/playwright-report/
+/frontend/test-results/
+/**/coverage/
+*.log
+
+# Local editor/browser automation and secret-scanner output.
+/.playwright-cli/
+/.idea/
+/.vscode/
+/.DS_Store
+*.pem
+*.pfx
+*.p12
+*.key
+*.sqlite
+*.sqlite3
+
+# Electron 品牌资源是发布输入，不是可重建 build 产物。
+!/electron/build/
+!/electron/build/icon-source.png
+!/electron/build/icon.ico

@@ -1,0 +1,20 @@
+# Keep the Linux web image reproducible and prevent Windows/local artifacts or
+# secrets from entering the Docker build context.
+node_modules
+.next
+.next-*
+out
+electron-export
+coverage
+dist
+release
+release-*
+playwright-report
+test-results
+*.log
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+tsconfig.tsbuildinfo

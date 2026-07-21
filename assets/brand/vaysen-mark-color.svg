@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="512"
+   height="512"
+   viewBox="0 0 512 512"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg10"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <title
+     id="title">Vaysen AI symbol</title>
+  <desc
+     id="desc">Full-color Vaysen mark with globe, orbit and growth arrow.</desc>
+  <defs
+     id="defs8">
+    <linearGradient
+       id="vaysen-navy"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#0B2E57"
+         id="stop1" />
+      <stop
+         offset="0.58"
+         stop-color="#123C6D"
+         id="stop2" />
+      <stop
+         offset="1"
+         stop-color="#174A84"
+         id="stop3" />
+    </linearGradient>
+    <linearGradient
+       id="vaysen-blue"
+       x1="0"
+       y1="1"
+       x2="1"
+       y2="0">
+      <stop
+         offset="0"
+         stop-color="#037FD6"
+         id="stop4" />
+      <stop
+         offset="1"
+         stop-color="#1D97DB"
+         id="stop5" />
+    </linearGradient>
+    <linearGradient
+       id="vaysen-orbit"
+       x1="55"
+       y1="350"
+       x2="450"
+       y2="175"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#536B7A"
+         id="stop6" />
+      <stop
+         offset="0.28"
+         stop-color="#037FD6"
+         id="stop7" />
+      <stop
+         offset="1"
+         stop-color="#1D97DB"
+         id="stop8" />
+    </linearGradient>
+  </defs>
+  <g
+     id="mark">
+    <g
+       id="globe"
+       fill="none"
+       stroke="#787D7F"
+       stroke-linecap="round"
+       opacity="0.68">
+      <circle
+         cx="256"
+         cy="229"
+         r="167"
+         stroke-width="9"
+         id="circle8" />
+      <ellipse
+         cx="256"
+         cy="229"
+         rx="72"
+         ry="167"
+         stroke-width="7"
+         id="ellipse8" />
+      <path
+         d="M110 147c42 35 86 52 146 52s104-17 146-52"
+         stroke-width="7"
+         id="path8" />
+      <path
+         d="M94 247c51 9 105 13 162 13s111-4 162-13"
+         stroke-width="7"
+         id="path9" />
+      <path
+         d="M113 329c41-33 88-49 143-49s102 16 143 49"
+         stroke-width="7"
+         id="path10" />
+    </g>
+    <path
+       id="letter-v"
+       d="M92 103h78l86 191 86-191h78L256 427Z"
+       fill="url(#vaysen-navy)" />
+    <path
+       id="orbit"
+       d="M63 290c-40 96 29 143 118 98 100-51 202-100 269-202"
+       fill="none"
+       stroke="url(#vaysen-orbit)"
+       stroke-width="12"
+       stroke-linecap="round" />
+    <circle
+       id="origin-dot"
+       cx="171"
+       cy="392"
+       r="20"
+       fill="url(#vaysen-orbit)" />
+    <path
+       id="growth-arrow"
+       d="m433 172 49-15-15 50-12-20Z"
+       fill="#F58224" />
+  </g>
+</svg>

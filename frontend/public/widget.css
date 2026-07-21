@@ -1,0 +1,31 @@
+/* Vaysen AI CRM Live Chat Widget — Chatwoot-style */
+.vaysen-widget *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.vaysen-bubble{position:fixed;bottom:24px;right:24px;z-index:99999;width:56px;height:56px;border-radius:50%;background:#1a56db;color:#fff;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.15);display:flex;align-items:center;justify-content:center;transition:transform .2s,box-shadow .2s;font-size:22px}
+.vaysen-bubble:hover{transform:scale(1.08);box-shadow:0 6px 24px rgba(0,0,0,.2)}
+.vaysen-bubble .unread-dot{position:absolute;top:2px;right:2px;width:10px;height:10px;border-radius:50%;background:#ef4444;border:2px solid #fff}
+.vaysen-window{position:fixed;bottom:92px;right:24px;z-index:99998;width:380px;max-height:560px;background:#fff;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,.15);display:none;flex-direction:column;overflow:hidden;border:1px solid #e5e7eb}
+.vaysen-window.open{display:flex}
+.vaysen-window-header{background:#1a56db;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.vaysen-window-header .avatar{width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px}
+.vaysen-window-header .info{flex:1;min-width:0}
+.vaysen-window-header .name{font-weight:600;font-size:14px}
+.vaysen-window-header .status{font-size:11px;opacity:.85}
+.vaysen-window-header .close-btn{background:none;border:none;color:#fff;cursor:pointer;font-size:20px;opacity:.8;padding:2px 6px}
+.vaysen-window-header .close-btn:hover{opacity:1}
+.vaysen-messages{flex:1;overflow-y:auto;padding:12px;background:#f9fafb;min-height:200px;max-height:340px}
+.vaysen-messages .msg{max-width:85%;margin-bottom:10px;padding:8px 12px;border-radius:8px;font-size:13px;line-height:1.5;word-break:break-word}
+.vaysen-messages .msg.inbound{background:#fff;border:1px solid #e5e7eb;color:#1f2937;margin-right:auto}
+.vaysen-messages .msg.outbound{background:#1a56db;color:#fff;margin-left:auto}
+.vaysen-messages .msg .time{font-size:10px;opacity:.6;margin-top:4px;text-align:right}
+.vaysen-messages .system-msg{text-align:center;font-size:11px;color:#9ca3af;margin:8px 0}
+.vaysen-form{padding:12px;border-top:1px solid #e5e7eb;background:#fff;flex-shrink:0}
+.vaysen-form input{width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;outline:none;margin-bottom:6px;transition:border .2s}
+.vaysen-form input:focus{border-color:#1a56db}
+.vaysen-form .btn-row{display:flex;gap:6px}
+.vaysen-form button{flex:1;padding:8px 0;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:none;transition:background .2s}
+.vaysen-form .btn-send{background:#1a56db;color:#fff}
+.vaysen-form .btn-send:hover{background:#1e40af}
+.vaysen-form .btn-send:disabled{opacity:.5;cursor:default}
+.vaysen-window .footer-note{text-align:center;padding:6px;font-size:10px;color:#9ca3af;border-top:1px solid #f3f4f6}
+.vaysen-window .typing{font-size:11px;color:#9ca3af;padding:4px 12px;font-style:italic}
+@media (max-width:480px){.vaysen-window{width:calc(100vw-32px);right:16px;bottom:80px;max-height:calc(100vh-120px)}}

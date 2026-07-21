@@ -1,0 +1,2113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========== 企业 ==========
+model Company {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  logo        String?
+  website     String?
+  industry    String?
+  size        String?
+  country     String?
+  city        String?
+  address     String?
+  phone       String?
+  description String?
+  isActive    Boolean  @default(true)
+  settings    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users              UserCompanyRelation[]
+  leads              Lead[]
+  contacts           Contact[]
+  leadSources        LeadSource[]
+  leadScores         LeadScore[]
+  leadActivities     LeadActivity[]
+  emailAccounts      EmailAccount[]
+  emailTemplates     EmailTemplate[]
+  campaigns          Campaign[]
+  emailMessages      EmailMessage[]
+  unsubscribeRecords UnsubscribeRecord[]
+  aiGenerationLogs   AIGenerationLog[]
+  settings_obj       SystemSetting[]
+  auditLogs          AuditLog[]
+  productCategories  ProductCategory[]
+  products           Product[]
+
+  // Communication hub
+  contactPoints ContactPoint[]
+  conversations Conversation[]
+  aiArtifacts   AiArtifact[]
+
+  // Phase 7 new models
+  whatsappSessions       WhatsAppSession[]
+  whatsappBroadcastTasks WhatsAppBroadcastTask[]
+  quotes                 Quote[]
+  orders                 Order[]
+
+  // Customizer
+  customizerTemplates        CustomizerTemplate[]
+  customizerDesigns          CustomizerDesign[]
+  voiceCalls                 VoiceCall[]
+  agentRuns                  AgentRun[]
+  agentTasks                 AgentTask[]
+  agentAuthorizations        AgentAuthorization[]
+  agentAuditLogs             AgentAuditLog[]
+  openClawBindings           OpenClawOperatorBinding[]
+  openClawReceipts           OpenClawToolReceipt[]
+  openClawCrmSessions        OpenClawCrmSession[]
+  openClawSelections         OpenClawSelectionToken[]
+  assistantPermissionProfile AssistantPermissionProfile?
+  assistantTemporaryGrants   AssistantTemporaryGrant[]
+  assistantBusinessActions   AssistantBusinessAction[]
+  ownerNotificationOutbox    OwnerNotificationOutbox[]
+
+  // TASK-102A: 统一客户身份 — 反向关系
+  externalIdentities      ExternalIdentity[]
+  identityMatchCandidates IdentityMatchCandidate[]
+  identityExclusions      IdentityExclusion[]
+  customerMergeAudits     CustomerMergeAudit[]
+
+  @@index([slug])
+  @@index([isActive])
+}
+
+// ========== 用户 ==========
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String
+  firstName       String
+  lastName        String
+  phone           String?
+  avatar          String?
+  isActive        Boolean   @default(true)
+  isEmailVerified Boolean   @default(false)
+  lastLoginAt     DateTime?
+  resetToken      String?
+  resetTokenExp   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  companies                          UserCompanyRelation[]
+  ownedLeads                         Lead[]                       @relation("LeadOwner")
+  activities                         LeadActivity[]
+  emailAccounts                      EmailAccount[]
+  sentEmails                         EmailMessage[]               @relation("EmailSender")
+  reminders                          FollowUpReminder[]           @relation("ReminderAssignee")
+  auditLogs                          AuditLog[]
+  assignedConversations              Conversation[]
+  pinnedLeads                        LeadPin[]
+  agentRuns                          AgentRun[]                   @relation("AgentRunOperator")
+  confirmedAgentAuthorizations       AgentAuthorization[]         @relation("AgentAuthorizationConfirmer")
+  agentAuditLogs                     AgentAuditLog[]              @relation("AgentAuditActor")
+  openClawBindings                   OpenClawOperatorBinding[]
+  openClawReceipts                   OpenClawToolReceipt[]
+  openClawCrmSessions                OpenClawCrmSession[]
+  openClawSelections                 OpenClawSelectionToken[]
+  updatedAssistantPermissionProfiles AssistantPermissionProfile[] @relation("AssistantPermissionProfileUpdatedBy")
+  assistantTemporaryGrants           AssistantTemporaryGrant[]    @relation("AssistantTemporaryGrantOperator")
+  createdAssistantTemporaryGrants    AssistantTemporaryGrant[]    @relation("AssistantTemporaryGrantCreator")
+  assistantBusinessActions           AssistantBusinessAction[]    @relation("AssistantBusinessActionOperator")
+
+  @@index([email])
+  @@index([isActive])
+}
+
+enum AgentRunKind {
+  READ_LEAD_SUMMARY
+  DRAFT_FOLLOW_UP
+  BACKGROUND_RESEARCH
+  OPENCLAW_TOOL
+}
+
+enum AgentRunSource {
+  CRM
+  WECHAT_OWNER
+}
+
+enum AgentRunStatus {
+  PENDING
+  RUNNING
+  AWAITING_APPROVAL
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgentTaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgentAuthorizationStatus {
+  PENDING
+  CONFIRMED
+  CONSUMED
+  EXPIRED
+  REJECTED
+}
+
+enum AssistantPermissionPreset {
+  ADVISORY
+  EXECUTOR
+  SUPERVISOR
+}
+
+enum AssistantGrantStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  CONSUMED
+}
+
+enum AssistantPolicyDecision {
+  ALLOW
+  APPROVAL_REQUIRED
+  DENY
+}
+
+enum AssistantActionState {
+  PLANNED
+  POLICY_CHECKED
+  AWAITING_APPROVAL
+  CLAIMED
+  EXECUTING
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+  CANCELLED
+}
+
+enum OwnerNotificationStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+/// Durable, idempotent owner notification intent. This table deliberately
+/// stores only a short redacted preview and internal CRM references; channel
+/// credentials and raw owner identifiers remain inside the delivery adapter.
+model OwnerNotificationOutbox {
+  id                String                  @id @default(uuid())
+  companyId         String
+  eventKey          String                  @unique
+  eventType         String
+  destination       String                  @default("OWNER_WECHAT")
+  sourceType        String
+  sourceId          String?
+  conversationId    String?
+  leadId            String?
+  subject           String?
+  preview           String
+  status            OwnerNotificationStatus @default(PENDING)
+  attempts          Int                     @default(0)
+  maxAttempts       Int                     @default(5)
+  nextAttemptAt     DateTime?
+  expiresAt         DateTime
+  claimedAt         DateTime?
+  sentAt            DateTime?
+  failedAt          DateTime?
+  provider          String?
+  providerReceiptId String?
+  lastError         String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([status, expiresAt])
+  @@index([companyId, status, createdAt])
+}
+
+model AgentRun {
+  id                      String          @id @default(uuid())
+  requestKey              String?         @unique
+  executionClaimId        String?
+  executionLeaseExpiresAt DateTime?
+  companyId               String
+  operatorUserId          String
+  kind                    AgentRunKind
+  source                  AgentRunSource?
+  status                  AgentRunStatus  @default(PENDING)
+  inputDigest             String
+  subjectType             String?
+  subjectId               String?
+  result                  Json?
+  errorCode               String?
+  startedAt               DateTime?
+  completedAt             DateTime?
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  company          Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator         User                      @relation("AgentRunOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+  tasks            AgentTask[]
+  authorizations   AgentAuthorization[]
+  auditLogs        AgentAuditLog[]
+  researchReport   DeepResearchReport?
+  openClawReceipt  OpenClawToolReceipt?
+  assistantActions AssistantBusinessAction[]
+
+  @@index([companyId, operatorUserId, createdAt])
+  @@index([companyId, status, createdAt])
+}
+
+model AgentTask {
+  id          String          @id @default(uuid())
+  companyId   String
+  runId       String
+  toolName    String
+  status      AgentTaskStatus @default(PENDING)
+  inputDigest String
+  result      Json?
+  errorCode   String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  run     AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, runId, createdAt])
+  @@index([companyId, status, createdAt])
+}
+
+model AgentAuthorization {
+  id                String                   @id @default(uuid())
+  companyId         String
+  runId             String
+  actionType        String
+  authorizationHash String
+  status            AgentAuthorizationStatus @default(PENDING)
+  expiresAt         DateTime
+  confirmedByUserId String?
+  confirmedAt       DateTime?
+  consumedAt        DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  run         AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  confirmedBy User?    @relation("AgentAuthorizationConfirmer", fields: [confirmedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, runId, status])
+  @@index([status, expiresAt])
+}
+
+model AgentAuditLog {
+  id          String   @id @default(uuid())
+  companyId   String
+  runId       String
+  actorUserId String?
+  eventType   String
+  inputDigest String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  run     AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  actor   User?    @relation("AgentAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, runId, createdAt])
+  @@index([companyId, eventType, createdAt])
+}
+
+model AssistantPermissionProfile {
+  id              String                    @id @default(uuid())
+  companyId       String                    @unique
+  preset          AssistantPermissionPreset @default(ADVISORY)
+  overrides       Json
+  thresholds      Json
+  updatedByUserId String
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  updatedBy User    @relation("AssistantPermissionProfileUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([preset, updatedAt])
+}
+
+model AssistantTemporaryGrant {
+  id              String               @id @default(uuid())
+  companyId       String
+  operatorUserId  String
+  createdByUserId String
+  capability      String
+  scopeDigest     String
+  scope           Json
+  status          AssistantGrantStatus @default(ACTIVE)
+  expiresAt       DateTime
+  maxUses         Int                  @default(1)
+  useCount        Int                  @default(0)
+  revokedAt       DateTime?
+  consumedAt      DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator  User    @relation("AssistantTemporaryGrantOperator", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  createdBy User    @relation("AssistantTemporaryGrantCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, operatorUserId, capability, status, expiresAt])
+  @@index([scopeDigest, status, expiresAt])
+}
+
+model AssistantBusinessAction {
+  id             String                   @id @default(uuid())
+  requestKey     String                   @unique
+  idempotencyKey String                   @unique
+  companyId      String
+  operatorUserId String
+  runId          String?
+  capability     String
+  state          AssistantActionState     @default(PLANNED)
+  decision       AssistantPolicyDecision?
+  contextDigest  String
+  payloadDigest  String
+  targetType     String?
+  targetId       String?
+  policySnapshot Json?
+  result         Json?
+  receipt        Json?
+  errorCode      String?
+  approvalId     String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User      @relation("AssistantBusinessActionOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+  run      AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, operatorUserId, state, createdAt])
+  @@index([companyId, capability, createdAt])
+  @@index([targetType, targetId, createdAt])
+}
+
+enum OpenClawBindingStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum OpenClawReceiptStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum OpenClawBusinessStatus {
+  PROCESSING
+  SUCCEEDED
+  BLOCKED
+  FAILED
+}
+
+enum OpenClawCrmExecutionStatus {
+  READY
+  RUNNING
+  DRAINING
+  SETTLED
+}
+
+/// Deployment-approved mapping between the owner WeChat principal and one
+/// active CRM operator. Raw WeChat identifiers are never persisted.
+model OpenClawOperatorBinding {
+  id             String                @id @default(uuid())
+  companyId      String
+  operatorUserId String
+  channel        String
+  senderDigest   String
+  displayName    String
+  status         OpenClawBindingStatus @default(ACTIVE)
+  boundAt        DateTime              @default(now())
+  lastSeenAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User    @relation(fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([channel, senderDigest])
+  @@index([companyId, operatorUserId, status])
+}
+
+/// A nonce is consumed immediately after a valid HMAC is verified. Keeping it
+/// separate from the tool receipt lets an idempotent retry use a fresh nonce
+/// while every signed request remains replay protected.
+model OpenClawRequestNonce {
+  id          String   @id @default(uuid())
+  nonceDigest String   @unique
+  keyId       String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// Short-lived reverse mapping for the irreversible CRM UI session digest.
+/// It is created only after a live company-admin membership check.
+model OpenClawCrmSession {
+  id                      String                     @id @default(uuid())
+  sessionDigest           String                     @unique
+  companyId               String
+  operatorUserId          String
+  expiresAt               DateTime
+  lastSeenAt              DateTime                   @default(now())
+  executionStatus         OpenClawCrmExecutionStatus @default(READY)
+  executionLeaseToken     String?
+  executionLeaseExpiresAt DateTime?
+  executionCompletedAt    DateTime?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User    @relation(fields: [operatorUserId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, operatorUserId, expiresAt])
+  @@index([executionStatus, executionLeaseExpiresAt])
+}
+
+/// Durable idempotency and audit receipt for the fixed OpenClaw tool broker.
+/// Message/session identifiers are stored only as SHA-256 digests.
+model OpenClawToolReceipt {
+  id                     String                 @id @default(uuid())
+  requestKey             String                 @unique
+  companyId              String
+  operatorUserId         String
+  runId                  String                 @unique
+  toolName               String
+  inputDigest            String
+  senderDigest           String
+  sessionDigest          String
+  messageDigest          String
+  businessInputDigest    String?
+  acceptanceMarkerDigest String?
+  status                 OpenClawReceiptStatus  @default(PROCESSING)
+  businessStatus         OpenClawBusinessStatus @default(PROCESSING)
+  result                 Json?
+  errorCode              String?
+  completedAt            DateTime?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User     @relation(fields: [operatorUserId], references: [id], onDelete: Restrict)
+  run      AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, operatorUserId, createdAt(sort: Desc)])
+  @@index([companyId, operatorUserId, sessionDigest, createdAt(sort: Desc)])
+  @@index([companyId, operatorUserId, businessInputDigest, createdAt(sort: Desc)])
+  @@index([acceptanceMarkerDigest, createdAt(sort: Desc)])
+  @@index([companyId, toolName, status])
+}
+
+/// One-use, short-lived proof that an action target came from exactly one CRM
+/// customer-search result. Only token and channel identifiers are stored as
+/// irreversible SHA-256 digests; raw WeChat identities never enter this table.
+model OpenClawSelectionToken {
+  id               String    @id @default(uuid())
+  tokenDigest      String    @unique
+  companyId        String
+  operatorUserId   String
+  channel          String
+  senderDigest     String
+  accountDigest    String
+  sessionDigest    String
+  messageDigest    String
+  searchRequestKey String
+  targetTool       String
+  leadId           String
+  conversationId   String?
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  createdAt        DateTime  @default(now())
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User    @relation(fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, operatorUserId, sessionDigest, expiresAt])
+  @@index([companyId, leadId, expiresAt])
+  @@index([searchRequestKey, targetTool])
+  @@index([expiresAt, consumedAt])
+}
+
+// ========== 角色 ==========
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  displayName String
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions   RolePermission[]
+  userRelations UserCompanyRelation[]
+
+  @@index([name])
+}
+
+// ========== 权限 ==========
+model Permission {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  displayName String
+  group       String
+  description String?
+  createdAt   DateTime @default(now())
+
+  roles RolePermission[]
+}
+
+// ========== 角色-权限关联 ==========
+model RolePermission {
+  id           String @id @default(uuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// ========== 用户-企业关联 ==========
+model UserCompanyRelation {
+  id        String   @id @default(uuid())
+  userId    String
+  companyId String
+  roleId    String
+  isDefault Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  joinedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role    Role    @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, companyId])
+  @@index([companyId, roleId])
+}
+
+// ========== 客户线索 ==========
+model Lead {
+  id                      String    @id @default(uuid())
+  companyId               String
+  leadName                String?
+  companyName             String?
+  companyNameSource       String?
+  companyNameConfidence   String?
+  website                 String?
+  websiteDomain           String?
+  country                 String?
+  city                    String?
+  industry                String?
+  productCategory         String?
+  businessType            String?
+  contactName             String?
+  contactTitle            String?
+  contactEmail            String?
+  contactPhone            String?
+  linkedinUrl             String?
+  facebookUrl             String?
+  instagramUrl            String?
+  twitterUrl              String?
+  pinterestUrl            String?
+  redditUrl               String?
+  youtubeUrl              String?
+  tiktokUrl               String?
+  otherSocialLinks        Json?
+  whatsapp                String?
+  emailVerificationStatus String    @default("unverified")
+  emailVerificationReason String?
+  yearEstablished         Int?
+  employeeCount           String?
+  annualRevenue           String?
+  mainProducts            String?
+  importPorts             String?
+  currentSuppliers        String?
+  hasChinaImport          Boolean?
+  estimatedOrderVolume    String?
+  sourceUrl               String?
+  sourceType              String?
+  sourceKeyword           String?
+  sourceCountry           String?
+  language                String? // 客户偏好语言 ISO 639-1 (en/ja/ko/es/fr/de/it/zh)
+  collectedAt             DateTime?
+  confidenceScore         Int?
+  leadScore               Int?
+  leadGrade               String?
+  status                  String    @default("new")
+  reviewStatus            String    @default("pending")
+  ownerUserId             String?
+  lastContactedAt         DateTime?
+  nextFollowUpAt          DateTime?
+  notes                   String?
+  isUncertain             Boolean   @default(false)
+  uncertainFields         String[]
+  mergedToId              String?
+  isMerged                Boolean   @default(false)
+  deletedAt               DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  company         Company              @relation(fields: [companyId], references: [id])
+  owner           User?                @relation("LeadOwner", fields: [ownerUserId], references: [id])
+  mergedTo        Lead?                @relation("LeadMerge", fields: [mergedToId], references: [id])
+  mergedFrom      Lead[]               @relation("LeadMerge")
+  contacts        Contact[]
+  sources         LeadSource[]
+  scores          LeadScore[]
+  activities      LeadActivity[]
+  duplicates      DuplicateLead[]      @relation("PrimaryLead")
+  duplicateOf     DuplicateLead[]      @relation("DuplicateLeadRef")
+  emailMessages   EmailMessage[]
+  reminders       FollowUpReminder[]
+  importErrors    ImportError[]
+  searchResults   SearchResult[]
+  tags            LeadTag[]
+  researchReports DeepResearchReport[]
+
+  // Communication hub
+  contactPoints ContactPoint[]
+  conversations Conversation[]
+  voiceCalls    VoiceCall[]
+  aiArtifacts   AiArtifact[]
+  pins          LeadPin[]
+
+  // Phase 7
+  quotes Quote[]
+  orders Order[]
+
+  // Customizer
+  customizerDesigns CustomizerDesign[]
+
+  // TASK-102A: 统一客户身份 — 反向关系
+  externalIdentities        ExternalIdentity[]
+  matchSources              IdentityMatchCandidate[] @relation("MatchSource")
+  matchTargets              IdentityMatchCandidate[] @relation("MatchTarget")
+  identityExclusionsLeft    IdentityExclusion[]      @relation("ExclusionLeft")
+  identityExclusionsRight   IdentityExclusion[]      @relation("ExclusionRight")
+  customerMergeAuditsSource CustomerMergeAudit[]     @relation("CustomerMergeAuditSource")
+  customerMergeAuditsTarget CustomerMergeAudit[]     @relation("CustomerMergeAuditTarget")
+
+  @@index([companyId, status])
+  @@index([companyId, reviewStatus])
+  @@index([companyId, ownerUserId])
+  @@index([contactEmail])
+  @@index([websiteDomain])
+  @@index([companyId, leadGrade])
+  @@index([companyId, createdAt])
+  @@index([nextFollowUpAt])
+}
+
+// ========== 标签系统 ==========
+model Tag {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  displayName String
+  color       String   @default("#6366f1")
+  category    String   @default("custom")
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  leads LeadTag[]
+
+  @@unique([companyId, name])
+  @@index([companyId, category])
+}
+
+model LeadTag {
+  id        String   @id @default(uuid())
+  leadId    String
+  tagId     String
+  createdBy String
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, tagId])
+}
+
+// ========== 素材/产品池 ==========
+model Material {
+  id           String    @id @default(uuid())
+  companyId    String
+  name         String
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  type         String    @default("image") // image | pdf
+  compressed   Boolean   @default(false)
+  uploadedBy   String
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([companyId, type])
+}
+
+// ========== AI 深度研究报告 ==========
+model DeepResearchReport {
+  id          String   @id @default(uuid())
+  agentRunId  String?  @unique
+  leadId      String
+  companyId   String
+  type        String   @default("full") // full | contacts | market
+  title       String
+  htmlContent String   @db.Text
+  jsonData    Json?
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  lead     Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  agentRun AgentRun? @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt(sort: Desc)])
+  @@index([companyId])
+}
+
+// ========== 联系人（扩展） ==========
+model Contact {
+  id             String   @id @default(uuid())
+  companyId      String
+  leadId         String?
+  firstName      String?
+  lastName       String?
+  displayName    String?
+  nameSource     String?
+  nameConfidence String?
+  email          String?
+  phone          String?
+  title          String?
+  department     String?
+  linkedinUrl    String?
+  isPrimary      Boolean  @default(false)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lead    Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  company Company @relation(fields: [companyId], references: [id])
+
+  contactPoints ContactPoint[]
+
+  // TASK-102A: 统一客户身份 — 反向关系
+  externalIdentities ExternalIdentity[]
+
+  @@index([companyId])
+  @@index([leadId])
+  @@index([email])
+}
+
+// ========== 客户来源记录 ==========
+model LeadSource {
+  id          String   @id @default(uuid())
+  companyId   String
+  leadId      String
+  sourceType  String
+  sourceUrl   String?
+  sourceTitle String?
+  collectedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  lead    Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([leadId])
+}
+
+// ========== 重复客户检测 ==========
+model DuplicateLead {
+  id              String    @id @default(uuid())
+  companyId       String
+  primaryLeadId   String
+  duplicateLeadId String
+  matchType       String // EMAIL_EXACT, DOMAIN_EXACT, PHONE_EXACT, LINKEDIN_EXACT, COMPANY_NAME_SIMILAR, CONTACT_COMPANY_SIMILAR
+  matchScore      Int // 0-100
+  matchReason     String
+  matchFields     Json
+  status          String    @default("pending") // pending, confirmed, not_duplicate, ignored, merged
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  resolvedAt      DateTime?
+  resolvedBy      String?
+  mergedAt        DateTime?
+  mergedBy        String?
+  mergeResult     Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  primaryLead   Lead @relation("PrimaryLead", fields: [primaryLeadId], references: [id], onDelete: Cascade)
+  duplicateLead Lead @relation("DuplicateLeadRef", fields: [duplicateLeadId], references: [id], onDelete: Cascade)
+
+  @@unique([primaryLeadId, duplicateLeadId])
+  @@index([companyId, status])
+  @@index([companyId, matchType])
+  @@index([primaryLeadId])
+  @@index([duplicateLeadId])
+}
+
+// ========== 客户评分记录 ==========
+model LeadScore {
+  id           String   @id @default(uuid())
+  companyId    String
+  leadId       String
+  totalScore   Int
+  grade        String
+  scoreReason  String?
+  breakdown    Json?
+  calculatedBy String?
+  calculatedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  lead    Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([leadId])
+  @@index([companyId, calculatedAt])
+}
+
+// ========== 客户活动记录（时间线） ==========
+model LeadActivity {
+  id                     String    @id @default(uuid())
+  companyId              String
+  leadId                 String
+  userId                 String?
+  communicationMessageId String?
+  activityType           String
+  title                  String
+  description            String?
+  metadata               Json?
+  referenceType          String?
+  referenceId            String?
+  occurredAt             DateTime  @default(now())
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @default(now()) @updatedAt
+  deletedAt              DateTime?
+
+  lead                 Lead                  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user                 User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company              Company               @relation(fields: [companyId], references: [id])
+  communicationMessage CommunicationMessage? @relation(fields: [communicationMessageId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, occurredAt(sort: Desc)])
+  @@index([companyId, occurredAt(sort: Desc)])
+  @@index([activityType])
+  @@index([occurredAt(sort: Desc)])
+  @@index([communicationMessageId])
+}
+
+// ========== 邮件账号 ==========
+model EmailAccount {
+  id                     String    @id @default(uuid())
+  companyId              String
+  userId                 String?
+  senderName             String
+  senderEmail            String
+  smtpHost               String
+  smtpPort               Int
+  smtpSecure             Boolean   @default(true)
+  smtpUsername           String
+  replyToEmail           String?
+  smtpPasswordEncrypted  String
+  dailySendLimit         Int       @default(50)
+  hourlySendLimit        Int       @default(10)
+  sendIntervalSeconds    Int       @default(60)
+  warmupEnabled          Boolean   @default(false)
+  warmupDay              Int?
+  dailySentCount         Int       @default(0)
+  hourlySentCount        Int       @default(0)
+  lastSentAt             DateTime?
+  status                 String    @default("active")
+  failureCount           Int       @default(0)
+  maxFailuresBeforePause Int       @default(10)
+  lastTestedAt           DateTime?
+  spfConfigured          Boolean   @default(false)
+  dkimConfigured         Boolean   @default(false)
+  dmarcConfigured        Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  user          User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  campaigns     Campaign[]
+  emailMessages EmailMessage[]
+
+  @@index([companyId, status])
+  @@index([senderEmail])
+}
+
+// ========== 邮件模板 ==========
+model EmailTemplate {
+  id              String   @id @default(uuid())
+  companyId       String
+  name            String
+  subject         String
+  body            String
+  language        String   @default("en")
+  category        String
+  productCategory String?
+  createdBy       String?
+  isActive        Boolean  @default(true)
+  useCount        Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company   Company                 @relation(fields: [companyId], references: [id])
+  variables EmailTemplateVariable[]
+  campaigns Campaign[]
+
+  @@index([companyId, category])
+  @@index([isActive])
+}
+
+// ========== 模板变量定义 ==========
+model EmailTemplateVariable {
+  id         String  @id @default(uuid())
+  templateId String
+  variable   String
+  label      String
+  isRequired Boolean @default(false)
+
+  template EmailTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, variable])
+}
+
+// ========== 邮件 Campaign ==========
+model Campaign {
+  id               String    @id @default(uuid())
+  companyId        String
+  name             String
+  productCategory  String?
+  targetCountry    String?
+  targetLeadGroup  Json?
+  emailTemplateId  String?
+  senderAccountId  String?
+  status           String    @default("draft")
+  totalLeads       Int       @default(0)
+  sentCount        Int       @default(0)
+  openCount        Int       @default(0)
+  clickCount       Int       @default(0)
+  replyCount       Int       @default(0)
+  bounceCount      Int       @default(0)
+  unsubscribeCount Int       @default(0)
+  scheduledAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  template      EmailTemplate? @relation(fields: [emailTemplateId], references: [id], onDelete: SetNull)
+  senderAccount EmailAccount?  @relation(fields: [senderAccountId], references: [id], onDelete: SetNull)
+  campaignLeads CampaignLead[]
+  messages      EmailMessage[]
+
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+}
+
+// ========== Campaign 目标客户关联 ==========
+model CampaignLead {
+  id         String @id @default(uuid())
+  campaignId String
+  leadId     String
+  status     String @default("pending")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, leadId])
+  @@index([campaignId, status])
+}
+
+// ========== 邮件消息 ==========
+model EmailMessage {
+  id               String    @id @default(uuid())
+  companyId        String
+  leadId           String
+  campaignId       String?
+  emailAccountId   String
+  templateId       String?
+  senderUserId     String?
+  messageId        String?
+  toEmail          String?
+  subject          String
+  bodyHtml         String
+  bodyText         String?
+  renderedBody     String?
+  trackingId       String    @unique
+  unsubscribeToken String?   @unique
+  status           String    @default("draft")
+  errorMessage     String?
+  failedReason     String?
+  retryCount       Int       @default(0)
+  maxRetries       Int       @default(3)
+  sentAt           DateTime?
+  deliveredAt      DateTime?
+  failedAt         DateTime?
+  openedAt         DateTime?
+  clickedAt        DateTime?
+  outreachRound    Int       @default(0)
+  deletedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company      Company            @relation(fields: [companyId], references: [id])
+  lead         Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campaign     Campaign?          @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  emailAccount EmailAccount       @relation(fields: [emailAccountId], references: [id])
+  senderUser   User?              @relation("EmailSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  openEvents   EmailOpenEvent[]
+  clickEvents  EmailClickEvent[]
+  bounceEvents EmailBounceEvent[]
+  reminders    FollowUpReminder[]
+
+  @@index([trackingId])
+  @@index([unsubscribeToken])
+  @@index([companyId, status])
+  @@index([leadId])
+  @@index([campaignId])
+  @@index([messageId])
+  @@index([senderUserId])
+  @@index([companyId, createdAt])
+}
+
+// ========== 邮件打开事件 ==========
+model EmailOpenEvent {
+  id         String   @id @default(uuid())
+  emailId    String
+  leadId     String
+  campaignId String?
+  openedAt   DateTime @default(now())
+  ipAddress  String?
+  userAgent  String?
+  count      Int      @default(1)
+  createdAt  DateTime @default(now())
+
+  email EmailMessage @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+  @@index([leadId])
+  @@index([campaignId])
+  @@index([openedAt])
+}
+
+// ========== 邮件点击事件 ==========
+model EmailClickEvent {
+  id          String   @id @default(uuid())
+  emailId     String
+  leadId      String
+  campaignId  String?
+  originalUrl String
+  clickedAt   DateTime @default(now())
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  email EmailMessage @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+  @@index([leadId])
+  @@index([campaignId])
+  @@index([clickedAt])
+}
+
+// ========== 邮件退信事件 ==========
+model EmailBounceEvent {
+  id         String   @id @default(uuid())
+  emailId    String
+  leadId     String
+  bounceType String
+  bounceCode String?
+  reason     String?
+  rawMessage String?
+  bouncedAt  DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  email EmailMessage @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+  @@index([leadId])
+}
+
+// ========== 退订记录 ==========
+model UnsubscribeRecord {
+  id               String   @id @default(uuid())
+  companyId        String
+  leadId           String
+  email            String
+  token            String   @unique
+  unsubscribedAt   DateTime @default(now())
+  unsubscribedFrom String?
+  ipAddress        String?
+  reason           String?
+  createdAt        DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([token])
+  @@index([email])
+  @@index([leadId])
+}
+
+// ========== 黑名单 ==========
+model BlacklistRecord {
+  id        String   @id @default(uuid())
+  companyId String?
+  email     String?
+  domain    String?
+  reason    String
+  source    String
+  createdBy String?
+  isGlobal  Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([domain])
+  @@index([isGlobal])
+}
+
+// ========== 跟进提醒 ==========
+model FollowUpReminder {
+  id             String    @id @default(uuid())
+  companyId      String
+  leadId         String
+  userId         String
+  emailMessageId String?
+  reminderType   String
+  title          String
+  reason         String?
+  dueAt          DateTime
+  status         String    @default("Pending")
+  priority       String    @default("Medium")
+  completedAt    DateTime?
+  completedBy    String?
+  ignoredAt      DateTime?
+  ignoredBy      String?
+  snoozedUntil   DateTime?
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lead         Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user         User          @relation("ReminderAssignee", fields: [userId], references: [id])
+  emailMessage EmailMessage? @relation(fields: [emailMessageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, dueAt])
+  @@index([companyId, status])
+  @@index([leadId])
+  @@index([emailMessageId])
+}
+
+// ========== AI 生成日志 ==========
+model AIGenerationLog {
+  id          String   @id @default(uuid())
+  companyId   String
+  userId      String
+  leadId      String?
+  templateId  String?
+  provider    String
+  model       String
+  promptType  String
+  inputPrompt String
+  outputText  String
+  tokensUsed  Int?
+  costCents   Int?
+  durationMs  Int?
+  createdAt   DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@index([provider])
+}
+
+// ========== 搜索任务（Phase 2） ==========
+model SearchTask {
+  id             String    @id @default(uuid())
+  companyId      String
+  createdBy      String
+  keywords       String[]
+  targetCountry  String
+  customerType   String?
+  excludeWords   String[]
+  searchLanguage String    @default("en")
+  maxResults     Int       @default(50)
+  status         String    @default("pending")
+  errorMessage   String?
+  totalFound     Int       @default(0)
+  newLeads       Int       @default(0)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  results SearchResult[]
+
+  @@index([companyId, status])
+}
+
+// ========== 搜索结果 ==========
+model SearchResult {
+  id           String   @id @default(uuid())
+  searchTaskId String
+  leadId       String?
+  title        String
+  url          String
+  snippet      String
+  source       String
+  keyword      String
+  country      String
+  isExportable Boolean?
+  isSupplier   Boolean?
+  aiAnalysis   Json?
+  hasEmail     Boolean  @default(false)
+  status       String   @default("pending_review")
+  collectedAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  task SearchTask @relation(fields: [searchTaskId], references: [id], onDelete: Cascade)
+  lead Lead?      @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([searchTaskId, status])
+}
+
+// ========== 导入任务 ==========
+model ImportTask {
+  id            String    @id @default(uuid())
+  companyId     String
+  createdBy     String
+  fileName      String
+  fileSize      Int
+  totalRows     Int
+  successRows   Int       @default(0)
+  skippedRows   Int       @default(0)
+  errorRows     Int       @default(0)
+  duplicateRows Int       @default(0)
+  fieldMapping  Json
+  status        String    @default("pending")
+  errorFile     String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  errors ImportError[]
+
+  @@index([companyId, createdAt])
+}
+
+// ========== 导入错误 ==========
+model ImportError {
+  id           String   @id @default(uuid())
+  importTaskId String
+  leadId       String?
+  rowNumber    Int
+  fieldName    String
+  errorType    String
+  errorMessage String
+  rawValue     String?
+  createdAt    DateTime @default(now())
+
+  importTask ImportTask @relation(fields: [importTaskId], references: [id], onDelete: Cascade)
+  lead       Lead?      @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([importTaskId])
+}
+
+// ========== 系统设置 ==========
+model SystemSetting {
+  id          String   @id @default(uuid())
+  companyId   String?
+  key         String
+  value       String
+  group       String
+  description String?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, key])
+  @@index([group])
+}
+
+// ========== 审计日志 ==========
+model AuditLog {
+  id         String   @id @default(uuid())
+  companyId  String?
+  userId     String?
+  action     String
+  entityType String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([userId])
+}
+
+// ========== 产品品类 ==========
+model ProductCategory {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  code        String?
+  parentId    String?
+  description String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company            Company             @relation(fields: [companyId], references: [id])
+  parent             ProductCategory?    @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children           ProductCategory[]   @relation("CategoryHierarchy")
+  attributeTemplates AttributeTemplate[]
+  products           Product[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@index([parentId])
+}
+
+// ========== 属性模板 ==========
+model AttributeTemplate {
+  id         String   @id @default(uuid())
+  categoryId String
+  name       String
+  type       AttrType @default(TEXT)
+  options    Json? // SELECT / MULTI_SELECT 的可选值
+  unit       String?
+  required   Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, name])
+  @@index([categoryId])
+}
+
+enum AttrType {
+  TEXT
+  NUMBER
+  SELECT
+  MULTI_SELECT
+  BOOLEAN
+}
+
+// ========== 产品 ==========
+model Product {
+  id          String   @id @default(uuid())
+  companyId   String
+  categoryId  String?
+  sku         String // 产品编号 如 MX-001
+  name        String
+  productCode String? // 产品系列编号
+  material    String? // 材质
+  thickness   String? // 厚度 如 "双面28丝"
+  productType String? // stand_up/zip_lock/eight_side/envelope/express/coffee/freshness/adhesive/gusseted/special
+  description String?
+  basePrice   Decimal  @default(0)
+  currency    String   @default("CNY")
+  attributes  Json     @default("{}")
+  images      String[] @default([])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company             Company              @relation(fields: [companyId], references: [id])
+  category            ProductCategory?     @relation(fields: [categoryId], references: [id])
+  specs               ProductSpec[]
+  customizerTemplates CustomizerTemplate[]
+
+  @@unique([companyId, sku])
+  @@index([companyId, categoryId])
+  @@index([companyId, name])
+  @@index([productCode])
+  @@index([productType])
+}
+
+// ========== Session 管理 ==========
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+}
+
+// ========== 客户置顶 ==========
+model LeadPin {
+  id        String   @id @default(uuid())
+  companyId String
+  leadId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, userId])
+  @@index([companyId, userId])
+  @@index([leadId])
+}
+
+// ========== 统一沟通模型 (Communication Hub) ==========
+
+// 触点 — 邮箱/WhatsApp/电话/LinkedIn 归一化 + 查重
+model ContactPoint {
+  id                 String    @id @default(uuid())
+  companyId          String
+  leadId             String?
+  contactId          String?
+  type               String // email, whatsapp, phone, linkedin
+  originalValue      String
+  normalizedValue    String
+  isVerified         Boolean   @default(false)
+  isPrimary          Boolean   @default(false)
+  verifiedAt         DateTime?
+  verifiedBy         String?
+  verificationMethod String? // manual, dns, smtp, regex
+  language           String? // 联系人偏好语言 ISO 639-1
+  notes              String?
+  avatarUrl          String? // WhatsApp/社交媒体头像 URL
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  lead          Lead?          @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contact       Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  conversations Conversation[]
+
+  // TASK-102A: 统一客户身份 — 反向关系
+  externalIdentities ExternalIdentity[]
+
+  @@unique([companyId, type, normalizedValue])
+  @@index([companyId, type])
+  @@index([normalizedValue])
+  @@index([leadId])
+  @@index([contactId])
+}
+
+// 会话 — 四通道统一对话线程
+model Conversation {
+  id                 String    @id @default(uuid())
+  companyId          String
+  leadId             String?
+  contactPointId     String?
+  channel            String // business_email, marketing_email, whatsapp, website_inquiry
+  isGroup            Boolean?
+  groupStatusSource  String?
+  subject            String?
+  externalThreadId   String? // email thread-id / WhatsApp chat-id / inquiry ref
+  threadKey          String? // 稳定线程唯一键；WhatsApp: whatsapp:<session-db-id>:<external-thread-id>
+  whatsappSessionId  String? // 接待账号 — WhatsApp 会话关联的 WhatsAppSession ID
+  status             String    @default("active") // active, archived, closed
+  lastMessageAt      DateTime?
+  lastMessagePreview String?
+  unreadCount        Int       @default(0)
+  assignedUserId     String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  company      Company                @relation(fields: [companyId], references: [id])
+  lead         Lead?                  @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contactPoint ContactPoint?          @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+  assignedUser User?                  @relation(fields: [assignedUserId], references: [id], onDelete: SetNull)
+  messages     CommunicationMessage[]
+  aiArtifacts  AiArtifact[]
+  voiceCalls   VoiceCall[]
+
+  @@unique([companyId, channel, threadKey], map: "conversation_company_channel_thread_key")
+  @@index([companyId, channel, status])
+  @@index([companyId, leadId])
+  @@index([companyId, lastMessageAt(sort: Desc)])
+  @@index([externalThreadId])
+  @@index([assignedUserId])
+  @@index([whatsappSessionId])
+}
+
+// 沟通消息 — 单条消息（inbound/outbound + 原文/译文/附件/外部ID）
+model CommunicationMessage {
+  id                String    @id @default(uuid())
+  conversationId    String
+  direction         String // inbound, outbound
+  content           String    @db.Text
+  translatedContent String?   @db.Text
+  contentType       String    @default("text") // text, html, template
+  externalMessageId String? // IMAP UID / WhatsApp msg ID / etc.
+  ingestionKey      String?   @unique // scoped channel/session idempotency digest for webhook ingestion
+  fromAddress       String? // sender email or phone
+  toAddress         String? // recipient
+  subject           String?
+  attachmentsMeta   Json? // [{filename, size, mimeType, url}]
+  deliveryStatus    String? // sent, delivered, read, pending, failed
+  sentAt            DateTime?
+  receivedAt        DateTime?
+  readAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  aiArtifacts  AiArtifact[]
+  activities   LeadActivity[]
+
+  @@index([conversationId, createdAt])
+  @@index([externalMessageId])
+  @@index([direction])
+}
+
+// AI 辅助产物 — 翻译/摘要/回复建议/报价字段提取
+model AiArtifact {
+  id                      String    @id @default(uuid())
+  requestKey              String?   @unique
+  companyId               String
+  communicationMessageId  String?
+  conversationId          String?
+  leadId                  String?
+  artifactType            String // translation, summary, reply_suggestion, quote_extraction, next_action
+  assistantOperatorUserId String?
+  assistantThreadId       String?
+  inputContent            String    @db.Text
+  outputContent           String    @db.Text
+  extraData               Json? // e.g. extracted quote fields
+  provider                String?
+  model                   String?
+  status                  String    @default("generated") // generated, accepted, rejected, modified
+  acceptedBy              String?
+  acceptedAt              DateTime?
+  /// SHA-256 only; the raw one-time claim token is returned to the desktop
+  /// process and is never persisted.
+  actionClaimDigest       String?
+  actionClaimedBy         String?
+  actionClaimExpiresAt    DateTime?
+  modifiedOutput          String?   @db.Text
+  rejectedBy              String?
+  rejectedAt              DateTime?
+  rejectionReason         String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  company              Company               @relation(fields: [companyId], references: [id])
+  communicationMessage CommunicationMessage? @relation(fields: [communicationMessageId], references: [id], onDelete: SetNull)
+  conversation         Conversation?         @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  lead                 Lead?                 @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, artifactType, createdAt(sort: Desc)])
+  @@index([companyId, artifactType, assistantOperatorUserId, assistantThreadId, createdAt(sort: Desc)])
+  @@index([communicationMessageId])
+  @@index([conversationId])
+  @@index([leadId])
+  @@index([status])
+  @@index([status, actionClaimExpiresAt])
+}
+
+// ========== Phase 7: WhatsApp Session ==========
+model WhatsAppSession {
+  id             String    @id @default(uuid())
+  companyId      String
+  accountName    String
+  phoneNumber    String?
+  sessionId      String    @unique
+  status         String    @default("pending_qr") // pending_qr / waiting_scan / connected / disconnected
+  qrCode         String?   @db.Text
+  qrCodeExpireAt DateTime?
+  connectedAt    DateTime?
+  disconnectedAt DateTime?
+  lastSeenAt     DateTime?
+  authStatePath  String? // Baileys auth state 目录路径
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([status])
+  @@index([sessionId])
+}
+
+// ========== WhatsApp 群发任务 ==========
+model WhatsAppBroadcastTask {
+  id             String    @id @default(uuid())
+  companyId      String
+  taskName       String
+  accountId      String    @default("default")
+  template       String    @db.Text
+  recipients     String    @db.Text // JSON array
+  recipientCount Int       @default(0)
+  sentCount      Int       @default(0)
+  failedCount    Int       @default(0)
+  status         String    @default("pending") // pending / scheduled / sending / completed / cancelled
+  scheduledAt    DateTime?
+  completedAt    DateTime?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([status])
+  @@index([accountId])
+}
+
+// ========== Phase 7: Product Spec (产品规格) ==========
+model ProductSpec {
+  id             String   @id @default(uuid())
+  productId      String
+  specCode       String? // 规格编号 如 "9*14+3.5"
+  size           String // 规格尺寸 如 "9*14+3.5x14C"
+  widthCm        Float?
+  lengthCm       Float?
+  gussetCm       Float?
+  thicknessCm    String? // 厚度 如 "14C" / "28丝"
+  unitPrice      Decimal  @db.Decimal(10, 4)
+  moq            Int      @default(1) // 最小起订量
+  packPerBundle  Int? // 每扎个数
+  bundleWeightKg Float? // 每扎重量 KG
+  cartonSize     String? // 箱规 如 "55*46*25"
+  cartonLengthCm Float?
+  cartonWidthCm  Float?
+  cartonHeightCm Float?
+  weightPerItem  Float? // 单个重量 G
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([specCode])
+}
+
+// ========== Phase 7: Quote (报价单) ==========
+model Quote {
+  id             String  @id @default(uuid())
+  companyId      String
+  referenceNo    String  @unique
+  type           String  @default("quote") // quote / pi / contract / sample
+  status         String  @default("draft") // draft / pending / approved / sent / accepted / rejected / expired
+  leadId         String?
+  conversationId String?
+  assignedUserId String?
+
+  currency     String   @default("USD")
+  tradeTerms   String?
+  paymentTerms String?
+  deliveryTime String?
+  sampleFee    Decimal? @db.Decimal(10, 2)
+  discount     Decimal  @default(0) @db.Decimal(10, 2)
+  taxRate      Decimal? @db.Decimal(5, 2)
+
+  subtotal    Decimal @default(0) @db.Decimal(12, 2)
+  taxAmount   Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  notes      String?   @db.Text
+  validUntil DateTime?
+  sentAt     DateTime?
+  acceptedAt DateTime?
+
+  aiExtracted  Boolean @default(false)
+  aiArtifactId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company             Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead                Lead?               @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  lineItems           QuoteLineItem[]
+  customizerInquiries CustomizerInquiry[]
+
+  @@index([companyId])
+  @@index([leadId])
+  @@index([status])
+  @@index([type])
+  @@index([referenceNo])
+}
+
+model QuoteLineItem {
+  id             String   @id @default(uuid())
+  quoteId        String
+  productCode    String?
+  productName    String
+  material       String?
+  size           String?
+  thickness      String?
+  color          String?
+  printing       String?
+  quantity       Int
+  unit           String   @default("pcs")
+  unitPrice      Decimal  @db.Decimal(10, 4)
+  totalPrice     Decimal  @db.Decimal(12, 2)
+  productSpecId  String?
+  catalogItemId  String?
+  costPriceCny   Decimal? @db.Decimal(10, 4)
+  sourceCurrency String?
+  fxRate         Decimal? @db.Decimal(10, 4)
+  markup         Decimal? @db.Decimal(8, 4)
+  priceVersion   String?
+  priceSource    String?
+  sortOrder      Int      @default(0)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+  @@index([productCode])
+  @@index([catalogItemId])
+}
+
+// ========== AI Voice Customer Service ==========
+model VoiceCall {
+  id               String    @id @default(uuid())
+  companyId        String
+  leadId           String?
+  conversationId   String?
+  provider         String    @default("livekit")
+  externalCallId   String?
+  channel          String    @default("web_test") // web_test, pstn, whatsapp
+  direction        String    @default("inbound")
+  status           String    @default("queued")
+  locale           String    @default("zh-CN")
+  customerNumber   String?
+  assignedUserId   String?
+  consentStatus    String    @default("pending")
+  recordingEnabled Boolean   @default(false)
+  summary          String?   @db.Text
+  handoffReason    String?
+  handoffContext   Json?
+  startedAt        DateTime?
+  answeredAt       DateTime?
+  endedAt          DateTime?
+  failureCode      String?
+  failureDetail    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead         Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  events       VoiceCallEvent[]
+
+  @@unique([companyId, provider, externalCallId])
+  @@index([companyId, status, createdAt(sort: Desc)])
+  @@index([leadId])
+  @@index([conversationId])
+}
+
+model VoiceCallEvent {
+  id              String   @id @default(uuid())
+  voiceCallId     String
+  eventType       String
+  role            String?
+  content         String?  @db.Text
+  providerEventId String?
+  metadata        Json?
+  occurredAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  voiceCall VoiceCall @relation(fields: [voiceCallId], references: [id], onDelete: Cascade)
+
+  @@unique([voiceCallId, providerEventId])
+  @@index([voiceCallId, occurredAt])
+  @@index([eventType])
+}
+
+// ========== Phase 7: Order (订单) ==========
+model Order {
+  id             String  @id @default(uuid())
+  companyId      String
+  orderNo        String  @unique
+  leadId         String?
+  quoteId        String?
+  assignedUserId String?
+
+  stage String @default("won") // won/sampling/production/qc/shipping/payment/completed/after_sales
+
+  currency    String  @default("USD")
+  totalAmount Decimal @default(0) @db.Decimal(12, 2)
+  paidAmount  Decimal @default(0) @db.Decimal(12, 2)
+
+  deliveryDate  DateTime?
+  shippingTerms String?
+  trackingNo    String?
+
+  notes        String? @db.Text
+  stageHistory Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead    Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([leadId])
+  @@index([stage])
+  @@index([quoteId])
+}
+
+// ========== 定制器: 产品模板 ==========
+model CustomizerTemplate {
+  id           String   @id @default(uuid())
+  companyId    String
+  productId    String?
+  name         String
+  slug         String   @unique
+  description  String?
+  modelUrl     String
+  modelFormat  String   @default("glb")
+  textureSize  Int      @default(2048)
+  unfoldLayout Json
+  basePrice    Decimal  @db.Decimal(10, 4)
+  currency     String   @default("USD")
+  moq          Int      @default(10000)
+  leadTimeDays Int      @default(20)
+  isPublished  Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company     Company                @relation(fields: [companyId], references: [id])
+  product     Product?               @relation(fields: [productId], references: [id])
+  regions     CustomizerRegion[]
+  materials   CustomizerMaterial[]
+  logoEffects CustomizerLogoEffect[]
+  designs     CustomizerDesign[]
+
+  @@index([companyId])
+  @@index([isPublished])
+}
+
+model CustomizerRegion {
+  id         String  @id @default(uuid())
+  templateId String
+  regionId   String
+  label      String
+  uvX        Int
+  uvY        Int
+  uvW        Int
+  uvH        Int
+  unfoldX    Float
+  unfoldY    Float
+  unfoldW    Float
+  unfoldH    Float
+  isEditable Boolean @default(true)
+  sortOrder  Int     @default(0)
+
+  template CustomizerTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+}
+
+model CustomizerMaterial {
+  id            String  @id @default(uuid())
+  templateId    String
+  name          String
+  type          String
+  colorHex      String  @default("#ffffff")
+  textureUrl    String?
+  priceModifier Decimal @default(0) @db.Decimal(10, 4)
+  sortOrder     Int     @default(0)
+
+  template CustomizerTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+}
+
+model CustomizerLogoEffect {
+  id            String  @id @default(uuid())
+  templateId    String
+  name          String
+  label         String
+  previewUrl    String?
+  pricePerColor Decimal @default(0) @db.Decimal(10, 4)
+  minColors     Int     @default(1)
+  sortOrder     Int     @default(0)
+
+  template CustomizerTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+}
+
+model CustomizerDesign {
+  id            String    @id @default(uuid())
+  companyId     String
+  templateId    String
+  leadId        String?
+  shareCode     String    @unique
+  customerName  String?
+  customerEmail String?
+  customerPhone String?
+  config        Json
+  thumbnailUrl  String?
+  status        String    @default("draft")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  submittedAt   DateTime?
+
+  company   Company             @relation(fields: [companyId], references: [id])
+  template  CustomizerTemplate  @relation(fields: [templateId], references: [id])
+  lead      Lead?               @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  inquiries CustomizerInquiry[]
+
+  @@index([companyId])
+  @@index([templateId])
+  @@index([leadId])
+  @@index([status])
+  @@index([shareCode])
+}
+
+model CustomizerInquiry {
+  id         String   @id @default(uuid())
+  designId   String
+  quoteId    String?
+  quantity   Int
+  unitPrice  Decimal? @db.Decimal(10, 4)
+  totalPrice Decimal? @db.Decimal(12, 2)
+  currency   String   @default("USD")
+  status     String   @default("new")
+  notes      String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  design CustomizerDesign @relation(fields: [designId], references: [id], onDelete: Cascade)
+  quote  Quote?           @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+
+  @@index([designId])
+  @@index([status])
+}
+
+// ========== TASK-102A: 统一客户身份模型 ==========
+
+// 外部身份 — 跨渠道归一化身份锚点
+model ExternalIdentity {
+  id             String        @id @default(cuid())
+  companyId      String
+  provider       String
+  externalId     String
+  identityStatus String        @default("unresolved")
+  rawDisplayName String?
+  rawPhone       String?
+  metadata       Json?
+  leadId         String?
+  contactId      String?
+  contactPointId String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  company        Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead           Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contact        Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactPoint   ContactPoint? @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, provider, externalId])
+  @@index([companyId, identityStatus])
+}
+
+// 身份匹配候选 — 潜在的同一客户对
+model IdentityMatchCandidate {
+  id           String   @id @default(cuid())
+  companyId    String
+  sourceLeadId String
+  targetLeadId String
+  score        Int
+  reasons      Json
+  status       String   @default("pending")
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sourceLead   Lead     @relation("MatchSource", fields: [sourceLeadId], references: [id], onDelete: Cascade)
+  targetLead   Lead     @relation("MatchTarget", fields: [targetLeadId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, sourceLeadId, targetLeadId])
+  @@index([companyId, status, score])
+}
+
+// 身份排除 — 用户明确判定非同一客户
+model IdentityExclusion {
+  id          String   @id @default(cuid())
+  companyId   String
+  leftLeadId  String
+  rightLeadId String
+  reason      String?
+  createdById String
+  createdAt   DateTime @default(now())
+  leftLead    Lead     @relation("ExclusionLeft", fields: [leftLeadId], references: [id], onDelete: Cascade)
+  rightLead   Lead     @relation("ExclusionRight", fields: [rightLeadId], references: [id], onDelete: Cascade)
+  Company     Company  @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, leftLeadId, rightLeadId])
+  @@index([companyId])
+}
+
+// 客户合并审计 — 可回滚的合并操作记录
+model CustomerMergeAudit {
+  id            String    @id @default(cuid())
+  companyId     String
+  sourceLeadId  String
+  targetLeadId  String
+  actorId       String
+  beforeState   Json
+  afterState    Json
+  fieldChoices  Json
+  status        String    @default("completed")
+  targetVersion DateTime
+  createdAt     DateTime  @default(now())
+  undoneAt      DateTime?
+  undoneById    String?
+  sourceLead    Lead      @relation("CustomerMergeAuditSource", fields: [sourceLeadId], references: [id], onDelete: Restrict)
+  targetLead    Lead      @relation("CustomerMergeAuditTarget", fields: [targetLeadId], references: [id], onDelete: Restrict)
+  Company       Company   @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, targetLeadId, createdAt])
+}

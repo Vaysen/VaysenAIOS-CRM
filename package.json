@@ -1,0 +1,44 @@
+{
+  "name": "vaysen-ai-crm",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Vaysen AI CRM - 外贸 B2B 智能客户开发 CRM",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=20 <21",
+    "npm": ">=10 <11"
+  },
+  "scripts": {
+    "dev:backend": "cd backend && npm run start:dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "start:backend": "cd backend && npm run start:prod",
+    "start:worker:email-compose": "cd backend && npm run start:worker:email-compose",
+    "start:worker:email-validate": "cd backend && npm run start:worker:email-validate",
+    "start:worker:email-send": "cd backend && npm run start:worker:email-send",
+    "start:worker:prospect-search": "cd backend && npm run start:worker:prospect-search",
+    "start:worker:deep-research": "cd backend && npm run start:worker:deep-research",
+    "start:worker:maintenance": "cd backend && npm run start:worker:maintenance",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "db:migrate": "cd backend && npx prisma migrate dev",
+    "db:seed": "cd backend && npx prisma db seed",
+    "db:generate": "cd backend && npx prisma generate",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:build": "docker compose build",
+    "install:all": "npm ci && cd electron && npm ci",
+    "verify:baseline": "node scripts/verify-baseline.mjs",
+    "verify:node-engines": "node scripts/verify-node-engine-contract.mjs",
+    "verify:public-release": "node scripts/verify-public-release.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "js-yaml": "^4.1.0",
+    "semver": "7.7.4"
+  }
+}

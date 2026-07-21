@@ -1,0 +1,29 @@
+{
+  "folders": [
+    { "path": ".", "name": "镜雅外贸开发系统" }
+  ],
+  "settings": {
+    "editor.fontSize": 14,
+    "editor.tabSize": 2,
+    "editor.wordWrap": "on",
+    "files.exclude": {
+      "**/node_modules": true,
+      "**/dist": true,
+      "**/.next": true,
+      "**/research-output": true
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    "workbench.colorTheme": "Default Dark+",
+    "workbench.startupEditor": "none"
+  },
+  "extensions": {
+    "recommendations": [
+      "prisma.prisma",
+      "bradlc.vscode-tailwindcss",
+      "ms-vscode.vscode-typescript-next",
+      "esbenp.prettier-vscode",
+      "ms-azuretools.vscode-docker",
+      "github.copilot"
+    ]
+  }
+}

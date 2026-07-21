@@ -1,0 +1,21 @@
+{
+  "extends": ["next/core-web-vitals", "next/typescript"],
+  "plugins": ["security"],
+  "rules": {
+    "security/detect-object-injection": "off",
+    "security/detect-non-literal-regexp": "warn",
+    "security/detect-unsafe-regex": "error",
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-unused-vars": [
+      "warn",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
+    ],
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "CatchClause > BlockStatement[body.length=0]",
+        "message": "Empty catch blocks are not allowed. Log or rethrow the error."
+      }
+    ]
+  }
+}

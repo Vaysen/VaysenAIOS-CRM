@@ -1,0 +1,88 @@
+# =============================================================================
+# vaysen-ai-crm - Docker Compose 开发环境覆盖配置
+# docker-compose 默认会自动加载 docker-compose.yml + docker-compose.override.yml
+# 仅用于本地开发，生产部署时请勿上传此文件或使用 -f 显式指定主配置
+# =============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # PostgreSQL - 开发环境暴露端口到宿主机便于调试
+  # ----------------------------------------------------------------------------
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  # ----------------------------------------------------------------------------
+  # Redis - 开发环境暴露端口到宿主机便于调试
+  # ----------------------------------------------------------------------------
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  # ----------------------------------------------------------------------------
+  # Backend - 开发模式：挂载源码 + 热重载
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      target: builder
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+    ports:
+      - "127.0.0.1:4000:4000"
+      # 调试端口
+      - "127.0.0.1:9229:9229"
+    volumes:
+      # 挂载源代码实现热重载（容器内修改即时生效）
+      - ./backend/src:/app/src
+      - ./backend/prisma:/app/prisma
+      - ./backend/test:/app/test
+      # 排除 node_modules 和 dist，使用容器内构建产物
+      - /app/node_modules
+      - /app/dist
+    command: sh -c "npx prisma generate && npm run start:dev"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # Python 微服务 - 开发环境暴露端口
+  # ----------------------------------------------------------------------------
+  python-service:
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./python-service:/app
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    command: python app.py
+
+  # ----------------------------------------------------------------------------
+  # Frontend - 开发模式：挂载源码 + 热重载
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      target: builder
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:4000/api
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+
+  # ----------------------------------------------------------------------------
+  # Nginx - 开发环境可不启用（直接访问各服务端口）
+  # ----------------------------------------------------------------------------
+  nginx:
+    profiles:
+      - nginx-dev
+    ports:
+      - "127.0.0.1:80:80"
