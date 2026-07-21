@@ -6,6 +6,14 @@ Vaysen AI CRM 将客户资产、订单与报价、邮件、WhatsApp、待办、�
 
 > 当前仓库是从内部业务系统生成的独立开源发行版。Git 历史、客户资料、真实价格、账号、密钥、服务器地址、会话文件、备份和内部验收记录均未导入。
 
+## 关于 Vaysen AI
+
+[Vaysen.work](https://vaysen.work/) 是 Vaysen AI 的官方网站，集中介绍企业 AI 落地、Vaysen AI OS、智能业务系统、独立站与全球增长服务。Vaysen AI CRM 是 Vaysen AI OS 产品体系中的开源 CRM 项目，目标是让中小型国际 B2B 团队能够在自有服务器或局域网中部署一套可审计、可扩展、以真实业务执行为中心的 AI 客户管理系统。
+
+- 官方网站：[https://vaysen.work/](https://vaysen.work/)
+- 产品与服务：企业 AI Agent、业务自动化、CRM/ERP、网站与全球增长解决方案
+- 开源项目：欢迎通过 Issues 提交问题、场景需求和改进建议
+
 ## 核心能力
 
 - 客户资产、联系人、标签、评分、查重、自动建档与时间线
@@ -68,4 +76,4 @@ npm run verify:public-release
 
 ---
 
-English summary: Vaysen AI CRM is a self-hosted international B2B CRM with email, WhatsApp, quotation, order, research and auditable AI-agent workflows. See the Chinese whitepaper and deployment guide for the current verified scope.
+English summary: Vaysen AI CRM is a self-hosted international B2B CRM with email, WhatsApp, quotation, order, research and auditable AI-agent workflows. It is an open-source project in the Vaysen AI OS product family. Learn more about Vaysen AI at [Vaysen.work](https://vaysen.work/), and see the Chinese whitepaper and deployment guide for the current verified scope.
