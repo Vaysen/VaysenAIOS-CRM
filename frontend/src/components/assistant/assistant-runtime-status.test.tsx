@@ -31,7 +31,7 @@ function snapshot(
       pluginReady: channelStatus !== 'NOT_INSTALLED',
       pairingExpiresAt: channelStatus === 'WAITING_SCAN' ? '2026-07-14T14:05:00.000Z' : null,
       binding: channelStatus === 'CONNECTED' ? {
-        displayName: '茶茶', maskedAccount: 'wxid_***821',
+        displayName: '演示管理员', maskedAccount: 'wxid_***821',
         boundAt: '2026-07-14T13:30:00.000Z', lastSeenAt: '2026-07-14T13:59:50.000Z',
       } : undefined,
       errorCode: channelStatus === 'DISCONNECTED' ? 'CHANNEL_HEARTBEAT_STALE' : null,
@@ -191,7 +191,7 @@ describe('assistant runtime status UI', () => {
         onRefresh={onRefresh}
       />,
     );
-    expect(screen.getByText(/茶茶/)).toHaveTextContent('wxid_***821');
+    expect(screen.getByText(/演示管理员/)).toHaveTextContent('wxid_***821');
     fireEvent.click(screen.getByRole('button', { name: '刷新 AI 执行内核状态' }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: /绑定|解绑|扫码/ })).not.toBeInTheDocument();

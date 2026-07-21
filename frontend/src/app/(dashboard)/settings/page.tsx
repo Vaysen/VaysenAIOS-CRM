@@ -434,7 +434,7 @@ export default function SettingsPage() {
         <SectionTitle
           icon={<Bot className="h-5 w-5 text-indigo-600" />}
           title="AI 业务助理执行与负责人微信"
-          subtitle="OpenClaw 作为 JY AI 业务助理的受限执行内核；CRM 仍是权限与业务数据真相源。"
+          subtitle="OpenClaw 作为 Vaysen AI 业务助理的执行内核；CRM 仍是权限与业务数据真相源。"
         />
         <WechatOwnerChannelCard
           companyId={companyId}

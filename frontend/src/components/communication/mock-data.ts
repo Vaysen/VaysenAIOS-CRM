@@ -15,7 +15,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'Hi, we are a cosmetics brand looking for custom printed poly mailers. Can you do full-color printing with our logo?',
     unreadCount: 2,
     lead: { id: 'lead-1', companyName: 'Glow Beauty Inc.', contactName: 'Jessica Miller', country: 'USA', language: 'en' },
-    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
   },
   {
     id: 'conv-2',
@@ -26,7 +26,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'Thanks for the quote. We need the 200gsm kraft paper with twisted handles. When can you ship?',
     unreadCount: 0,
     lead: { id: 'lead-2', companyName: 'EcoPackage Ltd.', contactName: 'Thomas Berg', country: 'Germany', language: 'de' },
-    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
   },
   {
     id: 'conv-3',
@@ -37,7 +37,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'Hola, tienen bolsas para basura biodegradables?',
     unreadCount: 1,
     lead: { id: 'lead-3', companyName: 'Distribuidora Verde SA', contactName: 'Carlos Ruiz', country: 'Mexico', language: 'es' },
-    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
   },
   {
     id: 'conv-4',
@@ -59,7 +59,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'I received the samples, quality looks good. Let me discuss with my team and get back to you.',
     unreadCount: 0,
     lead: { id: 'lead-5', companyName: 'PackRight Supplies', contactName: 'David Chen', country: 'Australia', language: 'en' },
-    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
   },
   {
     id: 'conv-6',

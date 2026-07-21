@@ -25,8 +25,8 @@ export default function LoginPage() {
     <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-sm dark:border-gray-800 dark:bg-gray-950">
       <div className="mb-6 text-center">
         <img src="/logo.png" alt="Vaysen AI CRM" className="mx-auto mb-3 h-16 w-16 rounded-xl object-cover" />
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">示例贸易外贸系统</h1>
-        <p className="mt-2 text-gray-500 dark:text-gray-400">Vaysen AI CRM</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Vaysen AI CRM</h1>
+        <p className="mt-2 text-gray-500 dark:text-gray-400">国际 B2B 智能客户管理与业务助理</p>
       </div>
 
       {error && (

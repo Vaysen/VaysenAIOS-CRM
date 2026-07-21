@@ -91,7 +91,7 @@ export default function DashboardPage() {
       <section className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm text-slate-500">
-            {greeting}，{user?.firstName || '茶茶'}
+            {greeting}，{user?.firstName || '管理员'}
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-950">
             今天的业务驾驶舱

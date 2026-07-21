@@ -7,7 +7,7 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
-  title: 'Vaysen AI CRM — 示例贸易外贸系统',
+  title: 'Vaysen AI CRM — 国际 B2B 智能客户管理系统',
   description: 'Example Trading Company — International B2B Trade Operation System',
 };
 

@@ -39,7 +39,7 @@ const assistantRuntime = {
     pluginReady: true,
     pairingExpiresAt: null,
     binding: {
-      displayName: '茶茶',
+      displayName: '演示管理员',
       maskedAccount: 'wxid_***821',
       boundAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
@@ -84,7 +84,7 @@ async function mockAuthenticatedCrm(
         json: {
           id: 'user-1',
           email: 'admin@example.com',
-          firstName: '茶茶',
+          firstName: '演示管理员',
           lastName: '',
           companies: [
             {
@@ -213,7 +213,7 @@ test.describe('AI 业务助理与真实数据驾驶舱', () => {
     await page.getByLabel('打开 AI 业务助理').click();
     const panel = page.getByRole('region', { name: 'AI 业务助理' });
     await expect(panel).toBeVisible();
-    await expect(panel.getByText('JY AI 业务助理')).toBeVisible();
+    await expect(panel.getByText('Vaysen AI 业务助理')).toBeVisible();
     await expect(panel.getByRole('button', { name: '翻译/回复' })).toBeVisible();
     await expect(panel.getByTestId('assistant-runtime-status')).toHaveCount(0);
     await expect(page.getByTestId('assistant-orb-trigger')).toHaveCount(0);

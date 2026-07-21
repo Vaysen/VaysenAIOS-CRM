@@ -29,7 +29,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
       pluginReady: true,
       pairingExpiresAt: null,
       binding: {
-        displayName: '茶茶',
+        displayName: '演示管理员',
         maskedAccount: 'wxid_***821',
         boundAt: '2026-07-14T13:30:00.000Z',
         lastSeenAt: '2026-07-14T13:59:50.000Z',

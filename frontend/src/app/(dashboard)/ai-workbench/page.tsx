@@ -439,7 +439,7 @@ export default function AiWorkbenchPage() {
                   <Sparkles className="h-6 w-6" />
                 </div>
                 <div>
-                  <p className="font-semibold">JY 助理</p>
+                  <p className="font-semibold">Vaysen AI 助理</p>
                   <p className="text-[10px] text-emerald-300">● 在线 · 业务主管权限</p>
                 </div>
               </div>

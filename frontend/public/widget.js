@@ -64,7 +64,7 @@
   function buildWindowHTML() {
     return [
       '<div class="vaysen-window-header">',
-      '<div class="avatar">JY</div>',
+      '<div class="avatar">VA</div>',
       '<div class="info"><div class="name">示例贸易公司</div><div class="status">在线 · 通常几分钟内回复</div></div>',
       '<button class="close-btn" onclick="this.closest(\'.vaysen-window\').classList.remove(\'open\');document.querySelector(\'.vaysen-bubble\').style.display=\'\'">&times;</button>',
       '</div>',

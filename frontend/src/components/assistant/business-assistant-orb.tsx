@@ -679,7 +679,7 @@ export function BusinessAssistantOrb() {
                 <Bot className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="font-semibold">JY AI 业务助理</h2>
+                <h2 className="font-semibold">Vaysen AI 业务助理</h2>
                 <p className="truncate text-[11px] text-slate-300">
                   业务主管：客户 · 订单 · WhatsApp · 邮件 · 真实回执
                 </p>
