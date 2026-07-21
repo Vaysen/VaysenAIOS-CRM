@@ -24,8 +24,9 @@ jobs:
       - run: npm run verify:public-release
       - run: npm run verify:node-engines
       - run: npm audit --omit=dev --audit-level=critical
-      - run: npm --prefix backend run typecheck
-      - run: npm --prefix frontend run typecheck
+      - run: npm --workspace backend run prisma:generate
+      - run: npm --workspace backend run typecheck
+      - run: npm --workspace frontend run typecheck
       - run: npm --prefix electron ci
       - run: npm --prefix electron audit --omit=dev --audit-level=critical
       - run: npm --prefix electron run typecheck
