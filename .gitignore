@@ -13,6 +13,8 @@
 /**/*.dump
 /*.dump
 /**/data/
+!/backend/src/modules/products/data/
+!/backend/src/modules/products/data/usd-price-catalog.json
 /**/uploads/
 /research-output/
 

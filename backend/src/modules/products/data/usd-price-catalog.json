@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "priceVersion": "demo-usd-v1",
+  "effectiveAt": "2026-01-01",
+  "source": "synthetic-open-source-demo-data",
+  "pricingPolicy": {
+    "sourceCurrency": "USD",
+    "quoteCurrency": "USD",
+    "protectionFxRateCnyPerUsd": 1,
+    "markup": 1,
+    "roundingDecimals": 2,
+    "requiresHumanApproval": true
+  },
+  "sourceSha256": "open-source-demo-no-private-price-source",
+  "items": [
+    {
+      "catalogItemId": "DEMO-0001",
+      "categoryCn": "示例包装产品",
+      "categoryEn": "Sample Packaging Product",
+      "size": "20 x 30 cm",
+      "thickness": "demo",
+      "packageText": "100 pcs / carton",
+      "unit": "pc",
+      "costCny": 0,
+      "saleUsd": 0
+    },
+    {
+      "catalogItemId": "DEMO-0002",
+      "categoryCn": "示例定制产品",
+      "categoryEn": "Sample Custom Product",
+      "size": "custom",
+      "thickness": "custom",
+      "packageText": "MOQ and packing to be configured",
+      "unit": "pc",
+      "costCny": 0,
+      "saleUsd": 0
+    }
+  ],
+  "notice": "Synthetic records only. Replace them with your own approved catalog before generating quotations."
+}
