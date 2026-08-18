@@ -1,4 +1,4 @@
-// Packaging prospect configuration for Example Trading Company.
+// Packaging prospect configuration for Vaysen Packaging.
 // Product wording may be overridden globally through BUSINESS_PRODUCT_FOCUS;
 // the categories define buyer signals instead of locking the worker to one SKU.
 

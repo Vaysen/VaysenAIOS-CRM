@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useAssistantRuntime } from '@/hooks/use-assistant-runtime';
 import { WechatOwnerChannelCard } from '@/components/assistant/wechat-owner-channel-card';
+import { LanConnectionSettings } from '@/components/runtime/lan-connection-settings';
 
 interface CompanyData {
   id: string;
@@ -283,6 +284,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      <LanConnectionSettings inline />
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">系统设置</h2>
@@ -397,7 +399,7 @@ export default function SettingsPage() {
               type="email"
               value={businessEmail}
               onChange={(event) => setBusinessEmail(event.target.value)}
-              placeholder="e.g. chris@example.com"
+              placeholder="e.g. chris@vaysen.com"
               className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
             />
             <p className="mt-1 text-xs text-gray-400">外发活动可使用其他域名，但客户回复会优先指向此邮箱。</p>
@@ -434,7 +436,7 @@ export default function SettingsPage() {
         <SectionTitle
           icon={<Bot className="h-5 w-5 text-indigo-600" />}
           title="AI 业务助理执行与负责人微信"
-          subtitle="OpenClaw 作为 Vaysen AI 业务助理的执行内核；CRM 仍是权限与业务数据真相源。"
+          subtitle="OpenClaw 作为 JY AI 业务助理的受限执行内核；CRM 仍是权限与业务数据真相源。"
         />
         <WechatOwnerChannelCard
           companyId={companyId}

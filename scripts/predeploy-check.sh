@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Vaysen AI CRM — Pre-Deployment Check Script
+# Vaysen Pilot — Pre-Deployment Check Script
 # =============================================================================
 # Usage: ./scripts/predeploy-check.sh
 #
@@ -40,7 +40,7 @@ cleanup() {
 }
 
 echo -e "${YELLOW}============================================${NC}"
-echo -e "${YELLOW} Vaysen AI CRM — Pre-Deployment Check${NC}"
+echo -e "${YELLOW} Vaysen Pilot — Pre-Deployment Check${NC}"
 echo -e "${YELLOW}============================================${NC}"
 echo ""
 echo -e "${YELLOW}This script will stop existing containers, rebuild,${NC}"

@@ -42,11 +42,22 @@ import { CustomizerModule } from './modules/customizer/customizer.module';
 import { RealtimeModule } from './common/realtime/realtime.module';
 // TASK-102D: 注册客户身份解析模块,供 WhatsApp 等渠道调用 IdentityResolutionService
 import { CustomerIdentityModule } from './modules/customer-identity/customer-identity.module';
+import { CustomerAssetsModule } from './modules/customer-assets/customer-assets.module';
 import { VoiceCustomerServiceModule } from './modules/voice-customer-service/voice-customer-service.module';
 import { AgentModule } from './modules/agent/agent.module';
 import { BrevoInboundModule } from './modules/brevo-inbound/brevo-inbound.module';
 import { OpenClawModule } from './modules/openclaw/openclaw.module';
 import { OwnerNotificationsModule } from './modules/owner-notifications/owner-notifications.module';
+import { ImapInboundModule } from './modules/imap-inbound/imap-inbound.module';
+import { AssistantToolModule } from './modules/assistant-tools/assistant-tool.module';
+import { OpportunitiesModule } from './modules/opportunities/opportunities.module';
+import { SalesSequencesModule } from './modules/sales-sequences/sales-sequences.module';
+import { CustomerFactsModule } from './modules/customer-facts/customer-facts.module';
+import { MarketingCampaignsModule } from './modules/marketing-campaigns/marketing-campaigns.module';
+import { SalesDeliveryModule } from './modules/sales-delivery/sales-delivery.module';
+import { AudienceSegmentsModule } from './modules/audience-segments/audience-segments.module';
+import { DailyDiagnosisModule } from './modules/daily-diagnosis/daily-diagnosis.module';
+import { ExchangeRatesModule } from './modules/exchange-rates/exchange-rates.module';
 
 @Module({
   imports: [
@@ -83,6 +94,7 @@ import { OwnerNotificationsModule } from './modules/owner-notifications/owner-no
     EmailEventsSyncModule,
     WhatsAppModule,
     CustomerIdentityModule,
+    CustomerAssetsModule,
     AiCommunicationsModule,
     QuotesModule,
     OrdersModule,
@@ -93,7 +105,17 @@ import { OwnerNotificationsModule } from './modules/owner-notifications/owner-no
     AgentModule,
     OpenClawModule,
     OwnerNotificationsModule,
+    ImapInboundModule,
+    AssistantToolModule,
     BrevoInboundModule,
+    OpportunitiesModule,
+    SalesSequencesModule,
+    CustomerFactsModule,
+    MarketingCampaignsModule,
+    SalesDeliveryModule,
+    AudienceSegmentsModule,
+    DailyDiagnosisModule,
+    ExchangeRatesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

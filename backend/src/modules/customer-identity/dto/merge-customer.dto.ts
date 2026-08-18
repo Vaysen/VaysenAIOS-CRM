@@ -50,6 +50,8 @@ export interface MergeCustomerCommand {
  * - contactCount / contactPointCount / conversationCount: 关系迁移规模, 帮助评估影响。
  */
 export interface MergePreview {
+  /** 预览时目标客户的版本；确认合并必须原样回传。 */
+  targetUpdatedAt: string;
   fieldDiffs: Array<{
     field: string;
     sourceValue: unknown;

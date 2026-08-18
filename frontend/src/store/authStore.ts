@@ -38,7 +38,7 @@ interface AuthState {
   fetchProfile: () => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
-  setAuth: (user: User, token: string, refreshToken: string) => void;
+  setAuth: (user: User, token: string, refreshToken: string | null) => void;
   setActiveCompany: (companyId: string) => void;
 }
 
@@ -59,6 +59,23 @@ function clearAuthCookie() {
   }
 }
 
+function isElectronClient() {
+  return typeof window !== 'undefined' && !!window.electronAPI;
+}
+
+function storeRefreshToken(_refreshToken?: string | null) {
+  // Browser tokens live in HttpOnly cookies; Electron tokens are transferred
+  // immediately to main-process safeStorage and never persist in the renderer.
+  localStorage.removeItem('refresh_token');
+}
+
+// One-time migration for clients upgraded from releases that persisted the
+// refresh token in renderer storage. Run on module initialization, before any
+// auth action or route guard can observe the legacy credential.
+if (typeof window !== 'undefined') {
+  localStorage.removeItem('refresh_token');
+}
+
 function resolveActiveCompanyId(user: User, preferredCompanyId?: string | null): string | null {
   const forcedSlug = getForcedCompanySlug();
   const forcedCompany = forcedSlug
@@ -71,7 +88,10 @@ function resolveActiveCompanyId(user: User, preferredCompanyId?: string | null):
     : false;
   if (canUsePreferred && preferredCompanyId) return preferredCompanyId;
 
-  return user.companies?.find((company) => company.isDefault)?.id || user.companies?.[0]?.id || null;
+  const defaults = user.companies?.filter((company) => company.isDefault) || [];
+  if (defaults.length === 1) return defaults[0].id;
+  if (user.companies?.length === 1) return user.companies[0].id;
+  return null;
 }
 
 function withActiveCompanyFirst(user: User, activeCompanyId: string | null): User {
@@ -88,8 +108,7 @@ function withActiveCompanyFirst(user: User, activeCompanyId: string | null): Use
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   token: typeof window !== 'undefined' ? localStorage.getItem('access_token') : null,
-  refreshToken:
-    typeof window !== 'undefined' ? localStorage.getItem('refresh_token') : null,
+  refreshToken: null,
   activeCompanyId:
     typeof window !== 'undefined' ? localStorage.getItem('active_company_id') : null,
   isAuthenticated: false,
@@ -98,36 +117,53 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   setAuth: (user, token, refreshToken) => {
     localStorage.setItem('access_token', token);
-    localStorage.setItem('refresh_token', refreshToken);
+    storeRefreshToken(refreshToken);
     setAuthCookie(token);
     const activeCompanyId = resolveActiveCompanyId(user, localStorage.getItem('active_company_id'));
     if (activeCompanyId) {
       localStorage.setItem('active_company_id', activeCompanyId);
+    } else {
+      localStorage.removeItem('active_company_id');
     }
     // Electron 环境：同步 token 到 safeStorage（供主进程 pushToBackend 使用）
-    if (typeof window !== 'undefined' && window.electronAPI) {
+    if (refreshToken && typeof window !== 'undefined' && window.electronAPI) {
       window.electronAPI.auth.setToken(token, refreshToken).catch((error) => { console.error('[Frontend] background operation failed:', error); });
       if (activeCompanyId) {
         window.electronAPI.auth.setCompany(activeCompanyId).catch((error) => { console.error('[Frontend] background operation failed:', error); });
       }
     }
-    set({ user: withActiveCompanyFirst(user, activeCompanyId), token, refreshToken, activeCompanyId, isAuthenticated: true, error: null });
+    set({
+      user: withActiveCompanyFirst(user, activeCompanyId),
+      token,
+      refreshToken: isElectronClient() ? null : refreshToken,
+      activeCompanyId,
+      isAuthenticated: true,
+      error: null,
+    });
   },
 
   login: async (username, password) => {
     set({ isLoading: true, error: null });
     try {
-      const res = await api.post('/auth/login', { email: username, password });
+      const res = await api.post(
+        '/auth/login',
+        { email: username, password },
+        isElectronClient()
+          ? { headers: { 'X-Refresh-Token-Mode': 'body' } }
+          : undefined,
+      );
       const { accessToken, refreshToken, user } = res.data;
       localStorage.setItem('access_token', accessToken);
-      localStorage.setItem('refresh_token', refreshToken);
+      storeRefreshToken(refreshToken);
       setAuthCookie(accessToken);
       const activeCompanyId = resolveActiveCompanyId(user, localStorage.getItem('active_company_id'));
       if (activeCompanyId) {
         localStorage.setItem('active_company_id', activeCompanyId);
+      } else {
+        localStorage.removeItem('active_company_id');
       }
       // Electron 环境：同步 token 到 safeStorage
-      if (typeof window !== 'undefined' && window.electronAPI) {
+      if (refreshToken && typeof window !== 'undefined' && window.electronAPI) {
         window.electronAPI.auth.setToken(accessToken, refreshToken).catch((error) => { console.error('[Frontend] background operation failed:', error); });
         if (activeCompanyId) {
           window.electronAPI.auth.setCompany(activeCompanyId).catch((error) => { console.error('[Frontend] background operation failed:', error); });
@@ -136,7 +172,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         user: withActiveCompanyFirst(user, activeCompanyId),
         token: accessToken,
-        refreshToken,
+        refreshToken: isElectronClient() ? null : refreshToken,
         activeCompanyId,
         isAuthenticated: true,
         isLoading: false,
@@ -153,25 +189,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   register: async (email, password, firstName, lastName, companyName) => {
     set({ isLoading: true, error: null });
     try {
-      const res = await api.post('/auth/register', {
-        email,
-        password,
-        firstName,
-        lastName,
-        companyName,
-      });
+      const res = await api.post(
+        '/auth/register',
+        { email, password, firstName, lastName, companyName },
+        isElectronClient()
+          ? { headers: { 'X-Refresh-Token-Mode': 'body' } }
+          : undefined,
+      );
       const { accessToken, refreshToken, user } = res.data;
       localStorage.setItem('access_token', accessToken);
-      localStorage.setItem('refresh_token', refreshToken);
+      storeRefreshToken(refreshToken);
       setAuthCookie(accessToken);
       const activeCompanyId = resolveActiveCompanyId(user);
       if (activeCompanyId) {
         localStorage.setItem('active_company_id', activeCompanyId);
+      } else {
+        localStorage.removeItem('active_company_id');
+      }
+      if (refreshToken && typeof window !== 'undefined' && window.electronAPI) {
+        await window.electronAPI.auth.setToken(accessToken, refreshToken);
       }
       set({
         user: withActiveCompanyFirst(user, activeCompanyId),
         token: accessToken,
-        refreshToken,
+        refreshToken: isElectronClient() ? null : refreshToken,
         activeCompanyId,
         isAuthenticated: true,
         isLoading: false,
@@ -209,11 +250,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const activeCompanyId = resolveActiveCompanyId(res.data, current);
       if (activeCompanyId) {
         localStorage.setItem('active_company_id', activeCompanyId);
+      } else {
+        localStorage.removeItem('active_company_id');
       }
       set({ user: withActiveCompanyFirst(res.data, activeCompanyId), activeCompanyId, isAuthenticated: true });
     } catch {
       localStorage.removeItem('access_token');
       localStorage.removeItem('refresh_token');
+      localStorage.removeItem('active_company_id');
       clearAuthCookie();
       set({
         user: null,
@@ -227,13 +271,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     try {
-      const token = get().refreshToken;
-      await api.post('/auth/logout', { refreshToken: token });
+      if (typeof window !== 'undefined' && window.electronAPI) {
+        await window.electronAPI.auth.logoutSession();
+      } else {
+        await api.post('/auth/logout', {});
+      }
     } catch (err) {
       console.error('[logout] 退出请求失败（已忽略）:', err);
     }
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
+    localStorage.removeItem('active_company_id');
     clearAuthCookie();
     // Electron 环境：清除 safeStorage 中的 token
     if (typeof window !== 'undefined' && window.electronAPI) {
@@ -252,8 +300,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   clearError: () => set({ error: null }),
   setActiveCompany: (companyId) => {
     if (getForcedCompanySlug()) return;
-    localStorage.setItem('active_company_id', companyId);
     const user = get().user;
+    if (!user?.companies?.some((company) => company.id === companyId)) return;
+    localStorage.setItem('active_company_id', companyId);
     set({ activeCompanyId: companyId, user: user ? withActiveCompanyFirst(user, companyId) : user });
     if (typeof window !== 'undefined') {
       window.location.reload();

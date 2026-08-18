@@ -6,7 +6,9 @@ describe('external lead archive policy', () => {
   const currentUser = {
     id: 'admin-1',
     email: 'admin@example.com',
-    companies: [{ id: 'company-1', name: 'Example Trading Company', role: 'company_admin' }],
+    activeCompanyId: 'company-1',
+    activeCompany: { id: 'company-1', name: 'Vaysen Packaging', role: 'company_admin' },
+    companies: [{ id: 'company-1', name: 'Vaysen Packaging', role: 'company_admin' }],
   };
 
   const createService = () => new LeadsService(

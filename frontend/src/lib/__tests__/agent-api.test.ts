@@ -38,6 +38,8 @@ function chatTurn(overrides: Record<string, unknown> = {}) {
     businessStatus: 'SUCCEEDED',
     responseKind: 'OPENCLAW_TOOL_RESULT',
     agentRunId: '22222222-2222-4222-8222-222222222222',
+    intent: 'ACTION',
+    diagnostics: null,
     toolReceipts: [
       {
         requestId: 'a'.repeat(64),
@@ -176,6 +178,60 @@ describe('agent API fail-closed contract', () => {
       },
     }));
     expect(parsed.actionProposal?.kind).toBe('SEND_WHATSAPP_TEXT');
+  });
+
+  it('accepts a customer action review only as a simulation-only approval card', () => {
+    const parsed = parseAssistantChatTurn(chatTurn({
+      responseKind: 'CHAT',
+      actionStatus: 'REQUIRES_CONFIRMATION',
+      businessStatus: null,
+      agentRunId: null,
+      toolReceipts: [],
+      actionProposal: {
+        kind: 'CUSTOMER_ACTION_REVIEW',
+        status: 'REQUIRES_CONFIRMATION',
+        expiresAt: '2026-07-17T12:15:00.000Z',
+        instruction: 'Create a follow-up task tomorrow',
+        target: {
+          leadId: '33333333-3333-4333-8333-333333333333',
+          name: 'Example Buyer',
+        },
+        safety: {
+          automaticSend: false,
+          requiresHumanConfirmation: true,
+          externalSend: false,
+          execution: 'SIMULATION_ONLY',
+        },
+      },
+    }));
+
+    expect(parsed.actionProposal?.kind).toBe('CUSTOMER_ACTION_REVIEW');
+    expect(parsed.actionProposal?.safety.automaticSend).toBe(false);
+  });
+
+  it('preserves allowlisted intent and diagnostics while rejecting extra diagnostic fields', () => {
+    const diagnostics = {
+      intent: 'INSIGHT',
+      responseSource: 'openclaw_gateway',
+      model: 'openclaw/stable',
+      latencyMs: 42,
+      tools: ['crm.customer_get'],
+      approvalReceipt: 'a'.repeat(64),
+      qualityStatus: 'RETRIED_PASSED',
+      qualityRetryCount: 1,
+    };
+    const parsed = parseAssistantChatTurn(chatTurn({ intent: 'INSIGHT', diagnostics }));
+    expect(parsed.intent).toBe('INSIGHT');
+    expect(parsed.diagnostics).toEqual(diagnostics);
+
+    expect(() => parseAssistantChatTurn(chatTurn({
+      intent: 'INSIGHT',
+      diagnostics: { ...diagnostics, secretPrompt: 'do not expose' },
+    }))).toThrow('AI 对话返回格式无效');
+    expect(() => parseAssistantChatTurn(chatTurn({
+      intent: 'ASK',
+      diagnostics,
+    }))).toThrow('AI 对话返回格式无效');
   });
 
   it('fails closed for an unknown response kind or malformed tool receipt', () => {
@@ -433,7 +489,7 @@ describe('agent API fail-closed contract', () => {
           updatedAt: '2026-07-15T00:59:00.000Z',
         },
         target: {
-          name: 'Sample Buyer',
+          name: 'AcmeCorp',
           phone: '+8613800138000',
           conversationId: '33333333-3333-4333-8333-333333333333',
         },

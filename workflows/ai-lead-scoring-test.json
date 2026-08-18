@@ -45,7 +45,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $env.ZHIPU_MODEL, messages: [{ role: 'system', content: 'You score B2B export leads for Example Trading Company, a supplier of poly mailers, kraft paper bags, garbage bags, zip-lock bags and customizable flexible packaging. Return strict JSON only with keys: fit_score, intent_level, target_market, assigned_market, tags, summary, next_action.' }, { role: 'user', content: JSON.stringify($json) }], stream: false }) }}"
+        "jsonBody": "={{ JSON.stringify({ model: $env.ZHIPU_MODEL, messages: [{ role: 'system', content: 'You score B2B export leads for Vaysen Packaging, a supplier of poly mailers, kraft paper bags, garbage bags, zip-lock bags and customizable flexible packaging. Return strict JSON only with keys: fit_score, intent_level, target_market, assigned_market, tags, summary, next_action.' }, { role: 'user', content: JSON.stringify($json) }], stream: false }) }}"
       },
       "id": "zhipu-score",
       "name": "Zhipu GLM Score",

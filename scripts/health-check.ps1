@@ -7,7 +7,7 @@ $checks = @(
   @{ Name = "Reacher"; Url = "http://127.0.0.1:18080" }
 )
 
-Write-Host "== Vaysen AI CRM health check ==" -ForegroundColor Cyan
+Write-Host "== Vaysen health check ==" -ForegroundColor Cyan
 
 foreach ($check in $checks) {
   try {

@@ -1,15 +1,32 @@
 import {
-  Injectable,
-  UnauthorizedException,
-  ConflictException,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import {
+  createHash,
+  randomBytes,
+  timingSafeEqual,
+} from 'crypto';
 import { v4 as uuid } from 'uuid';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { InitializeAdminDto } from './dto/initialize-admin.dto';
+
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const INITIALIZATION_ID = 'initial-admin';
+
+type TokenPair = {
+  accessToken: string;
+  refreshToken: string;
+};
 
 @Injectable()
 export class AuthService {
@@ -25,18 +42,14 @@ export class AuthService {
       where: { email: normalizedLoginName },
       include: {
         companies: {
-          where: { isActive: true },
+          where: { isActive: true, company: { isActive: true } },
           include: { company: true, role: true },
         },
       },
     });
 
-    if (!user || user.deletedAt) {
+    if (!user || user.deletedAt || !user.isActive) {
       throw new UnauthorizedException('Invalid username or password');
-    }
-
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
     }
 
     const passwordValid = await bcrypt.compare(dto.password, user.passwordHash);
@@ -50,114 +63,58 @@ export class AuthService {
     });
 
     const tokens = await this.generateTokens(user.id, user.email);
-
-    return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresIn: 900,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        companies: user.companies.map((r) => ({
-          id: r.company.id,
-          name: r.company.name,
-          slug: r.company.slug,
-          role: r.role.name,
-          isDefault: r.isDefault,
-        })),
-      },
-    };
+    return this.authResult(user, tokens);
   }
 
   async register(dto: RegisterDto) {
-    const normalizedEmail = dto.email.toLowerCase().trim();
-
-    const existing = await this.prisma.user.findUnique({
-      where: { email: normalizedEmail },
-    });
-    if (existing) {
-      throw new ConflictException('Username already registered');
+    if (process.env.ALLOW_PUBLIC_REGISTRATION !== 'true') {
+      throw new ForbiddenException(
+        'Public registration is disabled; ask a company administrator to create your account',
+      );
     }
+    return this.createCompanyAdministrator(dto);
+  }
 
+  async initialize(dto: InitializeAdminDto) {
+    this.assertSetupKey(dto.setupKey);
+
+    const normalizedEmail = dto.email.toLowerCase().trim();
     const passwordHash = await bcrypt.hash(dto.password, 12);
 
-    const user = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.user.create({
-        data: {
-          email: normalizedEmail,
+    let created: Awaited<ReturnType<AuthService['createInitialAdministrator']>>;
+    try {
+      created = await this.prisma.$transaction(
+        (tx) => this.createInitialAdministrator(
+          tx,
+          dto,
+          normalizedEmail,
           passwordHash,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          phone: dto.phone,
-        },
-      });
-
-      let company: { id: string; slug: string; name: string };
-      let roleName = 'company_admin';
-
-      if (dto.companyName) {
-        const slug = dto.companyName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, '')
-          + '-' + u.id.substring(0, 8);
-
-        company = await tx.company.create({
-          data: {
-            name: dto.companyName,
-            slug,
-          },
-        });
-      } else {
-        const slug = 'personal-' + u.id.substring(0, 8);
-        company = await tx.company.create({
-          data: {
-            name: `${dto.firstName} ${dto.lastName}'s Workspace`,
-            slug,
-          },
-        });
-        roleName = 'company_admin';
+        ),
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      const code = (error as { code?: string })?.code;
+      if (code === 'P2002') {
+        throw new ConflictException('Initial administrator setup has already completed');
       }
+      throw error;
+    }
 
-      const role = await tx.role.findUnique({ where: { name: roleName } });
-      if (!role) throw new BadRequestException('Default role not found');
-
-      await tx.userCompanyRelation.create({
-        data: {
-          userId: u.id,
-          companyId: company.id,
-          roleId: role.id,
+    const tokens = await this.generateTokens(
+      created.user.id,
+      created.user.email,
+    );
+    return this.authResult(
+      {
+        ...created.user,
+        companies: [{
+          company: created.company,
+          role: created.role,
           isDefault: true,
-        },
-      });
-
-      return { user: u, company, role };
-    });
-
-    const tokens = await this.generateTokens(user.user.id, user.user.email);
-
-    return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresIn: 900,
-      user: {
-        id: user.user.id,
-        email: user.user.email,
-        firstName: user.user.firstName,
-        lastName: user.user.lastName,
-        companies: [
-          {
-            id: user.company.id,
-            name: user.company.name,
-            slug: user.company.slug,
-            role: user.role.name,
-            isDefault: true,
-          },
-        ],
+        }],
       },
-    };
+      tokens,
+    );
   }
 
   async refresh(refreshToken: string) {
@@ -165,32 +122,98 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token required');
     }
 
-    const stored = await this.prisma.refreshToken.findUnique({
-      where: { token: refreshToken },
-    });
+    const tokenHash = this.hashRefreshToken(refreshToken);
+    const nextRefreshToken = this.newRefreshToken();
+    const nextTokenHash = this.hashRefreshToken(nextRefreshToken);
+    const now = new Date();
 
-    if (!stored || stored.isRevoked || stored.expiresAt < new Date()) {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+    const rotate = () => this.prisma.$transaction(async (tx) => {
+      const stored = await tx.refreshToken.findUnique({
+        where: { tokenHash },
+      });
+      if (!stored) return { status: 'invalid' as const };
+
+      if (stored.consumedAt || stored.revokedAt) {
+        await tx.refreshToken.updateMany({
+          where: { familyId: stored.familyId, revokedAt: null },
+          data: { revokedAt: now },
+        });
+        return { status: 'reused' as const };
+      }
+
+      if (stored.expiresAt <= now) {
+        await tx.refreshToken.updateMany({
+          where: { familyId: stored.familyId, revokedAt: null },
+          data: { revokedAt: now },
+        });
+        return { status: 'expired' as const };
+      }
+
+      const claimed = await tx.refreshToken.updateMany({
+        where: {
+          id: stored.id,
+          consumedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { consumedAt: now },
+      });
+      if (claimed.count !== 1) {
+        await tx.refreshToken.updateMany({
+          where: { familyId: stored.familyId, revokedAt: null },
+          data: { revokedAt: now },
+        });
+        return { status: 'reused' as const };
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: stored.userId },
+      });
+      if (!user || !user.isActive || user.deletedAt) {
+        await tx.refreshToken.updateMany({
+          where: { familyId: stored.familyId, revokedAt: null },
+          data: { revokedAt: now },
+        });
+        return { status: 'invalid' as const };
+      }
+
+      const replacement = await tx.refreshToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: nextTokenHash,
+          familyId: stored.familyId,
+          expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS),
+        },
+      });
+      await tx.refreshToken.update({
+        where: { id: stored.id },
+        data: { replacedById: replacement.id },
+      });
+
+      return { status: 'ok' as const, user };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+    let outcome: Awaited<ReturnType<typeof rotate>>;
+    try {
+      outcome = await rotate();
+    } catch (error) {
+      if ((error as { code?: string })?.code !== 'P2034') throw error;
+      // A concurrent refresh won the claim. Retrying observes consumedAt and
+      // revokes the complete family as a replay response.
+      outcome = await rotate();
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
-      data: { isRevoked: true },
-    });
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: stored.userId },
-    });
-
-    if (!user || !user.isActive || user.deletedAt) {
-      throw new UnauthorizedException('User not found or inactive');
+    if (outcome.status !== 'ok') {
+      throw new UnauthorizedException(
+        outcome.status === 'reused'
+          ? 'Refresh token reuse detected; session revoked'
+          : 'Invalid or expired refresh token',
+      );
     }
-
-    const tokens = await this.generateTokens(user.id, user.email);
 
     return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      accessToken: this.signAccessToken(outcome.user.id, outcome.user.email),
+      refreshToken: nextRefreshToken,
       expiresIn: 900,
     };
   }
@@ -200,7 +223,7 @@ export class AuthService {
       where: { id: userId },
       include: {
         companies: {
-          where: { isActive: true },
+          where: { isActive: true, company: { isActive: true } },
           include: { company: true, role: true },
         },
       },
@@ -220,43 +243,238 @@ export class AuthService {
       isEmailVerified: user.isEmailVerified,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
-      companies: user.companies.map((r) => ({
-        id: r.company.id,
-        name: r.company.name,
-        slug: r.company.slug,
-        role: r.role.name,
-        isDefault: r.isDefault,
-      })),
+      companies: this.mapCompanies(user.companies),
     };
   }
 
   async logout(userId: string, refreshToken?: string) {
     if (refreshToken) {
-      await this.prisma.refreshToken.updateMany({
-        where: { token: refreshToken, userId },
-        data: { isRevoked: true },
+      const stored = await this.prisma.refreshToken.findUnique({
+        where: { tokenHash: this.hashRefreshToken(refreshToken) },
+        select: { familyId: true, userId: true },
       });
+      if (stored?.userId === userId) {
+        await this.prisma.refreshToken.updateMany({
+          where: { familyId: stored.familyId, userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      }
     }
     return { message: 'Logged out successfully' };
   }
 
-  private async generateTokens(userId: string, email: string) {
-    const payload = { sub: userId, email };
+  private async createCompanyAdministrator(dto: RegisterDto) {
+    const normalizedEmail = dto.email.toLowerCase().trim();
+    const existing = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+    if (existing) {
+      throw new ConflictException('Username already registered');
+    }
 
-    const accessToken = this.jwtService.sign(payload, {
-      expiresIn: process.env.JWT_EXPIRATION || '15m',
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const created = await this.prisma.$transaction(async (tx) => {
+      const role = await tx.role.findUnique({ where: { name: 'company_admin' } });
+      if (!role) throw new BadRequestException('Default role not found');
+
+      const user = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          passwordHash,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          phone: dto.phone,
+        },
+      });
+      const company = await tx.company.create({
+        data: {
+          name: dto.companyName
+            || `${dto.firstName} ${dto.lastName}'s Workspace`,
+          slug: this.companySlug(dto.companyName || 'personal', user.id),
+        },
+      });
+      await tx.userCompanyRelation.create({
+        data: {
+          userId: user.id,
+          companyId: company.id,
+          roleId: role.id,
+          isDefault: true,
+        },
+      });
+      return { user, company, role };
     });
 
-    const refreshToken = uuid() + '-' + uuid();
+    const tokens = await this.generateTokens(
+      created.user.id,
+      created.user.email,
+    );
+    return this.authResult(
+      {
+        ...created.user,
+        companies: [{
+          company: created.company,
+          role: created.role,
+          isDefault: true,
+        }],
+      },
+      tokens,
+    );
+  }
 
-    await this.prisma.refreshToken.create({
+  private async createInitialAdministrator(
+    tx: Prisma.TransactionClient,
+    dto: InitializeAdminDto,
+    normalizedEmail: string,
+    passwordHash: string,
+  ) {
+    await tx.deploymentInitialization.create({
       data: {
-        userId,
-        token: refreshToken,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        id: INITIALIZATION_ID,
+        companyId: 'pending',
+        initializedByUserId: 'pending',
       },
     });
 
-    return { accessToken, refreshToken };
+    const [userCount, companyCount] = await Promise.all([
+      tx.user.count(),
+      tx.company.count(),
+    ]);
+    if (userCount !== 0 || companyCount !== 0) {
+      throw new ConflictException(
+        'Initialization requires a new database with no users or companies',
+      );
+    }
+
+    const role = await tx.role.findUnique({ where: { name: 'company_admin' } });
+    if (!role) throw new BadRequestException('Default role not found');
+
+    const user = await tx.user.create({
+      data: {
+        email: normalizedEmail,
+        passwordHash,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+      },
+    });
+    const company = await tx.company.create({
+      data: {
+        name: dto.companyName,
+        slug: this.companySlug(dto.companyName, user.id),
+      },
+    });
+    await tx.userCompanyRelation.create({
+      data: {
+        userId: user.id,
+        companyId: company.id,
+        roleId: role.id,
+        isDefault: true,
+      },
+    });
+    await tx.deploymentInitialization.update({
+      where: { id: INITIALIZATION_ID },
+      data: {
+        companyId: company.id,
+        initializedByUserId: user.id,
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        companyId: company.id,
+        userId: user.id,
+        action: 'deployment:initialize_admin',
+        entityType: 'DeploymentInitialization',
+        entityId: INITIALIZATION_ID,
+        newValue: {
+          companyId: company.id,
+          administratorUserId: user.id,
+        },
+      },
+    });
+    return { user, company, role };
+  }
+
+  private async generateTokens(
+    userId: string,
+    email: string,
+  ): Promise<TokenPair> {
+    const refreshToken = this.newRefreshToken();
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        tokenHash: this.hashRefreshToken(refreshToken),
+        familyId: uuid(),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+      },
+    });
+    return {
+      accessToken: this.signAccessToken(userId, email),
+      refreshToken,
+    };
+  }
+
+  private signAccessToken(userId: string, email: string) {
+    return this.jwtService.sign(
+      { sub: userId, email },
+      { expiresIn: process.env.JWT_EXPIRATION || '15m' },
+    );
+  }
+
+  private newRefreshToken() {
+    return randomBytes(48).toString('base64url');
+  }
+
+  private hashRefreshToken(token: string) {
+    return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
+  private assertSetupKey(provided: string) {
+    const configured = String(process.env.INITIAL_ADMIN_SETUP_KEY || '');
+    if (
+      configured.length < 32
+      || /change-me|replace-with|example|placeholder/i.test(configured)
+    ) {
+      throw new ServiceUnavailableException(
+        'Initial administrator setup is not securely configured',
+      );
+    }
+    const expected = createHash('sha256').update(configured).digest();
+    const actual = createHash('sha256').update(provided || '').digest();
+    if (!timingSafeEqual(expected, actual)) {
+      throw new UnauthorizedException('Invalid initialization credentials');
+    }
+  }
+
+  private companySlug(name: string, userId: string) {
+    const base = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      || 'workspace';
+    return `${base}-${userId.substring(0, 8)}`;
+  }
+
+  private authResult(user: any, tokens: TokenPair) {
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresIn: 900,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        companies: this.mapCompanies(user.companies),
+      },
+    };
+  }
+
+  private mapCompanies(relations: any[]) {
+    return relations.map((relation) => ({
+      id: relation.company.id,
+      name: relation.company.name,
+      slug: relation.company.slug,
+      role: relation.role.name,
+      isDefault: relation.isDefault,
+    }));
   }
 }

@@ -27,7 +27,7 @@ describe('OpenClawRuntimeService', () => {
 
   beforeEach(() => {
     process.env.OPENCLAW_OWNER_EMAIL = 'owner@example.com';
-    process.env.OPENCLAW_OWNER_COMPANY_SLUG = 'demo-company';
+    process.env.OPENCLAW_OWNER_COMPANY_SLUG = 'vaysen-crm';
     process.env.OPENCLAW_WECHAT_OWNER_PEER_SHA256 = 'a'.repeat(64);
     gateway = {
       probe: jest.fn().mockResolvedValue(baseProbe),
@@ -52,7 +52,7 @@ describe('OpenClawRuntimeService', () => {
       userCompanyRelation: {
         findFirst: jest.fn().mockResolvedValue({
           role: { name: 'company_admin' },
-          company: { slug: 'demo-company' },
+          company: { slug: 'vaysen-crm' },
         }),
       },
     };
@@ -102,7 +102,7 @@ describe('OpenClawRuntimeService', () => {
   it('does not grant owner commands after role downgrade or in another company slug', async () => {
     prisma.userCompanyRelation.findFirst.mockResolvedValue({
       role: { name: 'sales_user' },
-      company: { slug: 'demo-company' },
+      company: { slug: 'vaysen-crm' },
     });
     let result = await service.getSnapshot(COMPANY_ID, {
       id: 'owner-1',
@@ -135,7 +135,7 @@ describe('OpenClawRuntimeService', () => {
   it('hides the global connected channel and binding from a non-owner member', async () => {
     prisma.userCompanyRelation.findFirst.mockResolvedValue({
       role: { name: 'sales_user' },
-      company: { slug: 'demo-company' },
+      company: { slug: 'vaysen-crm' },
     });
     gateway.probe.mockResolvedValue({
       ...baseProbe,
@@ -414,7 +414,7 @@ describe('OpenClawRuntimeService', () => {
   it('revalidates the configured owner inside the persistence transaction', async () => {
     delete process.env.OPENCLAW_WECHAT_OWNER_PEER_SHA256;
     prisma.userCompanyRelation.findFirst
-      .mockResolvedValueOnce({ role: { name: 'company_admin' }, company: { slug: 'demo-company' } })
+      .mockResolvedValueOnce({ role: { name: 'company_admin' }, company: { slug: 'vaysen-crm' } })
       .mockResolvedValueOnce(null);
     gateway.startWechatPairing.mockResolvedValue({
       connected: true,

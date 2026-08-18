@@ -59,6 +59,8 @@ import {
   type PendingAssistantRequest,
 } from '@/lib/assistant-chat-outbox';
 import { selectAssistantConversationTurns } from '@/lib/assistant-conversation-window';
+import { AssistantToolHistory } from '@/components/assistant/assistant-tool-history';
+import { AssistantToolComposer } from '@/components/assistant/assistant-tool-composer';
 
 const starterPrompts = [
   '根据真实 CRM 数据，安排我今天的工作顺序',
@@ -439,7 +441,7 @@ export default function AiWorkbenchPage() {
                   <Sparkles className="h-6 w-6" />
                 </div>
                 <div>
-                  <p className="font-semibold">Vaysen AI 助理</p>
+                  <p className="font-semibold">JY 助理</p>
                   <p className="text-[10px] text-emerald-300">● 在线 · 业务主管权限</p>
                 </div>
               </div>
@@ -739,6 +741,9 @@ export default function AiWorkbenchPage() {
             </button>
           </Card>
 
+          <AssistantToolHistory companyId={companyId} />
+          <AssistantToolComposer companyId={companyId} />
+
           <Card className="overflow-hidden border-slate-200">
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
@@ -806,7 +811,8 @@ export default function AiWorkbenchPage() {
                   翻译和回复已并入全局悬浮球。
                 </p>
                 <Link
-                  href="/leads"
+                  href="/customers"
+                  prefetch={false}
                   className="mt-2 inline-block text-[10px] font-medium text-indigo-700"
                 >
                   进入客户资产 →

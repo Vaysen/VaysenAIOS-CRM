@@ -60,7 +60,7 @@ export default function UnsubscribePage() {
           Unsubscribe
         </h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-          Example Trading Company — Email Preferences
+          Vaysen Packaging — Email Preferences
         </p>
 
         {error && (

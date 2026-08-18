@@ -6,13 +6,15 @@ import {
   Mail, Search, Sparkles, Bot, Languages, FileText, Send, Clock, ChevronDown,
   Star, Paperclip, Reply, Forward, MoreHorizontal, Building2, Globe, Tag,
   TrendingUp, Lightbulb, MessageCircle, Target, Link2, Users, Briefcase,
-  DollarSign, Activity, Search as SearchIcon, RefreshCw, ArrowRight, Loader2, Info
+  DollarSign, Activity, Search as SearchIcon, RefreshCw, ArrowRight, Loader2, Info,
+  InboxIcon, CheckCheck, Archive, Trash2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { LanguageBadge } from '@/components/common/LanguageBadge';
 import { getLanguageDisplay, getLanguageName } from '@/lib/language-constants';
 import { sanitizeRichHtml } from '@/lib/sanitize-rich-html';
 import { subscribeAssistantEmailDraft } from '@/lib/assistant-draft-events';
+import { createClientUuid } from '@/lib/client-id';
 import {
   deliveryFailureFrom,
   listBusinessEmailAccounts,
@@ -24,7 +26,11 @@ import {
 } from '@/lib/messaging-control-api';
 
 export function MailThreeColumn() {
+  const replyActionRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const [tree, setTree] = useState<any[]>([]);
+  const [treeAccounts, setTreeAccounts] = useState<any[]>([]);
+  const [treeUncategorized, setTreeUncategorized] = useState<any>(null);
+  const [accountId, setAccountId] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [preview, setPreview] = useState<any>(null);
@@ -49,6 +55,9 @@ export function MailThreeColumn() {
     | MessagingDeliveryFailure
   >({ status: 'IDLE' });
   const [aiSidebarTab, setAiSidebarTab] = useState<'ai' | 'activity' | 'profile'>('ai');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [syncingAll, setSyncingAll] = useState(false);
 
   // AI reply generation
   const [aiReplyLoading, setAiReplyLoading] = useState(false);
@@ -69,13 +78,26 @@ export function MailThreeColumn() {
   const loadTree = useCallback(async () => {
     try {
       const response = await api.get('/mail-workbench/tree');
-      const data = Array.isArray(response.data) ? response.data : [];
-      setTree(data.length > 0 ? data : [
-        { id: 'inbox', count: 0 },
-        { id: 'sent', count: 0 },
-        { id: 'drafts', count: 0 },
-        { id: 'starred', count: 0 },
-      ]);
+      const data = response.data;
+      if (Array.isArray(data)) {
+        setTree(data.length > 0 ? data : [
+          { id: 'inbox', count: 0 },
+          { id: 'sent', count: 0 },
+          { id: 'drafts', count: 0 },
+          { id: 'starred', count: 0 },
+        ]);
+        setTreeAccounts([]);
+        setTreeUncategorized(null);
+      } else {
+        setTree(Array.isArray(data?.folders) && data.folders.length > 0 ? data.folders : [
+          { id: 'inbox', count: 0 },
+          { id: 'sent', count: 0 },
+          { id: 'drafts', count: 0 },
+          { id: 'starred', count: 0 },
+        ]);
+        setTreeAccounts(Array.isArray(data?.accounts) ? data.accounts : []);
+        setTreeUncategorized(data?.uncategorized || null);
+      }
     } catch (cause) {
       setTree([
         { id: 'inbox', count: 0 },
@@ -91,7 +113,7 @@ export function MailThreeColumn() {
     setLoading(true);
     try {
       const response = await api.get('/mail-workbench/messages', {
-        params: { folder, search, limit: 30 },
+        params: { folder, search, limit: 30, ...(accountId ? { accountId } : {}) },
       });
       const data = Array.isArray(response.data?.data) ? response.data.data : [];
       if (folder === 'inbox') {
@@ -104,7 +126,7 @@ export function MailThreeColumn() {
           const latest = newMessages[0];
           toast.success(`收到 ${newMessages.length} 封新邮件：${latest.subject || '(无主题)'}`);
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            new Notification('Vaysen AI CRM 收到新邮件', {
+            new Notification('Vaysen 收到新邮件', {
               body: `${latest.fromEmail || '未知发件人'} · ${latest.subject || '(无主题)'}`,
               tag: `mail-${String(latest.id)}`,
             });
@@ -121,11 +143,11 @@ export function MailThreeColumn() {
     } finally {
       setLoading(false);
     }
-  }, [folder, search]);
+  }, [folder, search, accountId]);
 
   useEffect(() => {
     void Promise.allSettled([loadTree(), loadMessages(false)]);
-  }, [folder, loadMessages, loadTree]);
+  }, [folder, accountId, loadMessages, loadTree]);
 
   useEffect(() => {
     void listBusinessEmailAccounts()
@@ -144,6 +166,71 @@ export function MailThreeColumn() {
     }, 30_000);
     return () => window.clearInterval(timer);
   }, [loadMessages, loadTree]);
+
+  const syncAll = async () => {
+    setSyncingAll(true);
+    try {
+      const response = await api.post('/imap-inbound/sync-all');
+      const results = Array.isArray(response.data) ? response.data : [];
+      if (results.length === 0) {
+        toast('当前没有已启用且已配置 IMAP 的邮箱账号');
+      } else {
+        const ok = results.filter((r: any) => r.status === 'ok');
+        const fail = results.filter((r: any) => r.status !== 'ok');
+        toast.success(
+          ok.length > 0
+            ? `收信完成：${ok.length} 个账号成功${fail.length > 0 ? `，${fail.length} 个失败` : ''}`
+            : `收信失败：${fail.length} 个账号（${fail[0]?.error || '请检查 IMAP 配置'}）`,
+        );
+      }
+      await Promise.allSettled([loadTree(), loadMessages(false)]);
+    } catch (cause) {
+      toast.error(deliveryFailureFrom(cause).message);
+    } finally {
+      setSyncingAll(false);
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      if (prev.size === messages.length && messages.length > 0) return new Set();
+      return new Set(messages.map((m: any) => String(m.id)));
+    });
+  };
+
+  const batchAction = async (action: 'mark_read' | 'mark_unread' | 'star' | 'unstar' | 'archive' | 'delete') => {
+    const ids = Array.from(selectedIds).map((id) => String(id).replace(/^inbound:/, ''));
+    if (ids.length === 0 || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const response = await api.patch('/mail-workbench/messages/batch', { ids, action });
+      const updated = Number(response.data?.updated || 0);
+      toast.success(`已处理 ${updated} 封邮件`);
+      setSelectedIds(new Set());
+      await Promise.allSettled([loadTree(), loadMessages(false)]);
+    } catch (cause) {
+      toast.error(deliveryFailureFrom(cause).message);
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const currentFolderCount = (folderId: string) => {
+    if (accountId) {
+      const group = treeAccounts.find((a: any) => a.id === accountId);
+      if (group?.folders) return group.folders.find((f: any) => f.id === folderId)?.count || 0;
+    }
+    return tree.find((t: any) => t.id === folderId)?.count || 0;
+  };
 
   const selectMessage = async (msg: any) => {
     setSelected(msg);
@@ -205,13 +292,25 @@ export function MailThreeColumn() {
     if (!preview || !to || !text || !emailAccountId || deliveryState.status === 'SENDING') return;
     setDeliveryState({ status: 'SENDING' });
     try {
+      const fingerprint = JSON.stringify({
+        emailAccountId,
+        to,
+        subject: replySubject(preview.subject),
+        text,
+        leadId: preview.lead?.id || selected?.lead?.id || null,
+      });
+      if (replyActionRef.current?.fingerprint !== fingerprint) {
+        replyActionRef.current = { fingerprint, key: `mail-ui:${createClientUuid()}` };
+      }
       const receipt = await sendBusinessEmail({
         emailAccountId,
         to,
         subject: replySubject(preview.subject),
         text,
         leadId: preview.lead?.id || selected?.lead?.id,
+        idempotencyKey: replyActionRef.current.key,
       });
+      replyActionRef.current = null;
       setDeliveryState(receipt);
       setReplyText('');
       toast.success(`邮件已由 SMTP 接受，回执 ${receipt.messageId}`);
@@ -256,6 +355,17 @@ export function MailThreeColumn() {
       <div className="w-[300px] border-r bg-white flex flex-col shrink-0">
         {/* Folder tree */}
         <div className="p-2 border-b space-y-0.5">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-gray-400">全部账号</span>
+            <button
+              onClick={() => { setAccountId(''); setFolder('inbox'); }}
+              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                !accountId ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-400 hover:text-blue-600'
+              }`}
+            >
+              聚合视图
+            </button>
+          </div>
           {[
             { id: 'inbox', l: '收件箱', icon: Mail },
             { id: 'sent', l: '已发送', icon: Send },
@@ -266,7 +376,7 @@ export function MailThreeColumn() {
               key={f.id}
               onClick={() => setFolder(f.id)}
               className={`w-full text-left text-[12px] px-2 py-1.5 rounded flex items-center justify-between transition-colors ${
-                folder === f.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-50'
+                !accountId && folder === f.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-50'
               }`}
             >
               <span className="flex items-center gap-2">
@@ -274,10 +384,55 @@ export function MailThreeColumn() {
                 {f.l}
               </span>
               <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">
-                {tree.find((t: any) => t.id === f.id)?.count || 0}
+                {currentFolderCount(f.id)}
               </span>
             </button>
           ))}
+
+          {treeAccounts.length > 0 && (
+            <>
+              <div className="flex items-center justify-between mt-3 mb-1">
+                <span className="text-[10px] font-semibold text-gray-400">邮箱账号</span>
+              </div>
+              {treeAccounts.map((a: any) => {
+                const inboxCount = a.folders?.find((f: any) => f.id === 'inbox')?.count || 0;
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => { setAccountId(a.id); setFolder('inbox'); }}
+                    className={`w-full text-left text-[12px] px-2 py-1.5 rounded flex items-center justify-between transition-colors ${
+                      accountId === a.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <InboxIcon className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{a.address || '未命名账号'}</span>
+                    </span>
+                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full shrink-0">
+                      {inboxCount}
+                    </span>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          {treeUncategorized && (
+            <button
+              onClick={() => { setAccountId('uncategorized'); setFolder('inbox'); }}
+              className={`w-full text-left text-[12px] px-2 py-1.5 rounded flex items-center justify-between transition-colors mt-1 ${
+                accountId === 'uncategorized' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-500 hover:bg-gray-50'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <Tag className="w-3.5 h-3.5" />
+                {treeUncategorized.label || '未分类'}
+              </span>
+              <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">
+                {treeUncategorized.count || 0}
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Search */}
@@ -300,6 +455,15 @@ export function MailThreeColumn() {
               title="刷新真实邮件"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={() => void syncAll()}
+              disabled={syncingAll}
+              className="h-7 px-2 inline-flex items-center gap-1 rounded border text-gray-400 hover:text-blue-600 hover:border-blue-300 disabled:opacity-50"
+              title="立即收信（同步全部已启用 IMAP 账号）"
+            >
+              {syncingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <InboxIcon className="w-3.5 h-3.5" />}
+              <span className="text-[10px]">收信</span>
             </button>
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-2 text-[9px] text-gray-400">
@@ -334,41 +498,104 @@ export function MailThreeColumn() {
             <div className="px-4 py-12 text-center">
               <Mail className="w-8 h-8 mx-auto text-gray-200 mb-2" />
               <p className="text-[12px] text-gray-400">暂无真实邮件</p>
-              <p className="text-[10px] text-gray-300 mt-1">配置 Brevo 收信地址后，客户回复会自动显示在这里</p>
+              <p className="text-[10px] text-gray-300 mt-1">配置 IMAP 收信地址后，客户回复会自动显示在这里</p>
             </div>
-          ) : Object.entries(grouped).map(([grp, items]) => (
-            <div key={grp}>
-              <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 bg-gray-50/80 sticky top-0">
-                {grp}
+          ) : (<>
+            <div className="px-2 py-1 border-b bg-gray-50/60 flex items-center justify-between sticky top-0">
+              <label className="flex items-center gap-1.5 text-[10px] text-gray-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size === messages.length && messages.length > 0}
+                  onChange={toggleSelectAll}
+                  className="accent-blue-600"
+                />
+                全选
+              </label>
+              {selectedIds.size > 0 && (
+                <span className="text-[10px] text-blue-600 font-medium">已选 {selectedIds.size} 封</span>
+              )}
+            </div>
+            {selectedIds.size > 0 && (
+              <div className="px-2 py-1.5 border-b bg-blue-50/70 flex flex-wrap items-center gap-1 sticky top-[26px] z-10">
+                {[
+                  { action: 'mark_read' as const, l: '已读', icon: CheckCheck },
+                  { action: 'mark_unread' as const, l: '未读', icon: Mail },
+                  { action: 'star' as const, l: '星标', icon: Star },
+                  { action: 'unstar' as const, l: '取消星标', icon: Star },
+                  { action: 'archive' as const, l: '归档', icon: Archive },
+                  { action: 'delete' as const, l: '删除', icon: Trash2 },
+                ].map((b) => (
+                  <button
+                    key={b.action}
+                    onClick={() => void batchAction(b.action)}
+                    disabled={batchBusy}
+                    className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-600 hover:border-blue-300 hover:text-blue-700 disabled:opacity-50"
+                    title={b.l}
+                  >
+                    {batchBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <b.icon className="w-3 h-3" />}
+                    {b.l}
+                  </button>
+                ))}
               </div>
-              {items.map((m: any) => (
-                <button
-                  key={m.id}
-                  onClick={() => selectMessage(m)}
-                  className={`w-full text-left px-3 py-2.5 transition-colors ${
-                    selected?.id === m.id
-                      ? 'bg-blue-50 border-l-[3px] border-l-blue-500'
-                      : 'border-l-[3px] border-l-transparent hover:bg-gray-50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[12px] font-semibold text-gray-800 truncate max-w-[180px]">
-                      {m.lead?.companyName || m.fromEmail?.split('@')[0] || '未知'}
-                    </span>
-                    <span className="text-[9px] text-gray-400 shrink-0">
-                      {new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                    </span>
+            )}
+            {Object.entries(grouped).map(([grp, items]) => (
+              <div key={grp}>
+                <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 bg-gray-50/80 sticky top-0">
+                  {grp}
+                </div>
+                {items.map((m: any) => (
+                  <div
+                    key={m.id}
+                    className={`group flex items-stretch transition-colors ${
+                      selected?.id === m.id
+                        ? 'bg-blue-50'
+                        : selectedIds.has(String(m.id))
+                          ? 'bg-blue-50/50'
+                          : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <label className="flex items-center pl-2 pr-0.5 shrink-0 cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(String(m.id))}
+                        onChange={() => toggleSelect(String(m.id))}
+                        className="accent-blue-600"
+                      />
+                    </label>
+                    <button
+                      onClick={() => selectMessage(m)}
+                      className={`w-full text-left px-2 py-2.5 transition-colors ${
+                        selected?.id === m.id ? 'border-l-[3px] border-l-blue-500' : 'border-l-[3px] border-l-transparent'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[12px] font-semibold text-gray-800 truncate max-w-[160px]">
+                          {m.lead?.companyName || m.fromEmail?.split('@')[0] || '未知'}
+                        </span>
+                        <span className="flex items-center gap-1 shrink-0">
+                          {m.isStarred && <Star className="w-3 h-3 text-amber-400 fill-amber-400" />}
+                          <span className="text-[9px] text-gray-400">
+                            {new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </span>
+                      </div>
+                      <p className="text-[11px] font-medium text-gray-700 truncate mt-0.5">
+                        {m.subject || '(无主题)'}
+                      </p>
+                      <p className="text-[10px] text-gray-400 truncate mt-0.5">
+                        {m.bodyPreview || m.bodyText?.slice(0, 60) || '(无内容)'}
+                      </p>
+                      {!accountId && m.accountId && (
+                        <p className="text-[9px] text-gray-300 truncate mt-0.5">
+                          账号: {treeAccounts.find((a: any) => a.id === m.accountId)?.address || m.accountId?.slice(0, 8)}
+                        </p>
+                      )}
+                    </button>
                   </div>
-                  <p className="text-[11px] font-medium text-gray-700 truncate mt-0.5">
-                    {m.subject || '(无主题)'}
-                  </p>
-                  <p className="text-[10px] text-gray-400 truncate mt-0.5">
-                    {m.bodyPreview || m.bodyText?.slice(0, 60) || '(无内容)'}
-                  </p>
-                </button>
-              ))}
-            </div>
-          ))}
+                ))}
+              </div>
+            ))}
+          </>)}
         </div>
       </div>
 
@@ -477,8 +704,8 @@ export function MailThreeColumn() {
                     J
                   </div>
                   <div>
-                    <p className="text-[12px] font-semibold text-gray-800">Example Trading Company</p>
-                    <p className="text-[10px] text-gray-400">Example Trading Company</p>
+                    <p className="text-[12px] font-semibold text-gray-800">Vaysen Packaging</p>
+                    <p className="text-[10px] text-gray-400">Xiamen Vaysen Packaging Co., Ltd</p>
                     <p className="text-[10px] text-gray-400">Add: Haicang, Xiamen, China</p>
                   </div>
                 </div>

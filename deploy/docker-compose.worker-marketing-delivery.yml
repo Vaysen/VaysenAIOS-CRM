@@ -1,0 +1,25 @@
+# ============================================================================
+# worker-marketing-delivery 服务注册片段
+# ----------------------------------------------------------------------------
+# 部署时按现有 worker 模式（参考 worker-email-send）在 docker-compose.prod.yml
+# 的 services: 下追加以下服务，并确保：
+#   1) 挂载 .whatsapp-sessions 卷（发送依赖 Baileys auth state）
+#   2) env 透传 WHATSAPP_* 变量（&worker-common 已继承 *backend-env；再显式声明
+#      WHATSAPP_BROADCAST_DISABLED / WHATSAPP_RESTORE_SESSIONS 避免歧义）
+#   3) 同一 WhatsApp 账号同时只允许一个进程持有连接：主 API 与 worker
+#      不要同时 WHATSAPP_RESTORE_SESSIONS=true（二选一，建议 worker 持有）
+# ============================================================================
+
+# --- 追加到 docker-compose.prod.yml 的 services: 下 ---
+  worker-marketing-delivery:
+    <<: *worker-common
+    container_name: vaysen-crm-worker-marketing-delivery
+    command: ["node", "dist/src/worker-marketing-delivery"]
+    environment:
+      <<: *backend-env
+      # 广播安全开关（默认 true；生产验证通过后由运维置 false 开启）
+      WHATSAPP_BROADCAST_DISABLED: ${WHATSAPP_BROADCAST_DISABLED:-true}
+      # worker 需持有 Baileys live socket 才能发送（与主 API 二选一）
+      WHATSAPP_RESTORE_SESSIONS: ${WHATSAPP_RESTORE_SESSIONS:-true}
+    volumes:
+      - ${APP_DATA_DIR:?APP_DATA_DIR must be an approved absolute host path}/.whatsapp-sessions:/app/.whatsapp-sessions

@@ -81,6 +81,33 @@ export class AiCommunicationsController {
     return this.aiService.generateReplyFromContext(body.context, user, body?.targetLanguage || 'en');
   }
 
+  @Post('log-reply-sent')
+  @ApiOperation({ summary: 'Record a salesperson reply-sent event to the lead timeline (WhatsApp sidebar)' })
+  logReplySent(
+    @Body() body: { conversationId: string; content: string; channel?: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.aiService.logReplySent(body, user);
+  }
+
+  @Get('whatsapp-lead/:phone')
+  @ApiOperation({ summary: 'Resolve a WhatsApp phone number to a CRM lead id (for WA sidebar)' })
+  whatsappLead(@Param('phone') phone: string, @CurrentUser() user: any) {
+    return this.aiService.resolveLeadByWhatsAppPhone(phone, user);
+  }
+
+  @Get('knowledge-context')
+  @ApiOperation({ summary: 'Return company knowledge context (brand, products) for AI-assisted replies' })
+  knowledgeContext(@CurrentUser() user: any) {
+    return this.aiService.getKnowledgeContext(user);
+  }
+
+  @Post('reception-draft')
+  @ApiOperation({ summary: 'Generate a reception draft grounded in the company knowledge base' })
+  receptionDraft(@Body() body: { customerMessage: string; targetLanguage?: string }, @CurrentUser() user: any) {
+    return this.aiService.generateReceptionDraft(body?.customerMessage || '', user, body?.targetLanguage || 'en');
+  }
+
   @Post('customer-analysis/:leadId')
   @ApiOperation({ summary: 'Generate AI customer background analysis' })
   customerAnalysis(@Param('leadId') leadId: string, @CurrentUser() user: any) {

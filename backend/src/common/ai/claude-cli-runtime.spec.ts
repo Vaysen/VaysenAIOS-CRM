@@ -35,16 +35,16 @@ describe('cross-platform Claude CLI runtime', () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).not.toBe('zhipu-secret');
   });
 
-  it('builds dynamic Vaysen AI CRM packaging prompts', () => {
+  it('builds dynamic Vaysen packaging prompts', () => {
     const env = {
-      BUSINESS_BRAND_NAME: 'Example Trading Company Test Brand',
+      BUSINESS_BRAND_NAME: 'Vaysen Packaging Test Brand',
       BUSINESS_DESCRIPTION: 'custom sustainable packaging exporter',
       BUSINESS_PRODUCT_FOCUS: 'custom kraft bags and recycled mailers',
     };
     const prospectPrompt = prospect.buildProspectPrompt({ country: 'Germany', count: 3, batch: 2 }, env);
     const researchPrompt = research.buildResearchPrompt({ company: 'Buyer GmbH', website: '', country: 'Germany', type: 'full' }, env);
 
-    expect(prospectPrompt).toContain('Example Trading Company Test Brand');
+    expect(prospectPrompt).toContain('Vaysen Packaging Test Brand');
     expect(prospectPrompt).toContain('custom kraft bags and recycled mailers');
     expect(researchPrompt).toContain('custom sustainable packaging exporter');
     expect(prospectPrompt + researchPrompt).not.toMatch(/Jingseyewear|sunglasses|eyewear/i);
@@ -60,6 +60,6 @@ describe('cross-platform Claude CLI runtime', () => {
     expect(workerDockerfile).toContain('COPY tools/ ./tools/');
     expect(dockerfile).toContain('/app/node_modules/.bin');
     expect(workerDockerfile).toContain('/app/node_modules/.bin');
-    expect(packageJson.dependencies['@anthropic-ai/claude-code']).toBe('2.1.152');
+    expect(packageJson.dependencies['@anthropic-ai/claude-code']).toBe('2.1.197');
   });
 });

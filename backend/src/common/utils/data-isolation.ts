@@ -12,37 +12,68 @@
  * Usage example:
  *   const where = applyDataIsolation(currentUser, { deletedAt: null, companyId });
  */
+import { ForbiddenException } from '@nestjs/common';
 
 export interface CurrentUser {
   id: string;
-  email: string;
-  companies: Array<{
+  email?: string;
+  activeCompanyId?: string | null;
+  activeCompany?: {
+    id: string;
+    name?: string;
+    role: string;
+    roleId?: string;
+    isDefault?: boolean;
+    [key: string]: any;
+  } | null;
+  companies?: Array<{
     id: string;        // company ID
-    name: string;
+    name?: string;
     role: string;      // role name: super_admin | company_admin | sales_manager | sales_user | viewer
     roleId?: string;
     isDefault?: boolean;
+    [key: string]: any;
   }>;
 }
 
-/** Roles with full company-wide visibility */
-const FULL_ACCESS_ROLES = ['super_admin', 'company_admin'];
-
-/** Roles restricted to own data only */
-const ISOLATED_ROLES = ['sales_manager', 'sales_user', 'viewer'];
-
 /**
- * Check if the current user has full access (sees all company data)
+ * Check whether the user has company-wide access for one explicit tenant.
+ * A super administrator is the only global role. A company administrator is
+ * elevated only inside the company where that membership is active.
+ *
+ * Omitting targetCompanyId intentionally recognizes only super_admin. This
+ * prevents a caller that forgot tenant context from accidentally turning a
+ * company_admin membership into a global bypass.
  */
-export function hasFullAccess(currentUser: CurrentUser): boolean {
-  return currentUser.companies?.some((c) => FULL_ACCESS_ROLES.includes(c.role)) ?? false;
+export function hasFullAccess(
+  currentUser: CurrentUser,
+  targetCompanyId?: string | null,
+): boolean {
+  if (!targetCompanyId || currentUser.activeCompanyId !== targetCompanyId) {
+    return false;
+  }
+  const companies = currentUser.companies || [];
+  if (
+    currentUser.activeCompany?.id === targetCompanyId
+    && currentUser.activeCompany.role === 'super_admin'
+    && companies.some((company) => company.role === 'super_admin')
+  ) {
+    return true;
+  }
+  return companies.some(
+    (company) =>
+      company.id === targetCompanyId && company.role === 'company_admin',
+  );
 }
 
 /**
  * Check if the current user is isolated (sees only own data)
  */
-export function isIsolatedUser(currentUser: CurrentUser): boolean {
-  return !hasFullAccess(currentUser);
+export function isIsolatedUser(
+  currentUser: CurrentUser,
+  targetCompanyId?: string | null,
+): boolean {
+  return !hasFullAccess(currentUser, targetCompanyId);
 }
 
 /**
@@ -58,7 +89,8 @@ export function applyDataIsolation(
   baseWhere: Record<string, any>,
   ownerField: string = 'ownerUserId',
 ): Record<string, any> {
-  if (hasFullAccess(currentUser)) {
+  const companyId = extractSingleCompanyId(baseWhere.companyId);
+  if (hasFullAccess(currentUser, companyId)) {
     return baseWhere;
   }
 
@@ -85,7 +117,29 @@ export function applyCreatorIsolation(
  * Isolated users only get their own company.
  */
 export function getAccessibleCompanyIds(currentUser: CurrentUser): string[] {
-  return currentUser.companies?.map((c) => c.id).filter(Boolean) ?? [];
+  if (
+    currentUser.activeCompanyId
+    && currentUser.activeCompany?.id === currentUser.activeCompanyId
+  ) {
+    return [currentUser.activeCompanyId];
+  }
+  return [];
+}
+
+/**
+ * Resolve the authenticated request's active tenant. Multi-company users must
+ * either select a validated company with X-Company-Id or have one unambiguous
+ * default membership. Services should use this instead of companies[0].
+ */
+export function requireActiveCompany(currentUser: CurrentUser) {
+  const activeCompanyId = currentUser.activeCompanyId;
+  const activeCompany = currentUser.activeCompany;
+  if (!activeCompanyId || !activeCompany || activeCompany.id !== activeCompanyId) {
+    throw new ForbiddenException(
+      'An active company is required; select one with X-Company-Id',
+    );
+  }
+  return activeCompany;
 }
 
 /**
@@ -97,14 +151,29 @@ export function checkResourceAccess(
   resource: { ownerUserId?: string | null; createdBy?: string | null; companyId?: string | null },
   ownerField: string = 'ownerUserId',
 ): { allowed: boolean; reason?: string } {
-  if (hasFullAccess(currentUser)) {
+  if (!resource.companyId) {
+    return {
+      allowed: false,
+      reason: 'Resource has no company — access denied',
+    };
+  }
+
+  if (currentUser.activeCompanyId !== resource.companyId) {
+    return { allowed: false, reason: 'Resource is outside the active company' };
+  }
+
+  if (hasFullAccess(currentUser, resource.companyId)) {
     return { allowed: true };
+  }
+
+  if (!currentUser.companies?.some((company) => company.id === resource.companyId)) {
+    return { allowed: false, reason: 'Resource belongs to another company' };
   }
 
   const resourceOwner = resource[ownerField as keyof typeof resource];
   if (!resourceOwner) {
     // Resources without owner are only accessible to full-access roles (admins)
-    return { allowed: hasFullAccess(currentUser), reason: 'Resource has no owner — admin only' };
+    return { allowed: false, reason: 'Resource has no owner — admin only' };
   }
 
   if (resourceOwner !== currentUser.id) {
@@ -132,19 +201,44 @@ export function checkResourceAccess(
 export function ensureCompanyAccess(currentUser: CurrentUser, companyId: string): void {
   const companies = currentUser.companies || [];
 
-  // super_admin can access any company
-  if (companies.some((c) => c.role === 'super_admin')) {
+  if (
+    currentUser.activeCompanyId !== companyId
+    || currentUser.activeCompany?.id !== companyId
+  ) {
+    throw new ForbiddenException(
+      'Company is outside the active request context',
+    );
+  }
+
+  // super_admin can operate any company after selecting it as active.
+  if (
+    currentUser.activeCompany.role === 'super_admin'
+    && companies.some((company) => company.role === 'super_admin')
+  ) {
     return;
   }
 
   // Must have at least one company membership
   if (companies.length === 0) {
-    throw new Error('FORBIDDEN: User has no company membership');
+    throw new ForbiddenException('User has no company membership');
   }
 
   // company_admin and other roles must be a member of the target company
   const isMember = companies.some((c) => c.id === companyId);
   if (!isMember) {
-    throw new Error('FORBIDDEN: User does not belong to this company');
+    throw new ForbiddenException('User does not belong to this company');
   }
+}
+
+function extractSingleCompanyId(companyFilter: unknown): string | undefined {
+  if (typeof companyFilter === 'string') return companyFilter;
+  if (
+    companyFilter
+    && typeof companyFilter === 'object'
+    && 'equals' in companyFilter
+    && typeof (companyFilter as { equals?: unknown }).equals === 'string'
+  ) {
+    return (companyFilter as { equals: string }).equals;
+  }
+  return undefined;
 }

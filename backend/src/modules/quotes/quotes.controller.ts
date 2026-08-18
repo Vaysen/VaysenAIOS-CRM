@@ -16,6 +16,11 @@ import { Response } from 'express';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { QuotesService } from './quotes.service';
+import { UpdateQuoteDto } from './dto/update-quote.dto';
+import {
+  CreateQuoteDto,
+  UpdateQuoteStatusDto,
+} from './dto/create-quote.dto';
 
 @ApiTags('Quotes')
 @ApiBearerAuth()
@@ -45,7 +50,7 @@ export class QuotesController {
 
   @Post()
   @ApiOperation({ summary: 'Create a quote draft with multiple line items' })
-  create(@Body() dto: any, @CurrentUser() user: any) {
+  create(@Body() dto: CreateQuoteDto, @CurrentUser() user: any) {
     return this.quotesService.createQuote(dto, user);
   }
 
@@ -63,7 +68,11 @@ export class QuotesController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Update quote (fields and/or line items)' })
-  update(@Param('id') id: string, @Body() dto: any, @CurrentUser() user: any) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateQuoteDto,
+    @CurrentUser() user: any,
+  ) {
     return this.quotesService.updateQuote(id, dto, user);
   }
 
@@ -110,10 +119,10 @@ export class QuotesController {
   @ApiOperation({ summary: 'Update quote status' })
   updateStatus(
     @Param('id') id: string,
-    @Body('status') status: string,
+    @Body() dto: UpdateQuoteStatusDto,
     @CurrentUser() user: any,
   ) {
-    return this.quotesService.updateStatus(id, status, user);
+    return this.quotesService.updateStatus(id, dto.status, user);
   }
 
   @Post(':id/convert-to-order')

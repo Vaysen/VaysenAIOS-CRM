@@ -10,7 +10,7 @@ describe('OpenClawOwnerNotificationSender', () => {
     companyId: 'company-1',
     eventType: 'WHATSAPP_INBOUND' as const,
     destination: 'OWNER_WECHAT' as const,
-    subject: 'Sample Buyer',
+    subject: 'AcmeCorp',
     preview: 'Can you send a quotation?',
     sourceType: 'BAILEYS',
     sourceId: 'provider-1',

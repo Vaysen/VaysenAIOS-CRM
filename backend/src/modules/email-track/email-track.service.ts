@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { FollowUpRemindersService } from '../follow-up-reminders/follow-up-reminders.service';
 import { TimelineService } from '../timeline/timeline.service';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '../../common/security/safe-logging';
 
 @Injectable()
 export class EmailTrackService {
@@ -19,6 +20,22 @@ export class EmailTrackService {
     private timelineService: TimelineService,
   ) {}
 
+  private logSafe(
+    level: 'log' | 'warn' | 'error' | 'debug',
+    eventCode: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    const message = safeLogEvent(eventCode, fields);
+    if (level === 'error') this.logger.error(message);
+    else if (level === 'warn') this.logger.warn(message);
+    else if (level === 'debug') this.logger.debug(message);
+    else this.logger.log(message);
+  }
+
+  private safeTrackingRef(trackingId: unknown) {
+    return safeDigest(trackingId, 'email-tracking');
+  }
+
   async trackOpen(trackingId: string, ipAddress?: string, userAgent?: string) {
     try {
       const msg = await this.prisma.emailMessage.findUnique({
@@ -27,7 +44,11 @@ export class EmailTrackService {
       });
 
       if (!msg) {
-        this.logger.warn(`Tracking pixel hit for unknown trackingId: ${trackingId}`);
+        this.logSafe('warn', 'email.track.open_unknown', {
+          eventType: 'open_unknown',
+          trackingRef: this.safeTrackingRef(trackingId),
+          status: 'unknown',
+        });
         return this.PIXEL;
       }
 
@@ -80,7 +101,11 @@ export class EmailTrackService {
       // Auto-tag: Email Opened
       this.addEngagementTag(msg.leadId, msg.companyId, 'Email Opened').catch(() => {});
     } catch (err: any) {
-      this.logger.error(`Error tracking open for ${trackingId}: ${err.message}`);
+      this.logSafe('error', 'email.track.open_failed', {
+        eventType: 'open_failed',
+        trackingRef: this.safeTrackingRef(trackingId),
+        errorCategory: safeErrorCategory(err),
+      });
     }
 
     // Always return the pixel, even on error
@@ -94,13 +119,19 @@ export class EmailTrackService {
       try {
         parsedUrl = new URL(originalUrl);
       } catch {
-        this.logger.warn(`Invalid URL in click tracking: ${originalUrl}`);
+        this.logSafe('warn', 'email.track.click_invalid_url', {
+          eventType: 'click_invalid_url',
+          status: 'rejected',
+        });
         return '/';
       }
 
       // Only allow http/https protocols
       if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        this.logger.warn(`Non-HTTP protocol in click tracking: ${parsedUrl.protocol}`);
+        this.logSafe('warn', 'email.track.click_invalid_protocol', {
+          eventType: 'click_invalid_protocol',
+          status: 'rejected',
+        });
         return '/';
       }
 
@@ -110,7 +141,11 @@ export class EmailTrackService {
       });
 
       if (!msg) {
-        this.logger.warn(`Click tracking hit for unknown trackingId: ${trackingId}`);
+        this.logSafe('warn', 'email.track.click_unknown', {
+          eventType: 'click_unknown',
+          trackingRef: this.safeTrackingRef(trackingId),
+          status: 'unknown',
+        });
         return originalUrl;
       }
 
@@ -164,7 +199,11 @@ export class EmailTrackService {
       // Auto-tag: Email Clicked (upgrades from Email Opened)
       this.addEngagementTag(msg.leadId, msg.companyId, 'Email Clicked').catch(() => {});
     } catch (err: any) {
-      this.logger.error(`Error tracking click for ${trackingId}: ${err.message}`);
+      this.logSafe('error', 'email.track.click_failed', {
+        eventType: 'click_failed',
+        trackingRef: this.safeTrackingRef(trackingId),
+        errorCategory: safeErrorCategory(err),
+      });
     }
 
     return originalUrl;
@@ -191,7 +230,10 @@ export class EmailTrackService {
         }
       }
     } catch (err: any) {
-      this.logger?.error?.('Engagement tag addition failed: ' + (err?.message || err), err?.stack);
+      this.logSafe('error', 'email.track.engagement_tag_failed', {
+        eventType: 'engagement_tag_failed',
+        errorCategory: safeErrorCategory(err),
+      });
     }
   }
 }

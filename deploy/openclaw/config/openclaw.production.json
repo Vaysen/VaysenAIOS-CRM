@@ -26,21 +26,39 @@
       "workspace": "/opt/vaysen-workspace",
       "skipBootstrap": true,
       "model": {
-        "primary": "zhipu-cn/${ZHIPU_MODEL}"
+        "primary": "deepseek/${DEEPSEEK_MODEL}"
       }
     },
     "list": [
       {
         "id": "vaysen-crm",
-        "name": "Vaysen AI CRM Assistant",
+        "name": "Vaysen CRM Assistant",
         "workspace": "/opt/vaysen-workspace",
-        "model": "zhipu-cn/${ZHIPU_MODEL}"
+        "model": "deepseek/${DEEPSEEK_MODEL}"
       }
     ]
   },
   "models": {
     "mode": "merge",
     "providers": {
+      "deepseek": {
+        "baseUrl": "${DEEPSEEK_BASE_URL}",
+        "apiKey": "${DEEPSEEK_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "${DEEPSEEK_MODEL}",
+            "name": "Vaysen DeepSeek",
+            "compat": {
+              "maxTokensField": "max_tokens"
+            },
+            "reasoning": true,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          }
+        ]
+      },
       "zhipu-cn": {
         "baseUrl": "${ZHIPU_BASE_URL}",
         "apiKey": "${ZHIPU_API_KEY}",
@@ -48,7 +66,7 @@
         "models": [
           {
             "id": "${ZHIPU_MODEL}",
-            "name": "Vaysen AI CRM Zhipu GLM",
+            "name": "Vaysen Zhipu GLM",
             "compat": {
               "maxTokensField": "max_tokens"
             },
@@ -68,7 +86,7 @@
     "openclaw-weixin": {
       "enabled": true,
       "replyProgressMessages": false,
-      "botAgent": "Vaysen AI CRM-Trade-OS/1.0"
+      "botAgent": "Vaysen AI CRM/1.0"
     }
   },
   "plugins": {
@@ -120,22 +138,18 @@
       "crm_email_messages_read",
       "crm_email_send",
       "crm_email_reply",
-      "browser",
       "heartbeat_respond",
       "tts"
     ],
     "deny": [
-      "exec",
-      "process",
       "gateway",
-      "nodes",
-      "message"
+      "nodes"
     ],
     "fs": {
       "workspaceOnly": true
     },
     "elevated": {
-      "enabled": false
+      "enabled": true
     }
   }
 }

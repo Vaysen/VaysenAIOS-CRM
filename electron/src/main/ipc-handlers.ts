@@ -21,6 +21,7 @@ import {
   saveRuntimeConfig,
   tryLoadRuntimeConfig,
 } from "../shared/runtime-config";
+import { checkApiConnection } from './connection-check';
 import { WindowManager } from "./window-manager";
 import { AICommunications } from "./ai-communications";
 import type {
@@ -114,6 +115,7 @@ export class IpcHandlers {
       name: string;
       phone: string;
       isGroup: boolean;
+      externalId?: string;
       observedAt: string;
       selectionProof: string;
     }
@@ -314,7 +316,7 @@ export class IpcHandlers {
 
       const directory = path.resolve(
         app.getPath("documents"),
-        "Vaysen AI CRM",
+        "Vaysen 外贸系统",
         "待发送报价",
       );
       fs.mkdirSync(directory, { recursive: true });
@@ -431,6 +433,7 @@ export class IpcHandlers {
     name: string;
     phone: string;
     isGroup: boolean;
+    externalId: string;
   } | null> {
     const view = this.windowManager.getActiveWhatsappView();
     if (!view || typeof view.webContents.executeJavaScript !== "function")
@@ -477,7 +480,7 @@ export class IpcHandlers {
         if (!selectedLid && root && !root.return) selectedLid = firstLid(root);
         if (selectedLid) break;
       }
-      if (!selectedLid) return { name, phone: '', isGroup: false };
+      if (!selectedLid) return { name, phone: '', isGroup: false, externalId: '' };
 
       const findPhoneRecord = (root) => {
         const seen = new WeakSet();
@@ -515,6 +518,7 @@ export class IpcHandlers {
         name,
         phone: phoneJid ? phoneJid.replace(/@(?:c\\.us|s\\.whatsapp\\.net)$/, '') : '',
         isGroup: false,
+        externalId: selectedLid,
       };
     })()`;
 
@@ -533,6 +537,9 @@ export class IpcHandlers {
         name: result.name.trim(),
         phone,
         isGroup: result.isGroup === true,
+        externalId: typeof result.externalId === "string" && /^(?:\d+@lid|\d{7,15}@(?:c\.us|s\.whatsapp\.net))$/.test(result.externalId)
+          ? result.externalId
+          : "",
       };
     } catch (error) {
       console.warn("[IPC] WhatsApp 主世界身份读取失败:", error);
@@ -1116,43 +1123,89 @@ export class IpcHandlers {
   // === 认证管理 ===
 
   private registerAuthHandlers(): void {
+    if (!safeStorage.isEncryptionAvailable()) {
+      this.clearPersistedTokens();
+    }
     // 获取 token（使用 safeStorage 解密）
     ipcMain.handle(IPC_CHANNELS.AUTH_GET_TOKEN, () => {
       const encrypted = this.authStore.get("token");
       if (!encrypted) return null;
-      if (safeStorage.isEncryptionAvailable()) {
-        try {
-          return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
-        } catch {
-          return null;
-        }
+      if (!safeStorage.isEncryptionAvailable()) {
+        this.clearPersistedTokens();
+        return null;
       }
-      return encrypted;
+      try {
+        return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+      } catch {
+        this.clearPersistedTokens();
+        return null;
+      }
     });
 
     // 存储 token（使用 safeStorage 加密）
     ipcMain.handle(
       IPC_CHANNELS.AUTH_SET_TOKEN,
       (_event, data: { token: string; refreshToken: string }) => {
-        if (safeStorage.isEncryptionAvailable()) {
-          const encToken = safeStorage
-            .encryptString(data.token)
-            .toString("base64");
-          const encRefresh = safeStorage
-            .encryptString(data.refreshToken)
-            .toString("base64");
-          this.authStore.set("token", encToken);
-          this.authStore.set("refreshToken", encRefresh);
-        } else {
-          this.authStore.set("token", data.token);
-          this.authStore.set("refreshToken", data.refreshToken);
+        if (!safeStorage.isEncryptionAvailable()) {
+          this.clearPersistedTokens();
+          throw new Error("Secure credential storage is unavailable");
         }
+        const encToken = safeStorage
+          .encryptString(data.token)
+          .toString("base64");
+        const encRefresh = safeStorage
+          .encryptString(data.refreshToken)
+          .toString("base64");
+        this.authStore.set("token", encToken);
+        this.authStore.set("refreshToken", encRefresh);
       },
     );
 
     // 清除 token
     ipcMain.handle(IPC_CHANNELS.AUTH_CLEAR_TOKEN, () => {
       this.authStore.clear();
+    });
+
+    ipcMain.handle(IPC_CHANNELS.AUTH_REFRESH_SESSION, async () => {
+      const refreshToken = this.getStoredRefreshToken();
+      if (!refreshToken) throw new Error('Refresh session is unavailable');
+      const response = await axios.post(
+        `${this.requireApiBaseUrl()}/auth/refresh`,
+        { refreshToken },
+        { headers: { 'X-Refresh-Token-Mode': 'body' }, timeout: 30000 },
+      );
+      const accessToken = String(response.data?.accessToken || '');
+      const rotatedRefreshToken = String(response.data?.refreshToken || '');
+      if (!accessToken || !rotatedRefreshToken) {
+        this.authStore.clear();
+        throw new Error('Invalid refresh response');
+      }
+      this.storeAuthTokens(accessToken, rotatedRefreshToken);
+      return { accessToken };
+    });
+
+    ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT_SESSION, async () => {
+      const refreshToken = this.getStoredRefreshToken();
+      const accessToken = this.getStoredToken();
+      try {
+        if (refreshToken && accessToken) {
+          const companyId = this.authStore.get("companyId");
+          await axios.post(
+            `${this.requireApiBaseUrl()}/auth/logout`,
+            { refreshToken },
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'X-Refresh-Token-Mode': 'body',
+                ...(companyId ? { 'X-Company-Id': companyId } : {}),
+              },
+              timeout: 30000,
+            },
+          );
+        }
+      } finally {
+        this.authStore.clear();
+      }
     });
 
     // 获取 Company-Id
@@ -1231,14 +1284,51 @@ export class IpcHandlers {
   private getStoredToken(): string | null {
     const encrypted = this.authStore.get("token");
     if (!encrypted) return null;
-    if (safeStorage.isEncryptionAvailable()) {
-      try {
-        return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
-      } catch {
-        return null;
-      }
+    if (!safeStorage.isEncryptionAvailable()) {
+      this.clearPersistedTokens();
+      return null;
     }
-    return encrypted;
+    try {
+      return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+    } catch {
+      this.clearPersistedTokens();
+      return null;
+    }
+  }
+
+  private getStoredRefreshToken(): string | null {
+    const encrypted = this.authStore.get("refreshToken");
+    if (!encrypted) return null;
+    if (!safeStorage.isEncryptionAvailable()) {
+      this.clearPersistedTokens();
+      return null;
+    }
+    try {
+      return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+    } catch {
+      this.clearPersistedTokens();
+      return null;
+    }
+  }
+
+  private storeAuthTokens(token: string, refreshToken: string): void {
+    if (!safeStorage.isEncryptionAvailable()) {
+      this.clearPersistedTokens();
+      throw new Error("Secure credential storage is unavailable");
+    }
+    this.authStore.set(
+      "token",
+      safeStorage.encryptString(token).toString("base64"),
+    );
+    this.authStore.set(
+      "refreshToken",
+      safeStorage.encryptString(refreshToken).toString("base64"),
+    );
+  }
+
+  private clearPersistedTokens(): void {
+    this.authStore.set("token", null);
+    this.authStore.set("refreshToken", null);
   }
 
   /**
@@ -1259,8 +1349,6 @@ export class IpcHandlers {
               "token",
               safeStorage.encryptString(lsToken).toString("base64"),
             );
-          } else {
-            this.authStore.set("token", lsToken);
           }
           return lsToken;
         }
@@ -1724,7 +1812,7 @@ export class IpcHandlers {
 
         const documentsRoot = path.resolve(
           app.getPath("documents"),
-          "Vaysen AI CRM",
+          "Vaysen 外贸系统",
           "待发送报价",
         );
         const resolvedFile = path.resolve(prepared.filePath);
@@ -1886,15 +1974,18 @@ export class IpcHandlers {
       const name = typeof chatInfo.name === "string" ? chatInfo.name : "";
       const phone = typeof chatInfo.phone === "string" ? chatInfo.phone : "";
       const isGroup = chatInfo.isGroup === true;
+      const externalId = typeof chatInfo.externalId === "string" ? chatInfo.externalId : "";
       const sameSelection = !!previous
         && previous.name === name
         && previous.phone === phone
-        && previous.isGroup === isGroup;
+        && previous.isGroup === isGroup
+        && (previous.externalId || "") === externalId;
       const snapshot = {
         accountId,
         name,
         phone,
         isGroup,
+        ...(externalId ? { externalId } : {}),
         observedAt: new Date().toISOString(),
         selectionProof: sameSelection ? previous.selectionProof : randomUUID(),
       };
@@ -1941,7 +2032,7 @@ export class IpcHandlers {
       const current = this.whatsappCurrentChat.get(accountId) || cached;
       if (
         identity &&
-        identity.phone &&
+        (identity.phone || identity.externalId) &&
         (!current || !current.name || current.name === identity.name)
       ) {
         const enriched = {
@@ -1949,6 +2040,7 @@ export class IpcHandlers {
           name: identity.name,
           phone: identity.phone,
           isGroup: identity.isGroup,
+          ...(identity.externalId ? { externalId: identity.externalId } : {}),
           observedAt: new Date().toISOString(),
           selectionProof: current?.selectionProof || randomUUID(),
         };
@@ -2127,7 +2219,7 @@ export class IpcHandlers {
       return app.getVersion();
     });
 
-    // 运行时配置读取（解耦 127.0.0.1：API/更新地址）
+    // 运行时配置读取（API/更新地址由用户填写）
     // 供首次配置页（渲染进程，TASK-110/112 负责 UI）读取当前配置。
     ipcMain.handle(IPC_CHANNELS.APP_CONFIG_GET, () => {
       return tryLoadRuntimeConfig();
@@ -2164,6 +2256,11 @@ export class IpcHandlers {
           return { success: false, error: error?.message || "unknown" };
         }
       },
+    );
+
+    ipcMain.handle(
+      IPC_CHANNELS.APP_CHECK_CONNECTION,
+      async (_event, apiBaseUrl: string) => checkApiConnection(apiBaseUrl, app.getVersion()),
     );
 
     // 局域网状态检测：以实际业务后端 /health 为准，不依赖公网 DNS。

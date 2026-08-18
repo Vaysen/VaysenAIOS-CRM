@@ -23,6 +23,7 @@ const DYNAMIC_ROUTE_FALLBACKS: Array<{ pattern: RegExp; file: string }> = [
   { pattern: /^\/leads\/[^/]+\/edit\/?$/, file: path.join('leads', '__static', 'edit.html') },
   { pattern: /^\/leads\/[^/]+\/?$/, file: path.join('leads', '__static.html') },
   { pattern: /^\/orders\/[^/]+\/?$/, file: path.join('orders', '__static.html') },
+  { pattern: /^\/opportunities\/[^/]+\/?$/, file: path.join('opportunities', '__static.html') },
   { pattern: /^\/products\/[^/]+\/edit\/?$/, file: path.join('products', '__static', 'edit.html') },
   { pattern: /^\/quotes\/[^/]+\/?$/, file: path.join('quotes', '__static.html') },
   { pattern: /^\/unsubscribe\/[^/]+\/?$/, file: path.join('unsubscribe', '__static.html') },
@@ -41,6 +42,30 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 /** 固定回环端口，确保 Electron 重启后 localStorage/sessionStorage origin 不变。 */
 export const LOCAL_SERVER_PORT = 47831;
+
+const INSTALLER_SMOKE_PORT_MIN = 49152;
+
+export function resolveLocalServerPort(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.VAYSEN_INSTALLER_SMOKE !== '1') return LOCAL_SERVER_PORT;
+  const raw = env.VAYSEN_LOCAL_SERVER_PORT || '';
+  if (!/^\d+$/.test(raw)) {
+    throw new Error('installer smoke local-server port is missing or invalid');
+  }
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < INSTALLER_SMOKE_PORT_MIN || port > 65535) {
+    throw new Error('installer smoke local-server port is outside the allowed range');
+  }
+  return port;
+}
+
+export function resolveInstallerSmokeToken(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.VAYSEN_INSTALLER_SMOKE !== '1') return null;
+  const token = env.VAYSEN_INSTALLER_SMOKE_TOKEN || '';
+  if (!/^[A-Za-z0-9_-]{16,256}$/.test(token)) {
+    throw new Error('installer smoke handshake token is missing or invalid');
+  }
+  return token;
+}
 
 function getDynamicRouteFallback(requestPath: string): string | null {
   const route = DYNAMIC_ROUTE_FALLBACKS.find((item) => item.pattern.test(requestPath));
@@ -82,6 +107,7 @@ export class LocalServer {
   constructor(
     apiBaseUrl: string | null = null,
     private readonly listenPort: number = LOCAL_SERVER_PORT,
+    private readonly smokeToken: string | null = null,
   ) {
     this.apiTarget = normalizeApiBaseUrl(apiBaseUrl);
     this.port = listenPort;
@@ -165,6 +191,17 @@ export class LocalServer {
   /** 启动本地静态服务器并返回系统分配的端口。 */
   async start(frontendOutDir: string): Promise<number> {
     return new Promise((resolve, reject) => {
+      if (this.smokeToken) {
+        this.app.get('/__vaysen-installer-smoke', (_req, res) => {
+          res.setHeader('cache-control', 'no-store');
+          res.status(200).json({
+            token: this.smokeToken,
+            pid: process.pid,
+            port: this.port,
+          });
+        });
+      }
+
       // API 必须早于静态资源与 SPA 回退注册。
       this.app.use('/api', (req, res) => this.proxyBackend(req, res, this.apiTarget?.pathname || '/api'));
       this.app.use('/uploads', (req, res) => this.proxyBackend(req, res, '/uploads'));

@@ -14,11 +14,11 @@ describe('assessResearchSubject', () => {
     ['manual_confirmed', 'medium'],
   ])('rejects an unreviewed company identity (%s/%s)', (source, confidence) => {
     expect(assessResearchSubject({
-      companyName: 'Sample Buyer', companyNameSource: source, companyNameConfidence: confidence,
+      companyName: 'AcmeCorp', companyNameSource: source, companyNameConfidence: confidence,
     })).toEqual(expect.objectContaining({
       trusted: false,
       code: 'UNVERIFIED_COMPANY_NAME',
-      companyName: 'Sample Buyer',
+      companyName: 'AcmeCorp',
     }));
   });
 

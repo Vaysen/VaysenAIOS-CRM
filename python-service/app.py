@@ -1,5 +1,5 @@
 """
-vaysen_ai_crm-pilot Python 微服务
+vaysen-ai-crm Python 微服务
 功能：
   1. POST /remove-bg       - 使用 rembg 去除图片背景
   2. POST /pdf-to-images   - 将 PDF 文件转换为图片列表
@@ -17,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("vaysen_ai_crm-python-service")
+logger = logging.getLogger("vaysen-crm-python-service")
 
 app = Flask(__name__)
 CORS(app)

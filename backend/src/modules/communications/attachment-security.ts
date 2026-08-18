@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -59,6 +59,16 @@ export function createCommunicationUploadFilename(
 
 export function getUploadsRoot(): string {
   return path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
+}
+
+export function communicationUploadScopeSegments(
+  companyId: string,
+  userId: string,
+) {
+  return {
+    tenantSegment: createHash('sha256').update(companyId).digest('hex').slice(0, 24),
+    userSegment: createHash('sha256').update(userId).digest('hex').slice(0, 24),
+  };
 }
 
 export function ensureUploadsRoot(): string {
@@ -129,6 +139,42 @@ export function resolveSafeUploadPath(reference: unknown, uploadsRoot = getUploa
   }
 
   return realCandidate;
+}
+
+export function resolveScopedCommunicationUploadPath(
+  reference: unknown,
+  companyId: string,
+  userId: string,
+  uploadsRoot = getUploadsRoot(),
+): string {
+  const { tenantSegment, userSegment } = communicationUploadScopeSegments(
+    companyId,
+    userId,
+  );
+  const expectedUrlPrefix =
+    `/uploads/communications/${tenantSegment}/${userSegment}/`;
+  if (
+    typeof reference !== 'string'
+    || !reference.startsWith(expectedUrlPrefix)
+    || reference.slice(expectedUrlPrefix.length).includes('/')
+  ) {
+    throw new BadRequestException(
+      'Attachment must belong to the active tenant and uploader',
+    );
+  }
+  const resolved = resolveSafeUploadPath(reference, uploadsRoot);
+  const expectedDirectory = fs.realpathSync(path.resolve(
+    uploadsRoot,
+    'communications',
+    tenantSegment,
+    userSegment,
+  ));
+  if (path.dirname(resolved) !== expectedDirectory) {
+    throw new BadRequestException(
+      'Attachment must belong to the active tenant and uploader',
+    );
+  }
+  return resolved;
 }
 
 export function uploadResponseSecurityHeaders(filename: string): Record<string, string> {

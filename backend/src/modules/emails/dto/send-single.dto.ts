@@ -45,4 +45,11 @@ export class SendSingleDto {
   @Min(0)
   @Max(4)
   outreachRound?: number;
+
+  @ApiPropertyOptional({
+    description: 'Calling context. When "marketing" (marketing panel), the sender account must have accountRole=MARKETING; absent = business one-to-one send, unrestricted.',
+  })
+  @IsOptional()
+  @IsString()
+  source?: string;
 }

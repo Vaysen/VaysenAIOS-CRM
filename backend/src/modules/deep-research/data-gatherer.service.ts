@@ -1,12 +1,43 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { isIP } from 'node:net';
 import { completeAiJson } from '@/common/ai/ai-client.util';
+import { searchTrustedSearxng } from '@/common/http/trusted-searxng-client';
+import { safeErrorCategory, safeLogEvent } from '@/common/security/safe-logging';
+
+export const RESEARCH_EVIDENCE_FAILURE_CODE = 'RESEARCH_EVIDENCE_COLLECTION_FAILED';
+export const RESEARCH_EVIDENCE_FAILURE_MESSAGE = 'Deep research evidence collection failed';
+
+const SEARCH_FAILURE_CODES = new Set([
+  'RESEARCH_SEARCH_TIMEOUT',
+  'RESEARCH_SEARCH_INVALID_RESPONSE',
+  'RESEARCH_SEARCH_RESPONSE_TOO_LARGE',
+  'RESEARCH_SEARCH_FAILED',
+]);
+
+type StableResearchError = Error & { code?: string };
+
+export function createResearchEvidenceError(
+  code: string = RESEARCH_EVIDENCE_FAILURE_CODE,
+  message: string = RESEARCH_EVIDENCE_FAILURE_MESSAGE,
+): StableResearchError {
+  const error = new Error(message) as StableResearchError;
+  error.code = code;
+  return error;
+}
+
+function stableResearchErrorCode(error: unknown) {
+  const code = typeof error === 'object' && error !== null
+    ? String((error as { code?: unknown }).code || '')
+    : '';
+  return SEARCH_FAILURE_CODES.has(code) ? code : RESEARCH_EVIDENCE_FAILURE_CODE;
+}
 
 export interface GatheredData {
   raw: string;
   html?: string;
   json?: any;
   error?: string;
+  errorCode?: string;
 }
 
 interface SearchEvidence {
@@ -413,10 +444,17 @@ export class DataGathererService {
       };
       const html = this.buildReportHtml(company, result.provider, result.model, json, evidence);
       return { raw: result.text, html, json };
-    } catch (err: any) {
-      const error = `证据优先背调失败: ${err?.message || String(err)}`;
-      this.logger.error(error);
-      return { raw: '', error };
+    } catch (err: unknown) {
+      const errorCode = stableResearchErrorCode(err);
+      this.logger.error(safeLogEvent('deep_research.evidence_collection_failed', {
+        error: err,
+        errorCategory: safeErrorCategory(err),
+      }));
+      return {
+        raw: '',
+        error: RESEARCH_EVIDENCE_FAILURE_MESSAGE,
+        errorCode,
+      };
     }
   }
 
@@ -424,16 +462,15 @@ export class DataGathererService {
     const configuredBase = process.env.SEARXNG_URL || process.env.SEARXNG_BASE_URL;
     if (!configuredBase) throw new Error('未配置 SEARXNG_URL 或 SEARXNG_BASE_URL');
 
-    let searchEndpoint: URL;
+    let searchBaseUrl: string;
     try {
       const base = new URL(configuredBase);
       if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) {
         throw new Error('invalid protocol or credentials');
       }
-      base.pathname = `${base.pathname.replace(/\/$/, '')}/search`;
       base.search = '';
       base.hash = '';
-      searchEndpoint = base;
+      searchBaseUrl = base.toString();
     } catch {
       throw new Error('SEARXNG_URL 配置无效');
     }
@@ -451,7 +488,7 @@ export class DataGathererService {
     const evidence: SearchEvidence[] = [];
     const seenUrls = new Set<string>();
     for (const query of queries) {
-      const rows = await this.searchSearxng(searchEndpoint, query);
+      const rows = await this.searchSearxng(searchBaseUrl, query);
       for (const row of rows) {
         if (seenUrls.has(row.url)) continue;
         seenUrls.add(row.url);
@@ -462,75 +499,37 @@ export class DataGathererService {
     return evidence;
   }
 
-  private async searchSearxng(endpoint: URL, query: string): Promise<SearchEvidence[]> {
-    const url = new URL(endpoint.toString());
-    url.searchParams.set('q', query);
-    url.searchParams.set('format', 'json');
-    url.searchParams.set('language', 'en');
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+  private async searchSearxng(baseUrl: string, query: string): Promise<SearchEvidence[]> {
     try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': 'Vaysen AI CRM/2.0 evidence-research',
-        },
-        signal: controller.signal,
+      const results = await searchTrustedSearxng(query, MAX_EVIDENCE_RESULTS, {
+        baseUrl,
+        timeoutMs: SEARCH_TIMEOUT_MS,
+        maxResponseBytes: MAX_RESPONSE_BYTES,
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const contentType = response.headers.get('content-type') || '';
-      if (!/application\/json/i.test(contentType)) throw new Error('响应不是 JSON');
-
-      const body = await this.readLimitedBody(response);
-      let payload: any;
-      try {
-        payload = JSON.parse(body);
-      } catch {
-        throw new Error('响应 JSON 无法解析');
-      }
-      if (!payload || !Array.isArray(payload.results)) throw new Error('响应缺少 results 数组');
 
       const rows: SearchEvidence[] = [];
-      for (const item of payload.results) {
-        const normalizedUrl = normalizePublicEvidenceUrl(item?.url);
+      for (const item of results) {
+        const normalizedUrl = normalizePublicEvidenceUrl(item.url);
         if (!normalizedUrl) continue;
-        const title = compactText(item?.title, MAX_TITLE_LENGTH);
-        const snippet = compactText(item?.content ?? item?.snippet, MAX_SNIPPET_LENGTH);
+        const title = compactText(item.title, MAX_TITLE_LENGTH);
+        const snippet = compactText(item.snippet, MAX_SNIPPET_LENGTH);
         if (!title && !snippet) continue;
         rows.push({ title: title || new URL(normalizedUrl).hostname, url: normalizedUrl, snippet });
       }
       return rows;
-    } catch (error: any) {
-      if (error?.name === 'AbortError') throw new Error(`SearXNG 搜索超时（${SEARCH_TIMEOUT_MS}ms）`);
-      throw new Error(`SearXNG 搜索失败: ${error?.message || String(error)}`);
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async readLimitedBody(response: Response) {
-    const contentLength = Number(response.headers.get('content-length') || 0);
-    if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
-      throw new Error(`响应超过 ${MAX_RESPONSE_BYTES} 字节上限`);
-    }
-
-    if (!response.body) return '';
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        throw new Error(`响应超过 ${MAX_RESPONSE_BYTES} 字节上限`);
+    } catch (error: unknown) {
+      const candidate = error as { name?: unknown; message?: unknown } | null;
+      if (candidate?.name === 'TimeoutError' || candidate?.name === 'AbortError') {
+        throw createResearchEvidenceError('RESEARCH_SEARCH_TIMEOUT');
       }
-      chunks.push(value);
+      if (candidate?.message === 'SEARXNG_RESPONSE_JSON_INVALID') {
+        throw createResearchEvidenceError('RESEARCH_SEARCH_INVALID_RESPONSE');
+      }
+      if (candidate?.message === 'SEARXNG_RESPONSE_TOO_LARGE') {
+        throw createResearchEvidenceError('RESEARCH_SEARCH_RESPONSE_TOO_LARGE');
+      }
+      throw createResearchEvidenceError('RESEARCH_SEARCH_FAILED');
     }
-    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8');
   }
 
   private buildReportHtml(

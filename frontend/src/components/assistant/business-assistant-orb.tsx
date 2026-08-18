@@ -516,50 +516,6 @@ export function BusinessAssistantOrb() {
     }
   };
 
-  const sendGeneratedWhatsapp = async () => {
-    const value = toolResult.trim();
-    if (!value || toolFilling) return;
-    if (
-      !isWhatsAppWorkspace
-      || !whatsapp?.conversationId
-      || !whatsapp.phone
-      || !whatsapp.name
-      || !whatsapp.accountId
-      || !whatsapp.selectionProof
-      || whatsapp.isGroup
-    ) {
-      toast.error('真实发送需要当前 WhatsApp 单聊已关联可信 CRM 会话和完整号码');
-      return;
-    }
-    const confirmed = window.confirm(
-      `确认由业务助理向 ${whatsapp.name || whatsapp.phone} 发送这段消息？\n\n${value}`,
-    );
-    if (!confirmed) return;
-    const sendWhatsappText = window.electronAPI?.agentBridge?.sendWhatsappText;
-    if (!sendWhatsappText) {
-      toast.error('当前桌面客户端不支持一次性授权发送，请安装最新版本');
-      return;
-    }
-    setToolFilling('send');
-    try {
-      const result = await sendWhatsappText({
-        conversationId: whatsapp.conversationId,
-        targetPhone: whatsapp.phone,
-        targetName: whatsapp.name,
-        targetAccountId: whatsapp.accountId,
-        selectionProof: whatsapp.selectionProof,
-        text: value,
-      });
-      if (!result.success) throw new Error(result.error || 'WhatsApp 消息未发送');
-      toast.success(result.warning || `已向 ${whatsapp.name || whatsapp.phone} 发出消息`);
-      if (!result.warning) setToolResult('');
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : 'WhatsApp 发送失败');
-    } finally {
-      setToolFilling(null);
-    }
-  };
-
   const sendWhatsappProposal = async (
     turnId: string,
     proposal: AssistantWhatsappTextProposal,
@@ -679,7 +635,7 @@ export function BusinessAssistantOrb() {
                 <Bot className="h-5 w-5" />
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="font-semibold">Vaysen AI 业务助理</h2>
+                <h2 className="font-semibold">JY AI 业务助理</h2>
                 <p className="truncate text-[11px] text-slate-300">
                   业务主管：客户 · 订单 · WhatsApp · 邮件 · 真实回执
                 </p>
@@ -779,15 +735,6 @@ export function BusinessAssistantOrb() {
                   && !!whatsapp?.selectionProof
                   && whatsapp.isGroup !== true
                 }
-                canSendWhatsapp={
-                  isWhatsAppWorkspace
-                  && !!whatsapp?.conversationId
-                  && !!whatsapp?.phone
-                  && !!whatsapp?.name
-                  && !!whatsapp?.accountId
-                  && !!whatsapp?.selectionProof
-                  && whatsapp.isGroup !== true
-                }
                 canFillEmail={pathname === '/emails' || pathname === '/communication'}
                 text={toolText}
                 result={toolResult}
@@ -796,7 +743,6 @@ export function BusinessAssistantOrb() {
                 onText={setToolText}
                 onRun={runTool}
                 onFill={(target) => void fillGeneratedDraft(target)}
-                onSend={() => void sendGeneratedWhatsapp()}
               />
             )}
             {tab === 'report' && (
@@ -1006,6 +952,14 @@ function ChatTab({
             {turn.input}
           </div>
           <div className="mr-6 rounded-2xl rounded-bl-md border bg-white px-3 py-2.5 text-sm leading-6 text-slate-700 shadow-sm">
+            {turn.thinking ? (
+              <details className="mb-2 rounded-lg border border-slate-200 bg-slate-50/60 px-2.5 py-1.5">
+                <summary className="cursor-pointer select-none text-[10px] font-semibold text-slate-500 hover:text-indigo-600">
+                  🧠 思考过程
+                </summary>
+                <div className="mt-1.5 whitespace-pre-wrap text-[11px] leading-5 text-slate-500">{turn.thinking}</div>
+              </details>
+            ) : null}
             <div className="whitespace-pre-wrap">{turn.output}</div>
             <p className="mt-2 text-[9px] text-slate-400">
               {formatTime(turn.createdAt)} · {turnKindLabel(turn)}
@@ -1542,7 +1496,6 @@ export function AssistantRunStatusCard({
 function ToolsTab({
   whatsappName,
   canFillWhatsapp,
-  canSendWhatsapp,
   canFillEmail,
   text,
   result,
@@ -1551,11 +1504,9 @@ function ToolsTab({
   onText,
   onRun,
   onFill,
-  onSend,
 }: {
   whatsappName?: string;
   canFillWhatsapp: boolean;
-  canSendWhatsapp: boolean;
   canFillEmail: boolean;
   text: string;
   result: string;
@@ -1564,7 +1515,6 @@ function ToolsTab({
   onText: (value: string) => void;
   onRun: (kind: 'translate' | 'reply') => void;
   onFill: (target: 'whatsapp' | 'email') => void;
-  onSend: () => void;
 }) {
   const translationTarget = smartTranslationTarget(text);
   return (
@@ -1657,20 +1607,10 @@ function ToolsTab({
               )}
               填入邮件
             </button>
-            <button
-              type="button"
-              onClick={onSend}
-              disabled={!canSendWhatsapp || !!filling}
-              className="col-span-2 flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-2.5 text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-              title={canSendWhatsapp ? '经管理员一次性授权后向当前已核验客户发送' : '需要可信 CRM 会话、完整号码和 WhatsApp 单聊'}
-            >
-              {filling === 'send' ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Send className="h-3.5 w-3.5" />
-              )}
-              核对并真实发送给当前客户
-            </button>
+            <div className="col-span-2 flex items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-2.5 text-[11px] font-semibold text-amber-800">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              写入或发送动作只生成审批卡，由人工审批后处理
+            </div>
           </div>
         </div>
       )}

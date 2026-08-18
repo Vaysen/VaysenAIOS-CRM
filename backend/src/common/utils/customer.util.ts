@@ -18,7 +18,7 @@ export function normalizePhone(phone: string): string {
 /**
  * 获取手机号的后10位数字（用于模糊匹配）
  * 不同归一化方式产生的号码后10位是一致的
- * 例如: 12025550123 / 15624584719 / +12025550123 → 后10位都是 5624584719
+ * 例如: 8613800000000 / 13800000000 / +8613800000000 → 后10位都是 1380000000
  */
 export function phoneLastDigits(phone: string, digits: number = 10): string {
   const cleaned = phone.replace(/\D/g, '');

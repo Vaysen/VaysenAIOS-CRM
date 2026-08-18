@@ -1,4 +1,5 @@
 import { AgentRunKind, AgentRunStatus } from '@prisma/client';
+import { Logger } from '@nestjs/common';
 import { DeepResearchProcessor } from './deep-research.processor';
 
 const jobData = {
@@ -46,6 +47,8 @@ function validRun(status: AgentRunStatus = AgentRunStatus.PENDING) {
 describe('DeepResearchProcessor', () => {
   it('revalidates company, operator, lead and run before completing the tracked task', async () => {
     const { processor, prisma, background } = createProcessor();
+    const loggerLog = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     prisma.agentRun.findFirst.mockResolvedValue(validRun());
     prisma.userCompanyRelation.findFirst.mockResolvedValue({ role: { name: 'sales_user' } });
     prisma.lead.findFirst.mockResolvedValue({
@@ -76,6 +79,16 @@ describe('DeepResearchProcessor', () => {
     expect(prisma.agentRun.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: AgentRunStatus.COMPLETED }),
     }));
+    const output = JSON.stringify([
+      ...loggerLog.mock.calls,
+      ...loggerError.mock.calls,
+    ]);
+    expect(output).toContain('deep_research.execution_started');
+    expect(output).not.toContain('Buyer Ltd');
+    expect(output).not.toContain('company-1');
+    expect(output).not.toContain('user-1');
+    expect(output).not.toContain('run-1');
+    expect(output).not.toContain('lead-1');
   });
 
   it('uses the report bound to agentRunId on retry and does not repeat research', async () => {
@@ -106,6 +119,8 @@ describe('DeepResearchProcessor', () => {
 
   it('does not overwrite a run cancelled while research was executing', async () => {
     const { processor, prisma, background } = createProcessor();
+    const loggerLog = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     prisma.agentRun.findFirst.mockResolvedValue(validRun());
     prisma.userCompanyRelation.findFirst.mockResolvedValue({ role: { name: 'sales_user' } });
     prisma.lead.findFirst.mockResolvedValue({
@@ -134,6 +149,13 @@ describe('DeepResearchProcessor', () => {
       data: expect.objectContaining({ eventType: 'RUN_COMPLETED' }),
     }));
     expect(prisma.agentTask.updateMany).toHaveBeenCalledTimes(1);
+    const output = JSON.stringify([
+      ...loggerLog.mock.calls,
+      ...loggerError.mock.calls,
+    ]);
+    expect(output).not.toContain('Buyer Ltd');
+    expect(output).not.toContain('company-1');
+    expect(output).not.toContain('run-1');
   });
 
   it('rejects a job whose agentRunId does not match all scoped identifiers', async () => {
@@ -166,6 +188,7 @@ describe('DeepResearchProcessor', () => {
 
   it('throws partial evidence so BullMQ retries and removes the bound failed report', async () => {
     const { processor, prisma, background } = createProcessor();
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     prisma.agentRun.findFirst.mockResolvedValue(validRun());
     prisma.userCompanyRelation.findFirst.mockResolvedValue({ role: { name: 'sales_user' } });
     prisma.lead.findFirst.mockResolvedValue({
@@ -193,10 +216,49 @@ describe('DeepResearchProcessor', () => {
     expect(prisma.agentRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: AgentRunStatus.FAILED }),
     }));
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.execution_failed');
+    expect(output).not.toContain('Buyer Ltd');
+    expect(output).not.toContain('run-1');
+    expect(output).not.toContain('report-partial');
+  });
+
+  it('rethrows provider failure and keeps its text out of processor logs', async () => {
+    const { processor, prisma, background } = createProcessor();
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const providerError = 'provider-sentinel@example.com response https://provider.example/?token=secret';
+    prisma.agentRun.findFirst.mockResolvedValue(validRun());
+    prisma.userCompanyRelation.findFirst.mockResolvedValue({ role: { name: 'sales_user' } });
+    prisma.lead.findFirst.mockResolvedValue({
+      id: 'lead-1', companyId: 'company-1', companyName: 'Buyer Ltd', ownerUserId: 'user-1', contacts: [],
+      companyNameSource: 'manual_confirmed', companyNameConfidence: 'high',
+    });
+    prisma.deepResearchReport.findUnique.mockResolvedValue(null);
+    prisma.agentRun.updateMany.mockResolvedValue({ count: 1 });
+    prisma.agentRun.findUnique.mockResolvedValue({
+      status: AgentRunStatus.RUNNING,
+      executionClaimId: 'job-1:attempt-1',
+    });
+    prisma.agentTask.updateMany.mockResolvedValue({ count: 1 });
+    prisma.agentAuditLog.create.mockResolvedValue({});
+    background.research.mockRejectedValue(new Error(providerError));
+
+    await expect(processor.process({ data: jobData, id: 'job-1', attemptsMade: 0 } as any))
+      .rejects.toThrow(providerError);
+    expect(prisma.agentRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: AgentRunStatus.FAILED, errorCode: 'RESEARCH_EXECUTION_FAILED' }),
+    }));
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.execution_failed');
+    expect(output).not.toContain(providerError);
+    expect(output).not.toContain('Buyer Ltd');
+    expect(output).not.toContain('run-1');
+    expect(output).not.toContain('lead-1');
   });
 
   it('reclaims an expired RUNNING lease after a stalled BullMQ worker and completes with the new token', async () => {
     const { processor, prisma, background } = createProcessor();
+    const loggerLog = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     prisma.agentRun.findFirst.mockResolvedValue({
       ...validRun(AgentRunStatus.RUNNING),
       executionClaimId: 'job-1:old-token',
@@ -233,6 +295,11 @@ describe('DeepResearchProcessor', () => {
         executionLeaseExpiresAt: expect.any(Date),
       }),
     }));
+    const output = JSON.stringify(loggerLog.mock.calls);
+    expect(output).toContain('deep_research.execution_started');
+    expect(output).not.toContain('Buyer Ltd');
+    expect(output).not.toContain('run-1');
+    expect(output).not.toContain('job-1');
   });
 
   it('does not run a duplicate worker while the current durable lease is active', async () => {
@@ -324,7 +391,7 @@ describe('DeepResearchProcessor', () => {
     prisma.agentRun.findFirst.mockResolvedValue(validRun());
     prisma.userCompanyRelation.findFirst.mockResolvedValue({ role: { name: 'sales_user' } });
     prisma.lead.findFirst.mockResolvedValue({
-      id: 'lead-1', companyId: 'company-1', companyName: 'Sample Buyer', ownerUserId: 'user-1', contacts: [],
+      id: 'lead-1', companyId: 'company-1', companyName: 'AcmeCorp', ownerUserId: 'user-1', contacts: [],
       companyNameSource: 'untrusted_display', companyNameConfidence: 'low',
     });
     prisma.agentRun.updateMany.mockResolvedValue({ count: 1 });

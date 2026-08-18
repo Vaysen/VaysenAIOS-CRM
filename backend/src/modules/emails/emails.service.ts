@@ -1,14 +1,17 @@
-import {
+﻿import {
   Injectable,
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import { Resolver, resolveMx } from 'dns/promises';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { SendSingleDto } from './dto/send-single.dto';
@@ -25,6 +28,10 @@ import {
   resolveEmailCompanyWebsite,
 } from './email-content.guard';
 import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
+import {
   appendPublicUnsubscribe,
   injectPublicTrackingPixel,
   replaceLinksWithPublicTracking,
@@ -35,6 +42,13 @@ import {
   EmailIdentityAdapter,
   type IngestEmailIdentityResult,
 } from '../customer-identity/email-identity.adapter';
+import { OutboundComplianceService } from '../outbound/outbound-compliance.service';
+import { EmailAccountsService } from '../email-accounts/email-accounts.service';
+import {
+  writeEmailVerificationEvidence,
+} from '../outbound/email-verification-evidence';
+import { normalizeIdempotencyKey } from '../../common/security/idempotency-key';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '@/common/security/safe-logging';
 
 const VALID_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const AI_BATCH_LIMIT = 100;
@@ -127,6 +141,61 @@ const DEFAULT_VARS: Record<string, string> = {
   '{{unsubscribe_link}}': 'Unsubscribe Link',
 };
 
+type EmailDispatchJob = {
+  queue: 'compose' | 'validate';
+  name: string;
+  jobId: string;
+  data: Record<string, any>;
+  options: Record<string, any>;
+};
+
+type EmailDispatchMessagePlan = {
+  id: string;
+  data: Record<string, any>;
+  job?: EmailDispatchJob;
+};
+
+type EmailDispatchSeedLeadPlan = {
+  id: string;
+  data: Record<string, any>;
+};
+
+type EmailDispatchResult = {
+  inputDigest: string;
+  response: Record<string, any>;
+  jobs: EmailDispatchJob[];
+  projection: {
+    templateUseCount?: {
+      templateId: string;
+      increment: number;
+    };
+    activities: Array<{
+      id: string;
+      companyId: string;
+      leadId: string;
+      userId: string;
+      activityType: string;
+      title: string;
+      referenceType: string;
+      referenceId: string | null;
+    }>;
+  };
+};
+
+type ReservedEmailDispatch = {
+  request: {
+    id: string;
+    companyId: string;
+    operatorUserId: string;
+    kind: string;
+    idempotencyKey: string;
+    payloadDigest: string;
+    status: string;
+    result: unknown;
+  };
+  created: boolean;
+};
+
 @Injectable()
 export class EmailsService {
   private readonly logger = new Logger(EmailsService.name);
@@ -138,6 +207,9 @@ export class EmailsService {
     private emailIdentityAdapter: EmailIdentityAdapter,
     @InjectQueue(QUEUES.emailCompose) private emailComposeQueue: Queue,
     @InjectQueue(QUEUES.emailValidate) private emailValidateQueue: Queue,
+    private outbound: OutboundComplianceService,
+    // R111 批次A: 邮箱账户分级 → 营销动作强制校验（复用 assertMarketingRole）
+    private emailAccounts: EmailAccountsService,
   ) {
     this.aiClient = createAiClient('email');
   }
@@ -174,15 +246,35 @@ export class EmailsService {
 
   // ========== Send Single ==========
 
-  async sendSingle(dto: SendSingleDto, currentUser: any) {
+  async sendSingle(
+    dto: SendSingleDto,
+    currentUser: any,
+    rawIdempotencyKey: string,
+  ) {
+    const idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     const company = this.getCompany(currentUser);
     this.checkWriteAccess(currentUser, company.id);
-
+    const inputDigest = this.emailDispatchPayloadDigest({
+      kind: 'SINGLE',
+      operatorUserId: currentUser.id,
+      dto,
+    });
+    const replay = await this.findEmailDispatchRequest({
+      companyId: company.id,
+      operatorUserId: currentUser.id,
+      kind: 'SINGLE',
+      idempotencyKey,
+      inputDigest,
+    });
     const [lead, emailAccount, template] = await Promise.all([
-      this.prisma.lead.findUnique({ where: { id: dto.leadId } }),
-      this.prisma.emailAccount.findUnique({ where: { id: dto.emailAccountId } }),
-      this.prisma.emailTemplate.findUnique({
-        where: { id: dto.emailTemplateId },
+      this.prisma.lead.findFirst({
+        where: { id: dto.leadId, companyId: company.id, deletedAt: null },
+      }),
+      this.prisma.emailAccount.findFirst({
+        where: { id: dto.emailAccountId, companyId: company.id },
+      }),
+      this.prisma.emailTemplate.findFirst({
+        where: { id: dto.emailTemplateId, companyId: company.id },
         include: { variables: true },
       }),
     ]);
@@ -192,13 +284,79 @@ export class EmailsService {
     if (!emailAccount || emailAccount.companyId !== company.id) throw new NotFoundException('Email account not found');
     if (!template || template.companyId !== company.id) throw new NotFoundException('Email template not found');
 
+    await this.outbound.assertEmailAccountAccess(company.id, emailAccount.id, currentUser);
+    // R111 批次A: 营销面板单发（source=marketing）强制仅允许 MARKETING 账号；不带 source 视为商务单发不限制
+    if (dto.source === 'marketing') {
+      this.emailAccounts.assertMarketingRole(emailAccount, '营销面板单发');
+    }
     await this.checkLeadAccess(currentUser, lead);
     this.checkTemplateAccess(currentUser, template);
 
+    if (replay) {
+      await this.assertEmailDispatchReplayAccess(replay, currentUser);
+      return this.completeEmailDispatchRequest(replay);
+    }
+
     const eligibility = await this.checkSendEligibility(lead, emailAccount);
+    const messageId = this.deterministicEmailDispatchId(
+      'email-dispatch-message',
+      company.id,
+      'SINGLE',
+      idempotencyKey,
+      lead.id,
+    );
+    const payloadDigest = this.emailDispatchPayloadDigest({
+      kind: 'SINGLE',
+      operatorUserId: currentUser.id,
+      dto,
+      company: {
+        id: company.id,
+        name: company.name,
+        website: company.website,
+      },
+      lead: {
+        id: lead.id,
+        ownerUserId: lead.ownerUserId,
+        contactEmail: lead.contactEmail,
+        contactName: lead.contactName,
+        companyName: lead.companyName,
+        country: lead.country,
+        website: lead.website,
+        mainProducts: lead.mainProducts,
+      },
+      emailAccount: {
+        id: emailAccount.id,
+        userId: emailAccount.userId,
+        senderName: emailAccount.senderName,
+        senderEmail: emailAccount.senderEmail,
+      },
+      template: {
+        id: template.id,
+        createdBy: template.createdBy,
+        subject: template.subject,
+        body: template.body,
+        variables: template.variables,
+      },
+    });
+
     if (!eligibility.canSend) {
-      const msg = await this.prisma.emailMessage.create({
-        data: {
+      const response = {
+        success: false,
+        message: eligibility.reason,
+        emailMessageId: messageId,
+        status: 'Skipped',
+      };
+      const reserved = await this.reserveEmailDispatchRequest({
+        companyId: company.id,
+        operatorUserId: currentUser.id,
+        kind: 'SINGLE',
+        idempotencyKey,
+        inputDigest,
+        payloadDigest,
+        response,
+        messages: [{
+          id: messageId,
+          data: {
           companyId: company.id,
           leadId: lead.id,
           emailAccountId: emailAccount.id,
@@ -208,19 +366,31 @@ export class EmailsService {
           subject: dto.subject || template.subject,
           bodyHtml: dto.body || template.body,
           trackingId: uuidv4(),
+          unsubscribeToken: uuidv4(),
           status: 'Skipped',
           failedReason: eligibility.reason,
+          },
+        }],
+        projection: {
+          activities: [{
+            id: this.deterministicEmailDispatchId(
+              'email-dispatch-activity',
+              company.id,
+              idempotencyKey,
+              lead.id,
+              'email_skipped',
+            ),
+            companyId: company.id,
+            leadId: lead.id,
+            userId: currentUser.id,
+            activityType: 'email_skipped',
+            title: `Email skipped: ${eligibility.reason}`,
+            referenceType: 'EmailMessage',
+            referenceId: messageId,
+          }],
         },
       });
-
-      await this.createLeadActivity(company.id, lead.id, currentUser.id, 'email_skipped', `Email skipped: ${eligibility.reason}`, msg.id);
-
-      return {
-        success: false,
-        message: eligibility.reason,
-        emailMessageId: msg.id,
-        status: 'Skipped',
-      };
+      return this.completeEmailDispatchRequest(reserved.request);
     }
 
     const rendered = this.renderTemplate(template, lead, emailAccount, dto.productName, dto.customVariables, company);
@@ -229,63 +399,76 @@ export class EmailsService {
 
     const trackingId = uuidv4();
     const unsubscribeToken = uuidv4();
-
-    if (dto.aiPersonalize) {
-      const msg = await this.prisma.emailMessage.create({
-        data: {
-          companyId: company.id,
-          leadId: lead.id,
-          emailAccountId: emailAccount.id,
-          templateId: template.id,
-          senderUserId: currentUser.id,
-          toEmail: lead.contactEmail,
-          subject: rendered.subject,
-          bodyHtml: rendered.body,
-          renderedBody: rendered.body,
-          trackingId,
+    const aiPersonalize = dto.aiPersonalize === true;
+    const initialBody = aiPersonalize
+      ? rendered.body
+      : this.appendUnsubscribeLink(
+          this.replaceLinksWithTracking(
+            this.injectTrackingPixel(
+              ensureCompanyWebsite(
+                rendered.body,
+                resolveEmailCompanyWebsite(company.website),
+              ),
+              trackingId,
+            ),
+            trackingId,
+          ),
           unsubscribeToken,
-          outreachRound: dto.outreachRound || 0,
-          status: 'DraftPending',
-        },
-      });
-
-      await this.emailComposeQueue.add('compose-email', {
-        emailMessageId: msg.id,
-        productName: dto.productName,
-        customVariables: dto.customVariables,
-        sendDelayMs: 0,
-        aiPersonalize: true,
-      }, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 10000 },
-        removeOnComplete: 100,
-        removeOnFail: 100,
-      });
-
-      await this.prisma.emailTemplate.update({
-        where: { id: template.id },
-        data: { useCount: { increment: 1 } },
-      });
-
-      await this.createLeadActivity(company.id, lead.id, currentUser.id, 'email_draft_queued', `AI email draft queued for ${lead.contactEmail}`, msg.id);
-
-      return {
-        success: true,
-        message: 'AI draft queued. Email will only send after validation passes.',
-        emailMessageId: msg.id,
-        status: 'DraftPending',
-      };
-    }
-
-    const bodyWithTracking = this.injectTrackingPixel(
-      ensureCompanyWebsite(rendered.body, resolveEmailCompanyWebsite(company.website)),
-      trackingId,
-    );
-    const bodyWithLinks = this.replaceLinksWithTracking(bodyWithTracking, trackingId);
-    const bodyWithUnsubscribe = this.appendUnsubscribeLink(bodyWithLinks, unsubscribeToken);
-
-    const msg = await this.prisma.emailMessage.create({
-      data: {
+        );
+    const job: EmailDispatchJob = aiPersonalize
+      ? {
+          queue: 'compose',
+          name: 'compose-email',
+          jobId: `email-dispatch-${messageId}-compose`,
+          data: {
+            emailMessageId: messageId,
+            productName: dto.productName,
+            customVariables: dto.customVariables,
+            sendDelayMs: 0,
+            aiPersonalize: true,
+          },
+          options: {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 10000 },
+            removeOnComplete: 100,
+            removeOnFail: 100,
+          },
+        }
+      : {
+          queue: 'validate',
+          name: 'validate-email',
+          jobId: `email-dispatch-${messageId}-validate`,
+          data: {
+            emailMessageId: messageId,
+            aiPersonalize: false,
+            sendDelayMs: 0,
+          },
+          options: {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 10000 },
+            removeOnComplete: 100,
+            removeOnFail: 100,
+          },
+        };
+    const response = {
+      success: true,
+      message: aiPersonalize
+        ? 'AI draft queued. Email will only send after validation passes.'
+        : 'Email queued for validation before sending',
+      emailMessageId: messageId,
+      status: aiPersonalize ? 'DraftPending' : 'DraftReady',
+    };
+    const reserved = await this.reserveEmailDispatchRequest({
+      companyId: company.id,
+      operatorUserId: currentUser.id,
+      kind: 'SINGLE',
+      idempotencyKey,
+      inputDigest,
+      payloadDigest,
+      response,
+      messages: [{
+        id: messageId,
+        data: {
         companyId: company.id,
         leadId: lead.id,
         emailAccountId: emailAccount.id,
@@ -293,64 +476,92 @@ export class EmailsService {
         senderUserId: currentUser.id,
         toEmail: lead.contactEmail,
         subject: rendered.subject,
-        bodyHtml: bodyWithUnsubscribe,
-        renderedBody: bodyWithUnsubscribe,
+        bodyHtml: initialBody,
+        renderedBody: initialBody,
         trackingId,
         unsubscribeToken,
         outreachRound: dto.outreachRound || 0,
-        status: 'DraftReady',
+        status: aiPersonalize ? 'DraftPending' : 'DraftReady',
+        },
+        job,
+      }],
+      projection: {
+        templateUseCount: {
+          templateId: template.id,
+          increment: 1,
+        },
+        activities: [{
+          id: this.deterministicEmailDispatchId(
+            'email-dispatch-activity',
+            company.id,
+            idempotencyKey,
+            lead.id,
+            aiPersonalize ? 'email_draft_queued' : 'email_queued',
+          ),
+          companyId: company.id,
+          leadId: lead.id,
+          userId: currentUser.id,
+          activityType: aiPersonalize ? 'email_draft_queued' : 'email_queued',
+          title: aiPersonalize
+            ? `AI email draft queued for ${lead.contactEmail}`
+            : `Email queued for validation before sending to ${lead.contactEmail}`,
+          referenceType: 'EmailMessage',
+          referenceId: messageId,
+        }],
       },
     });
-
-    await this.emailValidateQueue.add('validate-email', {
-      emailMessageId: msg.id,
-      aiPersonalize: false,
-      sendDelayMs: 0,
-    }, {
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 10000 },
-      removeOnComplete: 100,
-      removeOnFail: 100,
-    });
-
-    await this.prisma.emailTemplate.update({
-      where: { id: template.id },
-      data: { useCount: { increment: 1 } },
-    });
-
-    await this.createLeadActivity(company.id, lead.id, currentUser.id, 'email_queued', `Email queued for validation before sending to ${lead.contactEmail}`, msg.id);
-
-    return {
-      success: true,
-      message: 'Email queued for validation before sending',
-      emailMessageId: msg.id,
-      status: 'DraftReady',
-    };
+    return this.completeEmailDispatchRequest(reserved.request);
   }
 
   // ========== Send Batch ==========
 
-  async sendBatch(dto: SendBatchDto, currentUser: any) {
+  async sendBatch(
+    dto: SendBatchDto,
+    currentUser: any,
+    rawIdempotencyKey: string,
+  ) {
+    const idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     const company = this.getCompany(currentUser);
     this.checkWriteAccess(currentUser, company.id);
+    const inputDigest = this.emailDispatchPayloadDigest({
+      kind: 'BATCH',
+      operatorUserId: currentUser.id,
+      dto,
+    });
+    const replay = await this.findEmailDispatchRequest({
+      companyId: company.id,
+      operatorUserId: currentUser.id,
+      kind: 'BATCH',
+      idempotencyKey,
+      inputDigest,
+    });
     const allowTemplateDirect = dto.allowTemplateDirect === true;
-    if (allowTemplateDirect && !this.isFullAccess(currentUser)) {
+    if (allowTemplateDirect && !this.isFullAccess(currentUser, company.id)) {
       throw new ForbiddenException('Only administrators can send batch emails without AI personalization');
     }
     const effectiveAiPersonalize = allowTemplateDirect ? dto.aiPersonalize !== false : true;
     const effectiveDto: SendBatchDto = { ...dto, aiPersonalize: effectiveAiPersonalize };
 
     const [emailAccount, template] = await Promise.all([
-      this.prisma.emailAccount.findUnique({ where: { id: dto.emailAccountId } }),
-      this.prisma.emailTemplate.findUnique({
-        where: { id: dto.emailTemplateId },
+      this.prisma.emailAccount.findFirst({
+        where: { id: dto.emailAccountId, companyId: company.id },
+      }),
+      this.prisma.emailTemplate.findFirst({
+        where: { id: dto.emailTemplateId, companyId: company.id },
         include: { variables: true },
       }),
     ]);
 
     if (!emailAccount || emailAccount.companyId !== company.id) throw new BadRequestException('请选择发件邮箱');
     if (!template || template.companyId !== company.id) throw new BadRequestException('请选择邮件模板');
+    await this.outbound.assertEmailAccountAccess(company.id, emailAccount.id, currentUser);
+    // R111 批次A: 批量/定时/AI 直发属营销动作，强制仅允许 MARKETING 账号（拒绝 CORE/SUPPORT）
+    this.emailAccounts.assertMarketingRole(emailAccount, '营销批量发送');
     this.checkTemplateAccess(currentUser, template);
+    if (replay) {
+      await this.assertEmailDispatchReplayAccess(replay, currentUser);
+      return this.completeEmailDispatchRequest(replay);
+    }
 
     const batchFilters = {
       ...(dto.filters || {}),
@@ -365,10 +576,10 @@ export class EmailsService {
           leadIds: dto.leadIds || [],
         });
 
-    const leads = await this.prisma.lead.findMany({
+    const leads = (await this.prisma.lead.findMany({
       where: leadWhere,
       orderBy: { createdAt: 'desc' },
-    });
+    })).sort((left: any, right: any) => String(left.id).localeCompare(String(right.id)));
 
     if (leads.length === 0) throw new NotFoundException('没有找到符合当前轮次和筛选条件的可发送客户');
     if (effectiveAiPersonalize && leads.length > AI_BATCH_LIMIT) {
@@ -380,11 +591,51 @@ export class EmailsService {
       await this.checkLeadAccess(currentUser, lead);
     }
 
+    const seedPolicy = resolveEmailSeedPolicy();
+    const payloadDigest = this.emailDispatchPayloadDigest({
+      kind: 'BATCH',
+      operatorUserId: currentUser.id,
+      dto,
+      effectiveDto,
+      batchFilters,
+      seedPolicy,
+      company: {
+        id: company.id,
+        name: company.name,
+        website: company.website,
+      },
+      emailAccount: {
+        id: emailAccount.id,
+        userId: emailAccount.userId,
+        senderName: emailAccount.senderName,
+        senderEmail: emailAccount.senderEmail,
+        sendIntervalSeconds: emailAccount.sendIntervalSeconds,
+      },
+      template: {
+        id: template.id,
+        createdBy: template.createdBy,
+        subject: template.subject,
+        body: template.body,
+        variables: template.variables,
+      },
+      leads: leads.map((lead: any) => ({
+        id: lead.id,
+        ownerUserId: lead.ownerUserId,
+        contactEmail: lead.contactEmail,
+        contactName: lead.contactName,
+        companyName: lead.companyName,
+        country: lead.country,
+        website: lead.website,
+        mainProducts: lead.mainProducts,
+        emailVerificationStatus: lead.emailVerificationStatus,
+      })),
+    });
+    const messagePlans: EmailDispatchMessagePlan[] = [];
+    const seedLeadPlans: EmailDispatchSeedLeadPlan[] = [];
     const results: Array<{ leadId: string; success: boolean; message: string; emailMessageId?: string }> = [];
     const skippedByReason: Record<string, number> = {};
     let sendableCount = 0;
     let seedCount = 0;
-    const seedPolicy = resolveEmailSeedPolicy();
 
     for (const lead of leads) {
       const eligibility = await this.checkSendEligibility(lead, emailAccount);
@@ -392,23 +643,37 @@ export class EmailsService {
       if (!eligibility.canSend) {
         const skipReason = eligibility.reason || 'Unknown reason';
         skippedByReason[skipReason] = (skippedByReason[skipReason] || 0) + 1;
-        const msg = await this.prisma.emailMessage.create({
+        const messageId = this.deterministicEmailDispatchId(
+          'email-dispatch-message',
+          company.id,
+          'BATCH',
+          idempotencyKey,
+          lead.id,
+        );
+        messagePlans.push({
+          id: messageId,
           data: {
             companyId: company.id,
             leadId: lead.id,
             emailAccountId: emailAccount.id,
             templateId: template.id,
-          senderUserId: currentUser.id,
-          toEmail: lead.contactEmail,
-          subject: dto.subject || template.subject,
-          bodyHtml: dto.body || template.body,
-          trackingId: uuidv4(),
-          outreachRound: dto.outreachRound || 0,
-          status: 'Skipped',
-          failedReason: eligibility.reason,
-        },
+            senderUserId: currentUser.id,
+            toEmail: lead.contactEmail,
+            subject: dto.subject || template.subject,
+            bodyHtml: dto.body || template.body,
+            trackingId: uuidv4(),
+            unsubscribeToken: uuidv4(),
+            outreachRound: dto.outreachRound || 0,
+            status: 'Skipped',
+            failedReason: eligibility.reason,
+          },
         });
-        results.push({ leadId: lead.id, success: false, message: skipReason, emailMessageId: msg.id });
+        results.push({
+          leadId: lead.id,
+          success: false,
+          message: skipReason,
+          emailMessageId: messageId,
+        });
         continue;
       }
 
@@ -441,7 +706,50 @@ export class EmailsService {
             unsubscribeToken,
           );
 
-      const msg = await this.prisma.emailMessage.create({
+      const messageId = this.deterministicEmailDispatchId(
+        'email-dispatch-message',
+        company.id,
+        'BATCH',
+        idempotencyKey,
+        lead.id,
+      );
+      const job: EmailDispatchJob = effectiveAiPersonalize
+        ? {
+            queue: 'compose',
+            name: 'compose-email',
+            jobId: `email-dispatch-${messageId}-compose`,
+            data: {
+              emailMessageId: messageId,
+              productName: effectiveDto.productName,
+              customVariables: effectiveDto.customVariables,
+              sendDelayMs: delay,
+              aiPersonalize: true,
+            },
+            options: {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 10000 },
+              removeOnComplete: 100,
+              removeOnFail: 100,
+            },
+          }
+        : {
+            queue: 'validate',
+            name: 'validate-email',
+            jobId: `email-dispatch-${messageId}-validate`,
+            data: {
+              emailMessageId: messageId,
+              aiPersonalize: false,
+              sendDelayMs: delay,
+            },
+            options: {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 10000 },
+              removeOnComplete: 100,
+              removeOnFail: 100,
+            },
+          };
+      messagePlans.push({
+        id: messageId,
         data: {
           companyId: company.id,
           leadId: lead.id,
@@ -457,47 +765,23 @@ export class EmailsService {
           outreachRound: effectiveDto.outreachRound || 0,
           status: effectiveAiPersonalize ? 'DraftPending' : 'DraftReady',
         },
+        job,
       });
-
-      if (effectiveAiPersonalize) {
-        await this.emailComposeQueue.add('compose-email', {
-          emailMessageId: msg.id,
-          productName: effectiveDto.productName,
-          customVariables: effectiveDto.customVariables,
-          sendDelayMs: delay,
-          aiPersonalize: true,
-        }, {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 10000 },
-          removeOnComplete: 100,
-          removeOnFail: 100,
-        });
-      } else {
-        await this.emailValidateQueue.add('validate-email', {
-          emailMessageId: msg.id,
-          aiPersonalize: false,
-          sendDelayMs: delay,
-        }, {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 10000 },
-          removeOnComplete: 100,
-          removeOnFail: 100,
-        });
-      }
 
       results.push({
         leadId: lead.id,
         success: true,
         message: effectiveAiPersonalize ? 'AI draft queued' : 'Queued for validation',
-        emailMessageId: msg.id,
+        emailMessageId: messageId,
       });
       sendableCount++;
 
       if (this.shouldInsertSeedEmail(sendableCount, seedCount, seedPolicy)) {
         const seedDelay = delay + Math.max(30, Math.floor(intervalMs / 1000)) * 1000;
-        const seed = await this.queueSeedTestEmail({
+        const seed = await this.buildSeedTestEmailPlan({
           companyId: company.id,
           currentUserId: currentUser.id,
+          idempotencyKey,
           emailAccount,
           template,
           dto: effectiveDto,
@@ -505,22 +789,14 @@ export class EmailsService {
           seedIndex: seedCount + 1,
           seedPolicy,
         });
-        results.push(seed);
+        if (seed.seedLead) seedLeadPlans.push(seed.seedLead);
+        messagePlans.push(seed.plan);
+        results.push(seed.result);
         seedCount++;
       }
     }
 
-    await this.prisma.emailTemplate.update({
-      where: { id: template.id },
-      data: { useCount: { increment: sendableCount } },
-    });
-
-    await this.createLeadActivity(
-      company.id, leads[0]?.id, currentUser.id, 'email_batch_queued',
-      `Batch email: ${sendableCount} accepted into safe sending workflow, ${results.length - sendableCount} skipped`, null,
-    );
-
-    return {
+    const response = {
       precheck: {
         totalMatched: leads.length,
         accepted: sendableCount,
@@ -537,6 +813,42 @@ export class EmailsService {
       skipped: results.length - sendableCount - seedCount,
       results,
     };
+    const reserved = await this.reserveEmailDispatchRequest({
+      companyId: company.id,
+      operatorUserId: currentUser.id,
+      kind: 'BATCH',
+      idempotencyKey,
+      inputDigest,
+      payloadDigest,
+      response,
+      messages: messagePlans,
+      seedLeads: seedLeadPlans,
+      projection: {
+        templateUseCount: {
+          templateId: template.id,
+          increment: sendableCount,
+        },
+        activities: leads[0]?.id
+          ? [{
+              id: this.deterministicEmailDispatchId(
+                'email-dispatch-activity',
+                company.id,
+                idempotencyKey,
+                leads[0].id,
+                'email_batch_queued',
+              ),
+              companyId: company.id,
+              leadId: leads[0].id,
+              userId: currentUser.id,
+              activityType: 'email_batch_queued',
+              title: `Batch email: ${sendableCount} accepted into safe sending workflow, ${results.length - sendableCount} skipped`,
+              referenceType: 'EmailMessage',
+              referenceId: null,
+            }]
+          : [],
+      },
+    });
+    return this.completeEmailDispatchRequest(reserved.request);
   }
 
   private shouldInsertSeedEmail(sendableCount: number, seedCount: number, policy: EmailSeedPolicy) {
@@ -545,26 +857,32 @@ export class EmailsService {
     return sendableCount > 0 && sendableCount % policy.interval === 0;
   }
 
-  private async queueSeedTestEmail(params: {
+  private async buildSeedTestEmailPlan(params: {
     companyId: string;
     currentUserId: string;
+    idempotencyKey: string;
     emailAccount: any;
     template: any;
     dto: SendBatchDto;
     sendDelayMs: number;
     seedIndex: number;
     seedPolicy: EmailSeedPolicy;
-  }): Promise<{ leadId: string; success: boolean; message: string; emailMessageId?: string }> {
+  }): Promise<{
+    plan: EmailDispatchMessagePlan;
+    result: { leadId: string; success: boolean; message: string; emailMessageId?: string };
+    seedLead?: EmailDispatchSeedLeadPlan;
+  }> {
     const seedEmail = params.seedPolicy.enabled ? params.seedPolicy.address : null;
     if (!seedEmail) {
       throw new BadRequestException('Seed email policy is not explicitly enabled and approved');
     }
-    const lead = await this.ensureSeedTestLead(
+    const seedLead = await this.planSeedTestLead(
       params.companyId,
       params.currentUserId,
       seedEmail,
       params.seedPolicy.interval,
     );
+    const lead = seedLead.lead;
     const rendered = this.renderTemplate(
       params.template,
       lead,
@@ -596,7 +914,51 @@ export class EmailsService {
           unsubscribeToken,
         );
 
-    const msg = await this.prisma.emailMessage.create({
+    const messageId = this.deterministicEmailDispatchId(
+      'email-dispatch-message',
+      params.companyId,
+      'BATCH',
+      params.idempotencyKey,
+      `seed-${params.seedIndex}`,
+      lead.id,
+    );
+    const job: EmailDispatchJob = params.dto.aiPersonalize
+      ? {
+          queue: 'compose',
+          name: 'compose-email',
+          jobId: `email-dispatch-${messageId}-compose`,
+          data: {
+            emailMessageId: messageId,
+            productName: params.dto.productName,
+            customVariables: params.dto.customVariables,
+            sendDelayMs: params.sendDelayMs,
+            aiPersonalize: true,
+          },
+          options: {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 10000 },
+            removeOnComplete: 100,
+            removeOnFail: 100,
+          },
+        }
+      : {
+          queue: 'validate',
+          name: 'validate-email',
+          jobId: `email-dispatch-${messageId}-validate`,
+          data: {
+            emailMessageId: messageId,
+            aiPersonalize: false,
+            sendDelayMs: params.sendDelayMs,
+          },
+          options: {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 10000 },
+            removeOnComplete: 100,
+            removeOnFail: 100,
+          },
+        };
+    const plan: EmailDispatchMessagePlan = {
+      id: messageId,
       data: {
         companyId: params.companyId,
         leadId: lead.id,
@@ -613,43 +975,22 @@ export class EmailsService {
         status: params.dto.aiPersonalize ? 'DraftPending' : 'DraftReady',
         failedReason: `Seed test email #${params.seedIndex} for batch delivery monitoring`,
       },
-    });
-
-    if (params.dto.aiPersonalize) {
-      await this.emailComposeQueue.add('compose-email', {
-        emailMessageId: msg.id,
-        productName: params.dto.productName,
-        customVariables: params.dto.customVariables,
-        sendDelayMs: params.sendDelayMs,
-        aiPersonalize: true,
-      }, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 10000 },
-        removeOnComplete: 100,
-        removeOnFail: 100,
-      });
-    } else {
-      await this.emailValidateQueue.add('validate-email', {
-        emailMessageId: msg.id,
-        aiPersonalize: false,
-        sendDelayMs: params.sendDelayMs,
-      }, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 10000 },
-        removeOnComplete: 100,
-        removeOnFail: 100,
-      });
-    }
+      job,
+    };
 
     return {
-      leadId: lead.id,
-      success: true,
-      message: `Seed test email queued to approved address ${seedEmail}`,
-      emailMessageId: msg.id,
+      plan,
+      result: {
+        leadId: lead.id,
+        success: true,
+        message: `Seed test email queued to approved address ${seedEmail}`,
+        emailMessageId: messageId,
+      },
+      seedLead: seedLead.create,
     };
   }
 
-  private async ensureSeedTestLead(
+  private async planSeedTestLead(
     companyId: string,
     ownerUserId: string,
     seedEmail: string,
@@ -663,31 +1004,39 @@ export class EmailsService {
         deletedAt: null,
       },
     });
-    if (existing) return existing;
+    if (existing) return { lead: existing };
 
-    return this.prisma.lead.create({
-      data: {
-        companyId,
-        companyName: 'Approved Mail Delivery Monitor',
-        contactName: 'Seed Monitor',
-        contactTitle: 'Internal deliverability test mailbox',
-        contactEmail: seedEmail,
-        mainProducts: 'Internal seed mailbox for Vaysen AI CRM email delivery monitoring',
-        sourceType: 'system_seed_test',
-        sourceUrl: 'system://email-seed-test',
-        sourceKeyword: 'email delivery seed test',
-        sourceCountry: 'China',
-        emailVerificationStatus: 'official_page_verified',
-        emailVerificationReason: 'Internal seed mailbox configured by system owner for delivery monitoring.',
-        confidenceScore: 100,
-        leadScore: 100,
-        leadGrade: 'A',
-        status: 'new',
-        reviewStatus: 'approved',
-        ownerUserId,
-        notes: `Approved system seed mailbox. Every batch and each ${seedInterval} accepted recipients can include one controlled test email to verify real SMTP delivery.`,
-      },
-    });
+    const id = this.deterministicEmailDispatchId(
+      'email-seed-lead',
+      companyId,
+      seedEmail.trim().toLowerCase(),
+    );
+    const data = {
+      companyId,
+      companyName: 'Approved Mail Delivery Monitor',
+      contactName: 'Seed Monitor',
+      contactTitle: 'Internal deliverability test mailbox',
+      contactEmail: seedEmail,
+      mainProducts: 'Internal seed mailbox for Vaysen Trade OS email delivery monitoring',
+      sourceType: 'system_seed_test',
+      sourceUrl: 'system://email-seed-test',
+      sourceKeyword: 'email delivery seed test',
+      sourceCountry: 'China',
+      country: 'China',
+      emailVerificationStatus: 'official_page_verified',
+      emailVerificationReason: 'Internal seed mailbox configured by system owner for delivery monitoring.',
+      confidenceScore: 100,
+      leadScore: 100,
+      leadGrade: 'A',
+      status: 'new',
+      reviewStatus: 'approved',
+      ownerUserId,
+      notes: `Approved system seed mailbox. Every batch and each ${seedInterval} accepted recipients can include one controlled test email to verify real SMTP delivery.`,
+    };
+    return {
+      lead: { id, ...data },
+      create: { id, data },
+    };
   }
 
   // ========== List / Detail ==========
@@ -695,10 +1044,19 @@ export class EmailsService {
   async generateAiDraft(dto: { leadId: string; emailAccountId?: string; emailTemplateId?: string; productName?: string }, currentUser: any) {
     const company = this.getCompany(currentUser);
     const [lead, emailAccount, template] = await Promise.all([
-      this.prisma.lead.findUnique({ where: { id: dto.leadId } }),
-      dto.emailAccountId ? this.prisma.emailAccount.findUnique({ where: { id: dto.emailAccountId } }) : null,
+      this.prisma.lead.findFirst({
+        where: { id: dto.leadId, companyId: company.id, deletedAt: null },
+      }),
+      dto.emailAccountId
+        ? this.prisma.emailAccount.findFirst({
+            where: { id: dto.emailAccountId, companyId: company.id },
+          })
+        : null,
       dto.emailTemplateId
-        ? this.prisma.emailTemplate.findUnique({ where: { id: dto.emailTemplateId }, include: { variables: true } })
+        ? this.prisma.emailTemplate.findFirst({
+            where: { id: dto.emailTemplateId, companyId: company.id },
+            include: { variables: true },
+          })
         : null,
     ]);
 
@@ -713,33 +1071,67 @@ export class EmailsService {
     return this.generateAiDraftForLead(lead, account, template, company, currentUser, dto.productName);
   }
 
-  async getQueueStatus() {
+  async getQueueStatus(currentUser: any) {
+    const queueScope = {
+      ...this.buildCompanyWhere(currentUser),
+      deletedAt: null,
+    };
+    const scoped = (where: Record<string, any>) => ({
+      ...queueScope,
+      ...where,
+    });
     const pendingStatuses = ['DraftPending', 'Drafting', 'DraftReady', 'ValidationFailed', 'QueuedToSend', 'Queued'];
     const [draftPending, drafting, draftReady, validationFailed, queuedToSend, legacyQueued, sending, sentToday, failed, skipped] = await Promise.all([
-      this.prisma.emailMessage.count({ where: { status: 'DraftPending' } }),
-      this.prisma.emailMessage.count({ where: { status: 'Drafting' } }),
-      this.prisma.emailMessage.count({ where: { status: 'DraftReady' } }),
-      this.prisma.emailMessage.count({ where: { status: 'ValidationFailed' } }),
-      this.prisma.emailMessage.count({ where: { status: 'QueuedToSend' } }),
-      this.prisma.emailMessage.count({ where: { status: 'Queued' } }),
-      this.prisma.emailMessage.count({ where: { status: 'Sending' } }),
-      this.prisma.emailMessage.count({ where: { status: 'Sent', sentAt: { gte: new Date(new Date().setHours(0,0,0,0)) } } }),
-      this.prisma.emailMessage.count({ where: { status: { in: ['Failed', 'DraftFailed'] }, createdAt: { gte: new Date(Date.now() - 3600000) } } }),
-      this.prisma.emailMessage.count({ where: { status: 'Skipped', createdAt: { gte: new Date(Date.now() - 3600000) } } }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'DraftPending' }) }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'Drafting' }) }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'DraftReady' }) }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'ValidationFailed' }) }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'QueuedToSend' }) }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'Queued' }) }),
+      this.prisma.emailMessage.count({ where: scoped({ status: 'Sending' }) }),
+      this.prisma.emailMessage.count({
+        where: scoped({
+          status: 'Sent',
+          sentAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+        }),
+      }),
+      this.prisma.emailMessage.count({
+        where: scoped({
+          status: { in: ['Failed', 'DraftFailed'] },
+          createdAt: { gte: new Date(Date.now() - 3600000) },
+        }),
+      }),
+      this.prisma.emailMessage.count({
+        where: scoped({
+          status: 'Skipped',
+          createdAt: { gte: new Date(Date.now() - 3600000) },
+        }),
+      }),
     ]);
     const queued = draftPending + drafting + draftReady + validationFailed + queuedToSend + legacyQueued;
 
     // Group queued emails by sender user
     const byUser = await this.prisma.emailMessage.groupBy({
       by: ['senderUserId'],
-      where: { status: { in: pendingStatuses } },
+      where: scoped({ status: { in: pendingStatuses } }),
       _count: true,
     });
 
     // Get user names
     const userIds = byUser.map(u => u.senderUserId).filter(Boolean) as string[];
     const users = userIds.length > 0 ? await this.prisma.user.findMany({
-      where: { id: { in: userIds.filter(id => id !== null) } },
+      where: {
+        id: { in: userIds.filter(id => id !== null) },
+        isActive: true,
+        deletedAt: null,
+        companies: {
+          some: {
+            companyId: queueScope.companyId,
+            isActive: true,
+            company: { is: { isActive: true } },
+          },
+        },
+      },
       select: { id: true, firstName: true, lastName: true },
     }) : [];
     const userMap = new Map(users.map(u => [u.id, u]));
@@ -776,17 +1168,15 @@ export class EmailsService {
   }
 
   async getTeamStats(currentUser: any) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = this.isFullAccess(currentUser, companyId);
     if (!isFullAccess) return { data: [] };
 
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
     const today = new Date(); today.setHours(0,0,0,0);
 
     // Get all users in these companies
     const relations = await this.prisma.userCompanyRelation.findMany({
-      where: { companyId: { in: companyIds }, isActive: true },
+      where: { companyId, isActive: true },
       include: { user: { select: { id:true, firstName:true, lastName:true, email:true } }, role: { select: { name:true } } },
     });
 
@@ -794,17 +1184,21 @@ export class EmailsService {
       const userId = rel.userId;
       const pendingStatuses = ['DraftPending', 'Drafting', 'DraftReady', 'ValidationFailed', 'QueuedToSend', 'Queued'];
       const [sent, sentToday, opened, clicked, queued, failed] = await Promise.all([
-        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId: { in: companyIds }, status: 'Sent' } }),
-        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId: { in: companyIds }, status: 'Sent', sentAt: { gte: today } } }),
-        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId: { in: companyIds }, status: 'Sent', openedAt: { not: null } } }),
-        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId: { in: companyIds }, status: 'Sent', clickedAt: { not: null } } }),
-        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId: { in: companyIds }, status: { in: pendingStatuses } } }),
-        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId: { in: companyIds }, status: { in: ['Failed', 'DraftFailed'] } } }),
+        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId, status: 'Sent' } }),
+        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId, status: 'Sent', sentAt: { gte: today } } }),
+        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId, status: 'Sent', openedAt: { not: null } } }),
+        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId, status: 'Sent', clickedAt: { not: null } } }),
+        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId, status: { in: pendingStatuses } } }),
+        this.prisma.emailMessage.count({ where: { senderUserId: userId, companyId, status: { in: ['Failed', 'DraftFailed'] } } }),
       ]);
 
       // Check if user has active search tasks
       const prospectingTasks = await this.prisma.searchTask.findMany({
-        where: { createdBy: userId, status: { in: ['running','pending'] } },
+        where: {
+          companyId,
+          createdBy: userId,
+          status: { in: ['running', 'pending'] },
+        },
         orderBy: { createdAt: 'desc' }, take: 1,
         select: { status:true, targetCountry:true, keywords:true, totalFound:true }
       });
@@ -847,9 +1241,8 @@ export class EmailsService {
     if (query.status) where.status = query.status;
     if (query.leadId) where.leadId = query.leadId;
     if (query.emailAccountId) where.emailAccountId = query.emailAccountId;
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = this.isFullAccess(currentUser, companyId);
     if (query.senderUserId && isFullAccess) where.senderUserId = query.senderUserId;
     if (query.dateFrom || query.dateTo) {
       where.createdAt = {};
@@ -879,8 +1272,12 @@ export class EmailsService {
   }
 
   async findOne(id: string, currentUser: any) {
-    const msg = await this.prisma.emailMessage.findUnique({
-      where: { id },
+    const msg = await this.prisma.emailMessage.findFirst({
+      where: {
+        id,
+        ...this.buildCompanyWhere(currentUser),
+        deletedAt: null,
+      },
       include: {
         lead: { select: { id: true, companyName: true, contactName: true, contactEmail: true, status: true } },
         emailAccount: { select: { id: true, senderName: true, senderEmail: true } },
@@ -890,8 +1287,7 @@ export class EmailsService {
         bounceEvents: { orderBy: { bouncedAt: 'desc' } },
       },
     });
-    if (!msg || msg.deletedAt) throw new NotFoundException('Email message not found');
-    this.checkCompanyAccess(currentUser, msg);
+    if (!msg) throw new NotFoundException('Email message not found');
     return msg;
   }
 
@@ -900,17 +1296,28 @@ export class EmailsService {
   async resend(id: string, currentUser: any) {
     const company = this.getCompany(currentUser);
     this.checkWriteAccess(currentUser, company.id);
+    const accessWhere = this.buildCompanyWhere(currentUser);
 
-    const msg = await this.prisma.emailMessage.findUnique({
-      where: { id },
+    const msg = await this.prisma.emailMessage.findFirst({
+      where: {
+        id,
+        ...accessWhere,
+        deletedAt: null,
+      },
       include: { lead: true, emailAccount: true },
     });
     if (!msg) throw new NotFoundException('Email message not found');
-    if (msg.companyId !== company.id) throw new ForbiddenException('Cannot access this email message');
 
     if (!['Failed', 'Bounced'].includes(msg.status)) {
       throw new BadRequestException(`Cannot resend email with status "${msg.status}". Only failed or bounced emails can be resent.`);
     }
+
+    await this.checkLeadAccess(currentUser, msg.lead);
+    await this.outbound.assertEmailAccountAccess(
+      company.id,
+      msg.emailAccountId,
+      currentUser,
+    );
 
     const eligibility = await this.checkSendEligibility(msg.lead, msg.emailAccount);
     if (!eligibility.canSend) {
@@ -926,8 +1333,13 @@ export class EmailsService {
     const bodyWithLinks = this.replaceLinksWithTracking(bodyWithTracking, trackingId);
     const bodyWithUnsubscribe = this.appendUnsubscribeLink(bodyWithLinks, unsubscribeToken);
 
-    const updated = await this.prisma.emailMessage.update({
-      where: { id },
+    const reserved = await this.prisma.emailMessage.updateMany({
+      where: {
+        id,
+        ...accessWhere,
+        deletedAt: null,
+        status: { in: ['Failed', 'Bounced'] },
+      },
       data: {
         trackingId,
         unsubscribeToken,
@@ -940,33 +1352,149 @@ export class EmailsService {
         errorMessage: null,
       },
     });
+    if (reserved.count !== 1) {
+      this.logger.warn(safeLogEvent('email.resend_reservation_conflict', {
+        status: 'rejected',
+        stage: 'reservation',
+        count: reserved.count,
+        messageRef: safeDigest(id, 'email-message'),
+      }));
+      throw new ConflictException(
+        'Email message changed before the resend could be reserved',
+      );
+    }
 
-    await this.emailValidateQueue.add('validate-email', {
-      emailMessageId: updated.id,
-      aiPersonalize: false,
-      sendDelayMs: 0,
-    }, {
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 10000 },
-      removeOnComplete: 100,
-      removeOnFail: 100,
-    });
+    const queueJobId = `email-resend-${id}-${msg.retryCount + 1}`;
+    try {
+      await this.emailValidateQueue.add('validate-email', {
+        emailMessageId: id,
+        aiPersonalize: false,
+        sendDelayMs: 0,
+      }, {
+        jobId: queueJobId,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 10000 },
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      });
+    } catch (enqueueError) {
+      this.logger.warn(safeLogEvent('email.resend_queue_write_failed', {
+        status: 'failed',
+        stage: 'dispatch',
+        messageRef: safeDigest(id, 'email-message'),
+        error: enqueueError,
+        errorCategory: safeErrorCategory(enqueueError),
+      }));
+      // A queue write can fail after the server accepted the job. Resolve that
+      // ambiguity by its deterministic id before changing the database state.
+      try {
+        const acceptedJob = await this.emailValidateQueue.getJob(queueJobId);
+        if (acceptedJob) {
+          this.logger.warn(safeLogEvent('email.resend_queue_ack_recovered', {
+            status: 'accepted',
+            stage: 'dispatch',
+            accepted: true,
+            messageRef: safeDigest(id, 'email-message'),
+            error: enqueueError,
+            errorCategory: safeErrorCategory(enqueueError),
+          }));
+          return {
+            success: true,
+            message: 'Email re-queued for validation before sending',
+            messageRef: safeDigest(id, 'email-message'),
+          };
+        }
+      } catch (lookupError) {
+        this.logger.error(safeLogEvent('email.resend_queue_outcome_unknown', {
+          status: 'unknown',
+          stage: 'dispatch',
+          messageRef: safeDigest(id, 'email-message'),
+          error: lookupError,
+          errorCategory: safeErrorCategory(lookupError),
+        }));
+        throw new ServiceUnavailableException(
+          'Email resend queue outcome is unknown; the reservation was retained',
+        );
+      }
 
-    return { success: true, message: 'Email re-queued for validation before sending', emailMessageId: updated.id };
+      let compensated = false;
+      try {
+        const rollback = await this.prisma.emailMessage.updateMany({
+          where: {
+            id,
+            companyId: company.id,
+            status: 'DraftReady',
+            trackingId,
+          },
+          data: {
+            trackingId: msg.trackingId,
+            unsubscribeToken: msg.unsubscribeToken,
+            renderedBody: msg.renderedBody,
+            bodyHtml: msg.bodyHtml,
+            status: msg.status,
+            retryCount: msg.retryCount,
+            failedAt: msg.failedAt,
+            failedReason: msg.failedReason,
+            errorMessage: msg.errorMessage,
+          },
+        });
+        compensated = rollback.count === 1;
+      } catch {
+        compensated = false;
+      }
+      if (!compensated) {
+        this.logger.error(safeLogEvent('email.resend_rollback_unknown', {
+          status: 'unknown',
+          stage: 'rollback',
+          messageRef: safeDigest(id, 'email-message'),
+          error: enqueueError,
+          errorCategory: safeErrorCategory(enqueueError),
+        }));
+        throw new ServiceUnavailableException(
+          'Email resend queue failed and the reservation outcome is unknown',
+        );
+      }
+      this.logger.warn(safeLogEvent('email.resend_rolled_back', {
+        status: 'failed',
+        stage: 'rollback',
+        messageRef: safeDigest(id, 'email-message'),
+        error: enqueueError,
+        errorCategory: safeErrorCategory(enqueueError),
+      }));
+      throw new ServiceUnavailableException(
+        'Email resend could not be queued; the reservation was rolled back',
+      );
+    }
+
+    this.logger.log(safeLogEvent('email.resend_queued', {
+      status: 'accepted',
+      stage: 'dispatch',
+      accepted: true,
+      messageRef: safeDigest(id, 'email-message'),
+    }));
+    return {
+      success: true,
+      message: 'Email re-queued for validation before sending',
+      messageRef: safeDigest(id, 'email-message'),
+    };
   }
 
   // ========== By Lead ==========
 
   async findByLead(leadId: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
+    const companyId = requireActiveCompany(currentUser).id;
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
     this.checkCompanyAccess(currentUser, { companyId: lead.companyId });
 
     const messages = await this.prisma.emailMessage.findMany({
       where: {
+        companyId,
         leadId,
         deletedAt: null,
-        ...(currentUser.companies?.some((c: any) => ['super_admin', 'company_admin'].includes(c.role))
+        ...(this.isFullAccess(currentUser, companyId)
           ? {}
           : { senderUserId: currentUser.id }),
       },
@@ -1080,18 +1608,18 @@ export class EmailsService {
     const normalizedDomain = domain.toLowerCase();
 
     if (FREE_EMAIL_DOMAINS.has(normalizedDomain)) {
-      await this.updateLeadEmailVerification(lead.id, 'rejected', 'Free mailbox is not allowed for automatic cold email sending.');
+      await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'rejected', 'Free mailbox is not allowed for automatic cold email sending.');
       return 'rejected';
     }
 
     if (HARD_BLOCKED_MAILBOXES.has(mailbox)) {
-      await this.updateLeadEmailVerification(lead.id, 'rejected', `Mailbox "${mailbox}" is not allowed for automatic sending.`);
+      await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'rejected', `Mailbox "${mailbox}" is not allowed for automatic sending.`);
       return 'rejected';
     }
 
     const hasMx = await this.hasMxRecord(normalizedDomain);
     if (!hasMx) {
-      await this.updateLeadEmailVerification(lead.id, 'rejected', 'Email domain has no MX record.');
+      await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'rejected', 'Email domain has no MX record.');
       return 'rejected';
     }
 
@@ -1099,27 +1627,29 @@ export class EmailsService {
     const domainMatchesWebsite = Boolean(websiteDomain && (normalizedDomain === websiteDomain || normalizedDomain.endsWith(`.${websiteDomain}`)));
     const isBusinessMailbox = AUTO_SEND_BUSINESS_MAILBOXES.has(mailbox);
 
-    if (domainMatchesWebsite || isBusinessMailbox) {
-      const reason = domainMatchesWebsite
-        ? 'Auto verified before sending: email domain matches lead website and MX exists.'
-        : `Auto verified before sending: business mailbox "${mailbox}" and MX exists.`;
-      await this.updateLeadEmailVerification(lead.id, 'official_page_verified', reason);
-      lead.emailVerificationStatus = 'official_page_verified';
-      lead.emailVerificationReason = reason;
-      return 'official_page_verified';
-    }
-
-    const reason = 'MX exists, but mailbox role/source requires manual review before automatic sending.';
-    await this.updateLeadEmailVerification(lead.id, 'mx_domain_verified', reason);
+    const reason = domainMatchesWebsite
+      ? 'MX matches the user-supplied website, but trusted mailbox proof is still required.'
+      : isBusinessMailbox
+        ? `Business mailbox "${mailbox}" has MX, but trusted mailbox proof is still required.`
+        : 'MX exists, but mailbox role/source requires manual review before automatic sending.';
+    await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'mx_domain_verified', reason);
     lead.emailVerificationStatus = 'mx_domain_verified';
     lead.emailVerificationReason = reason;
     return 'mx_domain_verified';
   }
 
-  private async updateLeadEmailVerification(leadId: string, status: string, reason: string) {
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      data: { emailVerificationStatus: status, emailVerificationReason: reason },
+  private async updateLeadEmailVerification(
+    leadId: string,
+    expectedEmail: string,
+    status: string,
+    reason: string,
+  ) {
+    await writeEmailVerificationEvidence(this.prisma, {
+      leadId,
+      expectedEmail,
+      status,
+      reason,
+      trustedEvidence: false,
     }).catch(() => undefined);
   }
 
@@ -1555,12 +2085,12 @@ HTML requirements:
   private dedupeWebsiteBlocks(html: string) {
     let seenWebsite = false;
     return (html || '')
-      .replace(/(<a\b[^>]*>\s*(?:Visit Our Website|(?:www\.)?vaysenpackaging\.com)\s*<\/a>)/gi, (match) => {
+      .replace(/(<a\b[^>]*>\s*(?:Visit Our Website|(?:www\.)?vaysen\.com)\s*<\/a>)/gi, (match) => {
         if (seenWebsite) return '';
         seenWebsite = true;
         return match;
       })
-      .replace(/<p\b[^>]*>\s*(?:https?:\/\/)?(?:www\.)?vaysenpackaging\.com\s*<\/p>/gi, (match) => {
+      .replace(/<p\b[^>]*>\s*(?:https?:\/\/)?(?:www\.)?vaysen\.com\s*<\/p>/gi, (match) => {
         if (seenWebsite) return '';
         seenWebsite = true;
         return match;
@@ -1584,43 +2114,303 @@ HTML requirements:
     return appendPublicUnsubscribe(bodyHtml, token);
   }
 
-  // ========== Lead Activity ==========
+  private emailDispatchPayloadDigest(value: unknown) {
+    return createHash('sha256')
+      .update(JSON.stringify(this.canonicalizeEmailDispatchValue(value)))
+      .digest('hex');
+  }
 
-  private async createLeadActivity(
-    companyId: string,
-    leadId: string | null,
-    userId: string,
-    activityType: string,
-    title: string,
-    referenceId: string | null,
+  private canonicalizeEmailDispatchValue(value: unknown): unknown {
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) {
+      return value.map((item) => this.canonicalizeEmailDispatchValue(item));
+    }
+    if (value && typeof value === 'object') {
+      return Object.keys(value as Record<string, unknown>)
+        .sort()
+        .reduce<Record<string, unknown>>((result, key) => {
+          const item = (value as Record<string, unknown>)[key];
+          if (item !== undefined) {
+            result[key] = this.canonicalizeEmailDispatchValue(item);
+          }
+          return result;
+        }, {});
+    }
+    return value;
+  }
+
+  private deterministicEmailDispatchId(...parts: string[]) {
+    const hex = createHash('sha256')
+      .update(JSON.stringify(parts))
+      .digest('hex');
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      `5${hex.slice(13, 16)}`,
+      `${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}`,
+      hex.slice(20, 32),
+    ].join('-');
+  }
+
+  private assertEmailDispatchReplay(
+    request: any,
+    expected: {
+      companyId: string;
+      operatorUserId: string;
+      kind: string;
+      idempotencyKey: string;
+      inputDigest: string;
+    },
   ) {
-    if (!leadId) return;
-    await this.prisma.leadActivity.create({
-      data: {
-        companyId,
-        leadId,
-        userId,
-        activityType,
-        title,
-        referenceType: 'EmailMessage',
-        referenceId,
+    const result = request.result as EmailDispatchResult | null;
+    if (
+      request.companyId !== expected.companyId
+      || request.operatorUserId !== expected.operatorUserId
+      || request.kind !== expected.kind
+      || request.idempotencyKey !== expected.idempotencyKey
+      || result?.inputDigest !== expected.inputDigest
+    ) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'EMAIL_IDEMPOTENCY_PAYLOAD_CONFLICT',
+        message: 'Idempotency-Key was already used with a different email request',
+      });
+    }
+    if (
+      !result
+      || !result.response
+      || !Array.isArray(result.jobs)
+      || !result.projection
+      || !Array.isArray(result.projection.activities)
+    ) {
+      throw new ConflictException(
+        'Email dispatch request has no recoverable result snapshot',
+      );
+    }
+    return request;
+  }
+
+  private async findEmailDispatchRequest(expected: {
+    companyId: string;
+    operatorUserId: string;
+    kind: string;
+    idempotencyKey: string;
+    inputDigest: string;
+  }) {
+    const request = await this.prisma.emailDispatchRequest.findUnique({
+      where: {
+        companyId_idempotencyKey: {
+          companyId: expected.companyId,
+          idempotencyKey: expected.idempotencyKey,
+        },
       },
     });
+    return request
+      ? this.assertEmailDispatchReplay(request, expected)
+      : null;
+  }
+
+  private async reserveEmailDispatchRequest(params: {
+    companyId: string;
+    operatorUserId: string;
+    kind: 'SINGLE' | 'BATCH';
+    idempotencyKey: string;
+    inputDigest: string;
+    payloadDigest: string;
+    response: Record<string, any>;
+    messages: EmailDispatchMessagePlan[];
+    seedLeads?: EmailDispatchSeedLeadPlan[];
+    projection: EmailDispatchResult['projection'];
+  }): Promise<ReservedEmailDispatch> {
+    const expected = {
+      companyId: params.companyId,
+      operatorUserId: params.operatorUserId,
+      kind: params.kind,
+      idempotencyKey: params.idempotencyKey,
+      inputDigest: params.inputDigest,
+    };
+    const existing = await this.findEmailDispatchRequest(expected);
+    if (existing) return { request: existing, created: false };
+
+    const result: EmailDispatchResult = JSON.parse(JSON.stringify({
+      inputDigest: params.inputDigest,
+      response: params.response,
+      jobs: params.messages
+        .map((message) => message.job)
+        .filter(Boolean),
+      projection: params.projection,
+    }));
+    const requestId = this.deterministicEmailDispatchId(
+      'email-dispatch-request',
+      params.companyId,
+      params.idempotencyKey,
+    );
+    try {
+      const request = await this.prisma.$transaction(async (tx: any) => {
+        const createdRequest = await tx.emailDispatchRequest.create({
+          data: {
+            id: requestId,
+            companyId: params.companyId,
+            operatorUserId: params.operatorUserId,
+            kind: params.kind,
+            idempotencyKey: params.idempotencyKey,
+            payloadDigest: params.payloadDigest,
+            status: 'RESERVED',
+            result,
+          },
+        });
+        if (params.seedLeads?.length) {
+          await tx.lead.createMany({
+            data: params.seedLeads.map((lead) => ({
+              id: lead.id,
+              ...lead.data,
+            })),
+            skipDuplicates: true,
+          });
+        }
+        for (const message of params.messages) {
+          await tx.emailMessage.create({
+            data: {
+              id: message.id,
+              ...message.data,
+            },
+          });
+        }
+        return createdRequest;
+      });
+      return { request, created: true };
+    } catch (error) {
+      const candidate = error as { code?: string };
+      if (candidate?.code !== 'P2002') throw error;
+      const raced = await this.findEmailDispatchRequest(expected);
+      if (!raced) throw error;
+      return { request: raced, created: false };
+    }
+  }
+
+  private async ensureEmailDispatchJob(job: EmailDispatchJob) {
+    const queue = job.queue === 'compose'
+      ? this.emailComposeQueue
+      : this.emailValidateQueue;
+    try {
+      await queue.add(job.name, job.data, {
+        ...job.options,
+        jobId: job.jobId,
+      });
+      return;
+    } catch {
+      try {
+        const accepted = await queue.getJob(job.jobId);
+        if (accepted) return;
+      } catch {
+        throw new ServiceUnavailableException(
+          'Email queue acknowledgement is unknown; retry with the same Idempotency-Key',
+        );
+      }
+      throw new ServiceUnavailableException(
+        'Email could not be queued; retry with the same Idempotency-Key',
+      );
+    }
+  }
+
+  private async assertEmailDispatchReplayAccess(request: any, currentUser: any) {
+    const response = (request.result as EmailDispatchResult | null)?.response as any;
+    const messageIds = Array.from(new Set([
+      response?.emailMessageId,
+      ...(Array.isArray(response?.results)
+        ? response.results.map((item: any) => item?.emailMessageId)
+        : []),
+    ].filter((value): value is string => typeof value === 'string' && value.length > 0)));
+    if (messageIds.length === 0) return;
+
+    const messages = await this.prisma.emailMessage.findMany({
+      where: {
+        id: { in: messageIds },
+        companyId: request.companyId,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        lead: {
+          select: {
+            id: true,
+            companyId: true,
+            ownerUserId: true,
+            deletedAt: true,
+          },
+        },
+      },
+    });
+    if (messages.length !== messageIds.length) {
+      throw new NotFoundException('Email dispatch request not found');
+    }
+    for (const message of messages) {
+      if (!message.lead || message.lead.deletedAt) {
+        throw new NotFoundException('Email dispatch request not found');
+      }
+      await this.checkLeadAccess(currentUser, message.lead);
+    }
+  }
+
+  private async completeEmailDispatchRequest(request: any) {
+    const result = request.result as EmailDispatchResult;
+    if (request.status !== 'ENQUEUED') {
+      for (const job of result.jobs) {
+        await this.ensureEmailDispatchJob(job);
+      }
+      await this.prisma.$transaction(async (tx: any) => {
+        const claimed = await tx.emailDispatchRequest.updateMany({
+          where: {
+            id: request.id,
+            companyId: request.companyId,
+            payloadDigest: request.payloadDigest,
+            status: 'RESERVED',
+          },
+          data: { status: 'ENQUEUED' },
+        });
+        if (claimed.count !== 1) return;
+
+        const templateProjection = result.projection.templateUseCount;
+        if (templateProjection && templateProjection.increment > 0) {
+          const template = await tx.emailTemplate.updateMany({
+            where: {
+              id: templateProjection.templateId,
+              companyId: request.companyId,
+            },
+            data: {
+              useCount: { increment: templateProjection.increment },
+            },
+          });
+          if (template.count !== 1) {
+            throw new ConflictException(
+              'Email dispatch template projection target is missing',
+            );
+          }
+        }
+        for (const activity of result.projection.activities) {
+          if (activity.companyId !== request.companyId) {
+            throw new ConflictException(
+              'Email dispatch activity projection tenant does not match',
+            );
+          }
+          await tx.leadActivity.create({ data: activity });
+        }
+      });
+    }
+    return result.response;
   }
 
   // ========== Access Control ==========
 
   private getCompany(currentUser: any) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company associated');
-    return currentUser.companies[0];
+    return requireActiveCompany(currentUser);
   }
 
   private buildCompanyWhere(currentUser: any): any {
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    const isFullAccess = this.isFullAccess(currentUser);
+    const company = requireActiveCompany(currentUser);
+    const isFullAccess = this.isFullAccess(currentUser, company.id);
 
-    const where: any = { companyId: { in: companyIds } };
+    const where: any = { companyId: company.id };
     if (!isFullAccess) {
       where.senderUserId = currentUser.id;
     }
@@ -1630,9 +2420,7 @@ HTML requirements:
 
   private buildLeadWhereForBatch(currentUser: any, companyId: string, filters: Record<string, any>) {
     const where: any = { companyId, deletedAt: null };
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const isFullAccess = this.isFullAccess(currentUser, companyId);
     if (!isFullAccess) where.ownerUserId = currentUser.id;
     if (filters.leadIds) {
       const leadIds = Array.isArray(filters.leadIds) ? filters.leadIds : String(filters.leadIds).split(',');
@@ -1717,31 +2505,27 @@ HTML requirements:
   }
 
   private checkCompanyAccess(currentUser: any, resource: any) {
-    const isSuperAdmin = currentUser.companies?.some((c: any) => c.role === 'super_admin');
-    if (isSuperAdmin) return;
-
-    const userCompanyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!userCompanyIds.includes(resource.companyId)) {
+    const activeCompany = requireActiveCompany(currentUser);
+    if (activeCompany.id !== resource.companyId) {
       throw new ForbiddenException('Cannot access resources from another company');
     }
   }
 
   private checkTemplateAccess(currentUser: any, template: any) {
     this.checkCompanyAccess(currentUser, template);
-    const isFullAccess = this.isFullAccess(currentUser);
+    const isFullAccess = this.isFullAccess(currentUser, template.companyId);
     if (!isFullAccess && template.createdBy && template.createdBy !== currentUser.id) {
       throw new ForbiddenException('You can only use your own email templates');
     }
   }
 
   private async checkLeadAccess(currentUser: any, lead: any) {
-    const isFullAccess = this.isFullAccess(currentUser);
-    if (isFullAccess) return;
-
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(lead.companyId)) {
+    const activeCompany = requireActiveCompany(currentUser);
+    if (activeCompany.id !== lead.companyId) {
       throw new ForbiddenException('Cannot access lead from another company');
     }
+    const isFullAccess = this.isFullAccess(currentUser, lead.companyId);
+    if (isFullAccess) return;
 
     if (lead.ownerUserId && lead.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('You can only send emails to your own leads');
@@ -1749,7 +2533,10 @@ HTML requirements:
   }
 
   private checkWriteAccess(currentUser: any, companyId: string) {
-    const isFullAccess = this.isFullAccess(currentUser);
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    const isFullAccess = this.isFullAccess(currentUser, companyId);
     if (isFullAccess) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
@@ -1760,9 +2547,7 @@ HTML requirements:
     }
   }
 
-  private isFullAccess(currentUser: any) {
-    return currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+  private isFullAccess(currentUser: any, companyId: string) {
+    return hasFullAccess(currentUser, companyId);
   }
 }

@@ -23,6 +23,9 @@ const SYSTEM_TEXT_EXACT: ReadonlySet<string> = new Set([
   'business account',
   'online',
   'unavailable',
+  'recording',
+  'recording audio',
+  '\u5f55\u97f3\u4e2d',
 ]);
 
 const SYSTEM_TEXT_PREFIXES: readonly string[] = [
@@ -32,6 +35,9 @@ const SYSTEM_TEXT_PREFIXES: readonly string[] = [
   'last seen',
   'click here to view',
   'typing',
+  'recording',
+  'recording audio',
+  '\u5f55\u97f3',
 ];
 
 /**

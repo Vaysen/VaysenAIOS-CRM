@@ -101,6 +101,8 @@ export class OpenClawCrmSessionService {
       user: {
         id: session.operatorUserId,
         email: relation.user.email,
+        activeCompanyId: session.companyId,
+        activeCompany: { id: session.companyId, role: relation.role.name },
         companies: [{ id: session.companyId, role: relation.role.name }],
       },
       executionLeaseToken: session.executionLeaseToken,

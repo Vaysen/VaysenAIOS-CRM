@@ -1,22 +1,21 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { CreateVoiceTestSessionDto, EndVoiceCallDto, RequestVoiceHandoffDto } from './dto/voice-call.dto';
+import { requireActiveCompany } from '../../common/utils/data-isolation';
 
 @Injectable()
 export class VoiceCustomerServiceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private companyIds(user: any): string[] {
-    const ids = user?.companies?.map((company: any) => company.id).filter(Boolean) || [];
-    if (ids.length === 0) throw new ForbiddenException('No company context');
-    return ids;
+  private companyId(user: any): string {
+    return requireActiveCompany(user).id;
   }
 
   async list(user: any, status?: string) {
-    const companyIds = this.companyIds(user);
+    const companyId = this.companyId(user);
     return this.prisma.voiceCall.findMany({
-      where: { companyId: { in: companyIds }, ...(status ? { status } : {}) },
+      where: { companyId, ...(status ? { status } : {}) },
       include: {
         lead: { select: { id: true, companyName: true, contactName: true, country: true } },
         events: { orderBy: { occurredAt: 'desc' }, take: 5 },
@@ -27,9 +26,9 @@ export class VoiceCustomerServiceService {
   }
 
   async findOne(user: any, id: string) {
-    const companyIds = this.companyIds(user);
+    const companyId = this.companyId(user);
     const call = await this.prisma.voiceCall.findFirst({
-      where: { id, companyId: { in: companyIds } },
+      where: { id, companyId },
       include: {
         lead: true,
         conversation: { include: { messages: { orderBy: { createdAt: 'asc' } } } },
@@ -41,7 +40,7 @@ export class VoiceCustomerServiceService {
   }
 
   async createTestSession(user: any, dto: CreateVoiceTestSessionDto) {
-    const companyId = this.companyIds(user)[0];
+    const companyId = this.companyId(user);
     if (dto.channel && dto.channel !== 'web_test') {
       throw new BadRequestException('PSTN and WhatsApp calls require provider credentials; use web_test until provisioned');
     }

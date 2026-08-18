@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import api from '@/lib/api';
 import { CustomerCard } from '@/components/communication/customer-card';
+import { CommunicationWorkbench } from '@/components/communication/communication-workbench';
 import { QuotePIForm } from '@/components/communication/quote-pi-popup';
 import type { ConversationDetail } from '@/components/communication/types';
 import { useElectron } from '@/hooks/use-electron';
@@ -12,12 +13,12 @@ import {
   findLeadByTrustedWhatsAppIdentity,
   normalizeWhatsAppName,
   normalizeWhatsAppPhone,
+  normalizeWhatsAppE164,
   sanitizeWhatsAppDisplayName,
 } from '@/lib/whatsapp-identity';
 import { getQuotePanelWidth, QUOTE_PANEL_MAX_WIDTH } from '@/lib/whatsapp-layout';
 import {
   Loader2,
-  MonitorOff,
   User,
   Phone,
   UserPlus,
@@ -49,6 +50,8 @@ interface BackendConversation {
     originalValue: string;
     normalizedValue: string;
   } | null;
+  threadKey?: string | null;
+  externalThreadKey?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +77,12 @@ export default function WhatsAppChatPage() {
     accountId: string;
     name: string;
     phone: string;
+    channelIdentity: string;
     isGroup?: boolean;
     selectionProof: string;
   } | null>(null);
   const [matchError, setMatchError] = useState<string | null>(null);
+  const matchRequestRef = useRef(0);
   const [quoteFormType, setQuoteFormType] = useState<'quote' | 'pi' | 'sample' | null>(null);
   const [quotePanelWidth, setQuotePanelWidth] = useState(QUOTE_PANEL_MAX_WIDTH);
   const [pendingLeadId, setPendingLeadId] = useState<string | null>(null);
@@ -115,7 +120,7 @@ export default function WhatsAppChatPage() {
 
   // 从 URL 参数加载指定 leadId 的会话（从客户资产跳转过来）
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || !isElectron) return;
     const urlParams = new URLSearchParams(window.location.search);
     const leadId = urlParams.get('leadId');
     const phone = urlParams.get('phone');
@@ -140,6 +145,8 @@ export default function WhatsAppChatPage() {
           }
         } else {
           console.log(`[WhatsApp Chat] 🆕 无会话，为 leadId=${leadId} 创建`);
+          setMatchError('该客户暂无已关联的 WhatsApp 会话，请从客户资产页手动关联；当前不会自动建档。');
+          return;
           const convRes = await api.post('/communications/conversations', {
             channel: 'whatsapp',
             leadId: leadId,
@@ -162,7 +169,7 @@ export default function WhatsAppChatPage() {
         setMatchError(`加载客户会话失败: ${e.message}`);
       }
     })();
-  }, []);
+  }, [isElectron]);
 
   // 挂载：显示 WhatsApp 视图
   useEffect(() => {
@@ -238,13 +245,20 @@ export default function WhatsAppChatPage() {
     let lastHandledChatKey = '';
 
     const handleCurrentChat = (chat: any) => {
-      const phone = normalizeWhatsAppPhone(chat?.phone);
+      const rawIdentity = typeof (chat?.externalId || chat?.jid) === 'string'
+        ? String(chat.externalId || chat.jid).trim()
+        : '';
+      const channelIdentity = rawIdentity.toLowerCase().includes('@lid') || rawIdentity.toLowerCase().includes('@jid')
+        ? rawIdentity
+        : '';
+      const phone = normalizeWhatsAppE164(chat?.phone || rawIdentity);
       const name = sanitizeWhatsAppDisplayName(chat?.name) || '';
       const accountId = typeof chat?.accountId === 'string' ? chat.accountId.trim() : '';
       const selectionProof = typeof chat?.selectionProof === 'string' ? chat.selectionProof.trim() : '';
-      const chatKey = `${accountId}|${phone}|${normalizeWhatsAppName(name)}|${chat?.isGroup === true}`;
+      const isGroup = chat?.isGroup === true || /@(g\.us|broadcast)$/i.test(rawIdentity);
+      const chatKey = `${accountId}|${phone || channelIdentity}|${normalizeWhatsAppName(name)}|${isGroup}`;
 
-      if ((!phone && !name) || !accountId || !selectionProof) {
+      if ((!phone && !channelIdentity && !name) || !accountId || !selectionProof) {
         setCurrentChatInfo(null);
         setConversationDetail(null);
         setSelectedConvId(null);
@@ -255,11 +269,12 @@ export default function WhatsAppChatPage() {
       receivedCurrentChat = true;
       if (chatKey === lastHandledChatKey) return;
       lastHandledChatKey = chatKey;
-      setCurrentChatInfo({ accountId, name, phone, isGroup: chat?.isGroup, selectionProof });
+      const requestId = ++matchRequestRef.current;
+      setCurrentChatInfo({ accountId, name, phone: phone || '', channelIdentity, isGroup, selectionProof });
       setMatchError(null);
       setConversationDetail(null);
       setSelectedConvId(null);
-      void matchOrCreateConversation(phone, name);
+      void matchExistingConversation({ phone: phone || '', channelIdentity, isGroup, requestId });
     };
 
     const unsubChat = wa.whatsapp.onCurrentChat((chat: any) => {
@@ -294,6 +309,9 @@ export default function WhatsAppChatPage() {
   }, [wa]);
 
   // 智能匹配或自动创建会话
+  /* Legacy name/phone auto-create matcher retained for migration reference;
+   * live WhatsApp selection uses matchExistingConversation below. */
+  /*
   const matchOrCreateConversation = useCallback(async (phone: string, name: string) => {
     const phoneDigits = normalizeWhatsAppPhone(phone);
     const e164Phone = phoneDigits ? `+${phoneDigits}` : '';
@@ -477,23 +495,94 @@ export default function WhatsAppChatPage() {
   }, []);
 
   // 手动刷新客户资料
+  */
+  const matchExistingConversation = useCallback(async ({
+    phone,
+    channelIdentity,
+    isGroup,
+    requestId,
+  }: {
+    phone: string;
+    channelIdentity: string;
+    isGroup: boolean;
+    requestId: number;
+  }) => {
+    const isCurrent = () => matchRequestRef.current === requestId;
+    if (!isCurrent()) return;
+    if (isGroup) {
+      setLoadingDetail(false);
+      setMatchError('群聊或广播会话不会自动建立个人客户，请在客户资产页手动关联群组身份。');
+      return;
+    }
+    const e164Phone = normalizeWhatsAppE164(phone);
+    if (!e164Phone && !channelIdentity) {
+      setLoadingDetail(false);
+      setMatchError('当前会话只有未解析的 JID/LID 或不完整号码，未自动建立客户；请手动确认身份。');
+      return;
+    }
+
+    setLoadingDetail(true);
+    setMatchError(null);
+    try {
+      const res = await api.get('/communications/conversations', {
+        params: { channel: 'whatsapp', limit: 500 },
+      });
+      if (!isCurrent()) return;
+      const conversations: BackendConversation[] = res.data?.data || res.data || [];
+      const phoneMatches = e164Phone
+        ? conversations.filter((conversation) => normalizeWhatsAppE164(
+          conversation.contactPoint?.normalizedValue || conversation.contactPoint?.originalValue || conversation.lead?.contactPhone,
+        ) === e164Phone)
+        : [];
+      const identityMatches = channelIdentity
+        ? conversations.filter((conversation) => (
+          conversation.threadKey === channelIdentity
+          || conversation.externalThreadKey === channelIdentity
+          || conversation.contactPoint?.normalizedValue === channelIdentity
+        ))
+        : [];
+      // 只匹配 active 会话；归档/关闭的历史占位会话(如旧的手机号 externalThreadId)不参与候选,
+      // 避免同一可信身份因新旧会话并存被误判为"多个客户候选"
+      const activeMatches = (conversation: any) => !conversation.status || conversation.status === 'active';
+      const matches = Array.from(new Map([...phoneMatches, ...identityMatches].filter(activeMatches).map((item) => [item.id, item])).values());
+      if (matches.length > 1) {
+        setMatchError('该可信身份对应多个客户候选，已停止自动选择；请在客户资产页执行关联、拒绝或合并。');
+        return;
+      }
+      const matched = matches[0];
+      if (!matched?.id) {
+        setMatchError('未找到已关联的客户资产；请在客户资产页手动关联，系统不会自动建档。');
+        return;
+      }
+      setSelectedConvId(matched.id);
+      const detailRes = await api.get(`/communications/conversations/${matched.id}`);
+      if (!isCurrent()) return;
+      const detail = detailRes.data?.data || detailRes.data;
+      if (detail) setConversationDetail(detail);
+      else setMatchError('客户会话已找到，但客户资料为空；请刷新或人工确认关联结果。');
+    } catch (err: any) {
+      if (isCurrent()) setMatchError(`客户资产加载失败: ${err.response?.data?.message || err.message}`);
+    } finally {
+      if (isCurrent()) setLoadingDetail(false);
+    }
+  }, []);
+
   const handleRefresh = () => {
     if (currentChatInfo) {
       setConversationDetail(null);
       setSelectedConvId(null);
-      matchOrCreateConversation(currentChatInfo.phone, currentChatInfo.name);
+      const requestId = ++matchRequestRef.current;
+      void matchExistingConversation({
+        phone: currentChatInfo.phone,
+        channelIdentity: currentChatInfo.channelIdentity,
+        isGroup: currentChatInfo.isGroup === true,
+        requestId,
+      });
     }
   };
 
   if (!wa && !isElectron) {
-    return (
-      <div className="flex items-center justify-center h-[calc(100vh-8rem)]">
-        <div className="text-center">
-          <MonitorOff className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-          <p className="text-sm text-gray-500">WhatsApp 聊天功能仅在桌面应用中可用</p>
-        </div>
-      </div>
-    );
+    return <CommunicationWorkbench />;
   }
 
   return (
@@ -524,6 +613,9 @@ export default function WhatsAppChatPage() {
                 {currentChatInfo?.phone && (
                   <p className="text-[11px] text-gray-500 font-mono">{currentChatInfo.phone}</p>
                 )}
+                {!currentChatInfo?.phone && currentChatInfo?.channelIdentity && (
+                  <p className="text-[11px] text-gray-500 font-mono">身份：{currentChatInfo.channelIdentity}</p>
+                )}
                 {currentChatInfo?.isGroup && (
                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">群聊</span>
                 )}
@@ -544,7 +636,7 @@ export default function WhatsAppChatPage() {
         {loadingDetail && (
           <div className="flex items-center justify-center py-4 border-b bg-blue-50/50">
             <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-            <span className="text-xs text-blue-600 ml-2">正在识别客户 / 自动建档中...</span>
+            <span className="text-xs text-blue-600 ml-2">正在识别客户 / 等待可信关联...</span>
           </div>
         )}
 
@@ -558,7 +650,12 @@ export default function WhatsAppChatPage() {
         {/* 客户资料卡片 */}
         <div className="flex-1 overflow-y-auto">
           {conversationDetail ? (
-            <CustomerCard conversation={conversationDetail} onOpenQuoteForm={setQuoteFormType} />
+            <CustomerCard
+              conversation={conversationDetail}
+              onOpenQuoteForm={setQuoteFormType}
+              electronApi={electronAPI}
+              currentChat={currentChatInfo}
+            />
           ) : currentChatInfo ? (
             <div className="text-center py-8 px-4">
               {!loadingDetail && !matchError && (
@@ -575,7 +672,7 @@ export default function WhatsAppChatPage() {
               <p className="text-xs text-gray-300 mt-1.5 leading-relaxed">
                 系统将自动识别客户信息
                 <br />
-                新客户将自动建立档案
+                无法可信匹配时将停止，请手动关联或建档
               </p>
             </div>
           )}

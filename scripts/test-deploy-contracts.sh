@@ -28,13 +28,160 @@ for script in deploy.sh scripts/deploy-security-preflight.sh scripts/db-prefligh
     scripts/restore-db.sh scripts/restore-runtime-data.sh scripts/rollback.sh scripts/deploy-smoke-test.sh scripts/rollback-smoke-test.sh \
     scripts/run-runtime-link-contract.sh scripts/runtime-initialize-transaction.sh scripts/runtime-restore-transaction.sh scripts/prepare-openclaw-runtime.sh scripts/openclaw-runtime-smoke-test.sh \
     scripts/openclaw-real-scene-test.sh scripts/openclaw-weixin-login.sh scripts/openclaw-weixin-login.test.sh \
-    scripts/openclaw-weixin-acceptance.sh scripts/configure-searxng.sh; do
+    scripts/openclaw-weixin-acceptance.sh scripts/configure-searxng.sh scripts/verify-pg15-migration-gate.sh \
+    scripts/verify-pg15-database-identity.sh; do
     bash -n "$PROJECT_DIR/$script" || fail "bash syntax: $script"
 done
 sh -n "$PROJECT_DIR/scripts/runtime-link-manifest.sh" \
     || fail "POSIX sh syntax: scripts/runtime-link-manifest.sh"
 sh -n "$PROJECT_DIR/scripts/runtime-initialize-transaction.sh" \
     || fail "POSIX sh syntax: scripts/runtime-initialize-transaction.sh"
+
+EMAIL_GUARD_STATES=(true false missing)
+for mode in current-baseline post-rollback; do
+    for disabled in "${EMAIL_GUARD_STATES[@]}"; do
+        for enabled in "${EMAIL_GUARD_STATES[@]}"; do
+            expected=fail
+            if [ "$mode" = current-baseline ]; then
+                case "$disabled/$enabled" in
+                    true/missing|missing/false|true/false) expected=pass ;;
+                esac
+            elif [ "$disabled/$enabled" = true/false ]; then
+                expected=pass
+            fi
+            if bash "$PROJECT_DIR/scripts/rollback-smoke-test.sh" \
+                --validate-email-send-guard-values "$mode" "$disabled" "$enabled" \
+                > /dev/null 2>&1; then
+                actual=pass
+            else
+                actual=fail
+            fi
+            [ "$actual" = "$expected" ] \
+                || fail "email guard matrix mismatch: mode=$mode disabled=$disabled enabled=$enabled expected=$expected actual=$actual"
+        done
+    done
+done
+for invalid_case in \
+    'current-baseline|TRUE|false' \
+    'current-baseline|true|0' \
+    'post-rollback|yes|false' \
+    'unknown|true|false'; do
+    IFS='|' read -r mode disabled enabled <<<"$invalid_case"
+    if bash "$PROJECT_DIR/scripts/rollback-smoke-test.sh" \
+        --validate-email-send-guard-values "$mode" "$disabled" "$enabled" \
+        > /dev/null 2>&1; then
+        fail "email guard validator accepted invalid case: $invalid_case"
+    fi
+done
+pass "rollback email guard mode matrix is fail-closed"
+
+node "$PROJECT_DIR/scripts/verify-prisma-migrations.mjs" >/dev/null \
+    || fail "18-migration PostgreSQL ledger contract"
+node "$PROJECT_DIR/scripts/verify-prisma-drift-contract.mjs" >/dev/null \
+    || fail "Prisma drift nonzero-exit contract"
+node --test "$PROJECT_DIR/scripts/verify-production-audit.test.mjs" >/dev/null \
+    || fail "production audit exception contract"
+node --test "$PROJECT_DIR/scripts/sanitize-evidence-log.test.mjs" >/dev/null \
+    || fail "persistent evidence path/credential sanitizer contract"
+node --test "$PROJECT_DIR/scripts/verify-runtime-image-baseline.test.mjs" >/dev/null \
+    || fail "sixteen-service rollback runtime image baseline contract"
+npm --prefix "$PROJECT_DIR" run verify:production-audits >/dev/null \
+    || fail "five live production dependency audits"
+contains "$PROJECT_DIR/scripts/deploy-security-preflight.sh" 'verify:production-audits'
+contains "$PROJECT_DIR/scripts/verify-baseline.mjs" 'verify:production-audits'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'migrate deploy'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'migrate status'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'migrate diff'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'RESTORED_DATABASE_URL'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'SHOW server_version_num'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" '15????'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'assert_empty_database'
+contains "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" 'verify-pg15-database-identity.sh'
+contains "$PROJECT_DIR/scripts/verify-pg15-database-identity.sh" 'pg_control_system()'
+contains "$PROJECT_DIR/scripts/verify-pg15-database-identity.sh" 'db.oid'
+PG15_NEGATIVE_FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/vaysen-crm-pg15-negative-XXXXXX")"
+cat > "$PG15_NEGATIVE_FIXTURE/psql" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+database_url="$1"
+query="${*: -1}"
+case "$query" in
+  *"pg_control_system()"*)
+    case "${PF_C_PG_STUB_MODE:-same}" in
+      same|same-address)
+        printf '111111|10\n'
+        ;;
+      same-cluster-different-db)
+        if [ "$database_url" = 'postgresql://stub/empty' ]; then printf '111111|10\n'; else printf '111111|11\n'; fi
+        ;;
+      different-cluster-same-oid)
+        if [ "$database_url" = 'postgresql://stub/empty' ]; then printf '111111|10\n'; else printf '222222|10\n'; fi
+        ;;
+      nonempty)
+        if [ "$database_url" = 'postgresql://stub/empty' ]; then printf '111111|10\n'; else printf '111111|11\n'; fi
+        ;;
+      identity-error)
+        printf 'permission denied\n' >&2
+        exit 3
+        ;;
+      *)
+        printf 'unknown identity fixture mode\n' >&2
+        exit 4
+        ;;
+    esac
+    ;;
+  *"server_version_num"*) printf '150000\n' ;;
+  *"count(*)"*)
+    if [ "${PF_C_PG_STUB_MODE:-}" = nonempty ]; then
+      printf '1\n'
+    else
+      printf '0\n'
+    fi
+    ;;
+  *"to_regclass"*) printf 't\n' ;;
+  *) printf 'unexpected psql query\n' >&2; exit 2 ;;
+esac
+SH
+chmod 750 "$PG15_NEGATIVE_FIXTURE/psql"
+for same_mode in same same-address; do
+    empty_identity_url='postgresql://stub/empty'
+    restored_identity_url='postgresql://stub/restored'
+    if [ "$same_mode" = same-address ]; then
+        empty_identity_url='postgresql://192.0.2.10/empty'
+        restored_identity_url='postgresql://[2001:db8::10]/restored'
+    fi
+    if PATH="$PG15_NEGATIVE_FIXTURE:$PATH" PF_C_PG_STUB_MODE="$same_mode" \
+        DATABASE_URL="$empty_identity_url" RESTORED_DATABASE_URL="$restored_identity_url" \
+        bash "$PROJECT_DIR/scripts/verify-pg15-database-identity.sh" \
+        >"$PG15_NEGATIVE_FIXTURE/${same_mode}.log" 2>&1; then
+        fail "PG15 identity gate accepted the same database via ${same_mode}"
+    fi
+    contains "$PG15_NEGATIVE_FIXTURE/${same_mode}.log" 'same cluster system identifier and database OID'
+done
+for distinct_mode in same-cluster-different-db different-cluster-same-oid; do
+    PATH="$PG15_NEGATIVE_FIXTURE:$PATH" PF_C_PG_STUB_MODE="$distinct_mode" \
+        DATABASE_URL='postgresql://stub/empty' RESTORED_DATABASE_URL='postgresql://stub/restored' \
+        bash "$PROJECT_DIR/scripts/verify-pg15-database-identity.sh" >/dev/null \
+        || fail "PG15 identity gate rejected valid distinct tuple: ${distinct_mode}"
+done
+if PATH="$PG15_NEGATIVE_FIXTURE:$PATH" PF_C_PG_STUB_MODE=identity-error \
+    DATABASE_URL='postgresql://stub/empty' RESTORED_DATABASE_URL='postgresql://stub/restored' \
+    bash "$PROJECT_DIR/scripts/verify-pg15-database-identity.sh" \
+    >"$PG15_NEGATIVE_FIXTURE/identity-error.log" 2>&1; then
+    fail "PG15 identity gate accepted an unavailable stable identity"
+fi
+contains "$PG15_NEGATIVE_FIXTURE/identity-error.log" 'stable cluster/database identity query failed'
+if PATH="$PG15_NEGATIVE_FIXTURE:$PATH" \
+    PF_C_PG_STUB_MODE=nonempty \
+    DATABASE_URL='postgresql://stub/empty' \
+    RESTORED_DATABASE_URL='postgresql://stub/restored' \
+    bash "$PROJECT_DIR/scripts/verify-pg15-migration-gate.sh" \
+    >"$PG15_NEGATIVE_FIXTURE/nonempty.log" 2>&1; then
+    fail "PG15 gate accepted a non-pristine empty database"
+fi
+contains "$PG15_NEGATIVE_FIXTURE/nonempty.log" 'empty database is not pristine before first deploy'
+rm -rf "$PG15_NEGATIVE_FIXTURE"
+pass "private audit and PG15 empty/restored/drift/continuous migration contracts are wired"
 
 SEARXNG_FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/vaysen-crm-searxng-config-XXXXXX")"
 printf 'use_default_settings: true\nserver:\n  secret_key: "ultrasecretkey"\n' \
@@ -45,13 +192,18 @@ SEARXNG_CONFIGURE_ONLY=true \
     sh "$PROJECT_DIR/scripts/configure-searxng.sh"
 grep -Eq '^[[:space:]]*-[[:space:]]*json([[:space:]#]|$)' "$SEARXNG_FIXTURE/settings.yml" \
     || fail "SearXNG JSON format was not enabled"
-contains "$SEARXNG_FIXTURE/settings.yml" '# Vaysen AI CRM China-network evidence engines v1'
+contains "$SEARXNG_FIXTURE/settings.yml" '# Vaysen China-network evidence engines v1'
 contains "$SEARXNG_FIXTURE/settings.yml" '      - baidu'
 contains "$SEARXNG_FIXTURE/settings.yml" '      - bing'
 contains "$SEARXNG_FIXTURE/settings.yml" '    base_url: https://cn.bing.com'
 not_contains "$SEARXNG_FIXTURE/settings.yml" 'ultrasecretkey'
-[ "$(stat -c %a "$SEARXNG_FIXTURE/settings.yml")" = 600 ] \
-    || fail "SearXNG settings must be mode 0600"
+case "$(uname -s)" in
+    MINGW*|MSYS*) ;;
+    *)
+        [ "$(stat -c %a "$SEARXNG_FIXTURE/settings.yml")" = 600 ] \
+            || fail "SearXNG settings must be mode 0600"
+        ;;
+esac
 SEARXNG_SETTINGS_PATH="$SEARXNG_FIXTURE/settings.yml" \
 SEARXNG_TEMPLATE_PATH="$SEARXNG_FIXTURE/template.yml" \
 SEARXNG_CONFIGURE_ONLY=true \
@@ -77,6 +229,11 @@ contains "$PROJECT_DIR/scripts/deploy-smoke-test.sh" 'SEARX_EVIDENCE_READY=1'
 contains "$PROJECT_DIR/scripts/deploy-smoke-test.sh" 'after bounded readiness retries'
 pass "SearXNG deployment smoke waits for a real public result with bounded fail-closed retries"
 
+case "$(uname -s)" in
+MINGW*|MSYS*)
+    printf '[SKIP] NTFS/MSYS cannot create the reviewed Unix symlink fixture; Linux release gate remains mandatory\n'
+    ;;
+*)
 SANITIZE_FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/vaysen-crm-runtime-sanitize-XXXXXX")"
 mkdir -p "$SANITIZE_FIXTURE/plugin-skills"
 ln -s /app/dist/extensions/browser/skills/browser-automation \
@@ -98,6 +255,8 @@ if bash "$PROJECT_DIR/scripts/sanitize-openclaw-runtime-snapshot.sh" "$SANITIZE_
 fi
 rm -rf "$SANITIZE_FIXTURE"
 pass "OpenClaw snapshot sanitizer removes only the exact reviewed transient browser skill link"
+    ;;
+esac
 
 MODE_SELECTOR="$PROJECT_DIR/scripts/select-migration-rehearsal-mode.sh"
 [ "$(bash "$MODE_SELECTOR" 0 0 0 0)" = 'forward-migration' ] \
@@ -235,7 +394,7 @@ node - "$PROJECT_DIR/release-manifest.json" "$MANIFEST_TMP" <<'NODE'
 const fs = require('fs');
 const source = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 source.dockerImages.buildExample = source.dockerImages.buildExample.replace(
-  /RELEASE_TAG=vaysen-crm-lan-v\d+\.\d+\.\d+-r\d+/,
+  /RELEASE_TAG=vaysen-crm-lan(?:-pilot)?-v\d+\.\d+\.\d+-r\d+/,
   'RELEASE_TAG=vaysen-crm-lan-v0.0.0-r0',
 );
 fs.writeFileSync(process.argv[3], JSON.stringify(source));
@@ -333,7 +492,7 @@ RESOLVER_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vaysen-crm-resolver-XXXXXX")"
 mkdir -p "$RESOLVER_TMP/scripts"
 cp "$PROJECT_DIR/scripts/resolve-release-revision.mjs" "$RESOLVER_TMP/scripts/"
 git -C "$RESOLVER_TMP" init -q
-git -C "$RESOLVER_TMP" config user.name 'Vaysen AI CRM Contract Test'
+git -C "$RESOLVER_TMP" config user.name 'Vaysen Contract Test'
 git -C "$RESOLVER_TMP" config user.email 'contract-test@localhost'
 printf 'fixture\n' > "$RESOLVER_TMP/content.txt"
 git -C "$RESOLVER_TMP" add content.txt
@@ -400,8 +559,8 @@ OPENCLAW_DATA_GID=1000
 OPENCLAW_GATEWAY_TOKEN=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 OPENCLAW_CRM_HMAC_KEY_ID=vaysen-openclaw-v1
 OPENCLAW_CRM_HMAC_SECRET=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-OPENCLAW_OWNER_EMAIL=admin@example.com
-OPENCLAW_OWNER_COMPANY_SLUG=example-trading-company
+OPENCLAW_OWNER_EMAIL=admin@vaysen.com
+OPENCLAW_OWNER_COMPANY_SLUG=vaysen-crm-packaging
 OPENCLAW_WECHAT_OWNER_PEER_SHA256=
 OPENCLAW_IMAGE=ghcr.io/openclaw/openclaw@sha256:6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c
 EOF
@@ -465,6 +624,9 @@ contains "$PROJECT_DIR/deploy.sh" 'does not match release tag commit'
 contains "$PROJECT_DIR/deploy.sh" 'Git worktree is dirty'
 contains "$PROJECT_DIR/deploy.sh" 'bash scripts/reuse-release-images.sh'
 contains "$PROJECT_DIR/deploy.sh" 'candidate image reuse failed closed'
+contains "$PROJECT_DIR/deploy.sh" 'compose build backend frontend worker-email-compose'
+contains "$PROJECT_DIR/deploy.sh" 'candidate backend/frontend/backend-worker image build failed'
+not_contains "$PROJECT_DIR/deploy.sh" 'compose build || fail "candidate image build failed"'
 contains "$PROJECT_DIR/scripts/reuse-release-images.sh" 'IMAGE_CONTEXT_PATHS=(backend frontend python-service)'
 contains "$PROJECT_DIR/scripts/reuse-release-images.sh" 'self-built image contexts differ; a normal full image build is required'
 contains "$PROJECT_DIR/scripts/reuse-release-images.sh" 'merge-base --is-ancestor "$SOURCE_COMMIT" "$RELEASE_COMMIT"'
@@ -474,9 +636,12 @@ contains "$PROJECT_DIR/scripts/reuse-release-images.sh" 'backend BUILD_REVISION 
 contains "$PROJECT_DIR/deploy.sh" 'automatic_rollback_on_failure'
 contains "$PROJECT_DIR/deploy.sh" 'compose_lifecycle_establish_writer_free_boundary "$COMPOSE_PROJECT_NAME"'
 contains "$PROJECT_DIR/deploy.sh" 'A boundary failure deliberately'
-contains "$PROJECT_DIR/deploy.sh" '--runtime-backup "$RUNTIME_BACKUP" --rev "$PREVIOUS_TAG"'
+contains "$PROJECT_DIR/deploy.sh" '--runtime-backup "$RUNTIME_BACKUP"'
+contains "$PROJECT_DIR/deploy.sh" '--rev "$PREVIOUS_TAG" --runtime-baseline "$PREVIOUS_RUNTIME_BASELINE"'
 contains "$PROJECT_DIR/deploy.sh" 'rollback.sh --check-app --rev "$PREVIOUS_TAG"'
 contains "$PROJECT_DIR/deploy.sh" 'rollback.sh --check --rev "$PREVIOUS_TAG"'
+contains "$PROJECT_DIR/deploy.sh" '--runtime-baseline "$PREVIOUS_RUNTIME_BASELINE"'
+contains "$PROJECT_DIR/deploy.sh" 'previous runtime image baseline is missing or symlinked'
 contains "$PROJECT_DIR/deploy.sh" 'APP_DATA_UID must be a positive numeric container uid'
 contains "$PROJECT_DIR/scripts/db-preflight.sh" '-e RUN_MIGRATIONS=false -e RUN_SEED=false'
 contains "$PROJECT_DIR/scripts/db-preflight.sh" '--pull never'
@@ -506,6 +671,12 @@ contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" '|| return 1'
 contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'first no-op candidate deploy changed the disposable database'
 contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'second candidate deploy did not prove no-op idempotency'
 contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'production rollback primitive did not reproduce the no-op backup exactly'
+contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" "REHEARSAL_MODE='followup-forward-migrations'"
+contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'Following migrations have not yet been applied:'
+contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'DISTINCT_SUCCESSFUL_MIGRATION_COUNT'
+contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'second follow-up deploy did not prove idempotency'
+contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'follow-up migration rollback did not reproduce the production backup exactly'
+contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'restoredDataSha256=$FOLLOWUP_RESTORED_DATA_SHA'
 contains "$PROJECT_DIR/scripts/deploy-security-preflight.sh" 'scripts/select-migration-rehearsal-mode.sh'
 contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" 'docker network create --internal'
 contains "$PROJECT_DIR/scripts/rehearse-db-migration.sh" '--entrypoint /usr/bin/env "$CANDIDATE_IMAGE_ID"'
@@ -604,10 +775,11 @@ stale_migration_check_line="$(line_of "$PROJECT_DIR/deploy.sh" 'stale or foreign
     && [ "$inventory_line" -lt "$writer_free_boundary_line" ] \
     || fail "reserved production migration name must be clear before immutable inventory and the writer-free boundary"
 production_migration_line="$(line_of "$PROJECT_DIR/deploy.sh" 'backend npm run prisma:deploy')"
-backend_start_line="$(line_of "$PROJECT_DIR/deploy.sh" 'postgres redis python-service backend')"
-all_services_start_line="$(line_of "$PROJECT_DIR/deploy.sh" 'compose up -d --no-build || fail "candidate startup failed"')"
-[ "$production_migration_line" -lt "$backend_start_line" ] && [ "$backend_start_line" -lt "$all_services_start_line" ] \
-    || fail "bounded one-off migration and backend health must complete before workers and OpenClaw start"
+backend_start_line="$(line_of "$PROJECT_DIR/deploy.sh" 'candidate backend migration/startup did not become healthy')"
+selected_services_start_line="$(line_of "$PROJECT_DIR/deploy.sh" 'candidate frontend/backend-worker/OpenClaw/edge startup failed')"
+[ "$production_migration_line" -lt "$backend_start_line" ] && [ "$backend_start_line" -lt "$selected_services_start_line" ] \
+    || fail "bounded one-off migration and backend health must complete before selected frontend, workers and OpenClaw start"
+not_contains "$PROJECT_DIR/deploy.sh" 'compose up -d --no-build || fail "candidate startup failed"'
 contains "$PROJECT_DIR/docker-compose.prod.yml" 'RELEASE_COMMIT must be an immutable full SHA'
 contains "$PROJECT_DIR/scripts/deploy-smoke-test.sh" '镜像 revision 匹配'
 nginx_compose_block="$(sed -n '/^  nginx:/,/^volumes:/p' "$PROJECT_DIR/docker-compose.prod.yml")"
@@ -707,7 +879,14 @@ contains "$PROJECT_DIR/scripts/rollback.sh" 'rev-parse --verify "${REV}^{}"'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'rev-parse --show-prefix'
 contains "$PROJECT_DIR/scripts/rollback.sh" '--project-directory "$OLD_PROJECT"'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'up -d --no-build --wait --wait-timeout'
-contains "$PROJECT_DIR/scripts/rollback.sh" 'old_compose config --images'
+contains "$PROJECT_DIR/scripts/rollback.sh" 'runtime-images.override.yml'
+contains "$PROJECT_DIR/scripts/rollback.sh" '--runtime-baseline is mandatory for an application rollback'
+contains "$PROJECT_DIR/scripts/rollback.sh" '--mode verify-images'
+contains "$PROJECT_DIR/scripts/rollback.sh" '--mode verify-compose'
+contains "$PROJECT_DIR/scripts/rollback.sh" '--mode verify-containers'
+contains "$PROJECT_DIR/scripts/rollback.sh" '--require-runtime-state'
+contains "$PROJECT_DIR/scripts/rollback.sh" 'rendered rollback Compose images do not match the runtime baseline'
+not_contains "$PROJECT_DIR/scripts/rollback.sh" 'old application image does not match rollback revision'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'migration tree differs between current and old release'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'runtime-bind.override.yml'
 contains "$PROJECT_DIR/scripts/rollback.sh" '"$APP_DATA_DIR/uploads:/uploads"'
@@ -720,8 +899,20 @@ contains "$PROJECT_DIR/scripts/rollback.sh" 'command: ["node", "dist/src/main.js
 contains "$PROJECT_DIR/scripts/rollback.sh" 'rollback backend command still permits the legacy automatic migration'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'rollback email worker is not fail-closed'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'bash "$SCRIPT_DIR/rollback-smoke-test.sh"'
+contains "$PROJECT_DIR/scripts/rollback.sh" 'ROLLBACK_SMOKE_MODE=current-baseline'
+contains "$PROJECT_DIR/scripts/rollback.sh" 'ROLLBACK_SMOKE_MODE=post-rollback'
+[ "$(grep -Fc 'ROLLBACK_SMOKE_MODE=current-baseline' "$PROJECT_DIR/scripts/rollback.sh")" -eq 1 ] \
+    || fail "check-app must select current-baseline exactly once"
+[ "$(grep -Fc 'ROLLBACK_SMOKE_MODE=post-rollback' "$PROJECT_DIR/scripts/rollback.sh")" -eq 1 ] \
+    || fail "real rollback must select post-rollback exactly once"
+check_app_mode_block="$(sed -n '/if \[ "$CHECK_ONLY" -eq 1 \]/,/exit 0/p' "$PROJECT_DIR/scripts/rollback.sh")"
+printf '%s\n' "$check_app_mode_block" | grep -Fq 'ROLLBACK_SMOKE_MODE=current-baseline' \
+    || fail "check-app flow does not select current-baseline mode"
+post_rollback_mode_block="$(sed -n '/old_compose up -d --no-build/,/info "rollback verification passed"/p' "$PROJECT_DIR/scripts/rollback.sh")"
+printf '%s\n' "$post_rollback_mode_block" | grep -Fq 'ROLLBACK_SMOKE_MODE=post-rollback' \
+    || fail "post-rollback flow does not select post-rollback mode"
 not_contains "$PROJECT_DIR/scripts/rollback.sh" 'bash "$SCRIPT_DIR/deploy-smoke-test.sh"'
-contains "$PROJECT_DIR/scripts/rollback.sh" 'old application image revisions match the peeled rollback commit'
+contains "$PROJECT_DIR/scripts/rollback.sh" 'per-service revisions, and Compose model match the runtime baseline'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'RELEASE_TAG="$OLD_RELEASE_TAG"'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'rollback commit must resolve to exactly one immutable Linux release tag'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'database backup changed or failed validation after the restore lock was acquired'
@@ -730,8 +921,12 @@ contains "$PROJECT_DIR/scripts/rollback.sh" 'compose_lifecycle_establish_writer_
 contains "$PROJECT_DIR/scripts/rollback.sh" 'could not establish a writer-free rollback boundary'
 contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'rollback nginx is not bound exclusively'
 contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'rollback /health release metadata does not match the immutable target'
+contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'all sixteen rollback containers match exact image references, IDs, labels, and per-service revisions'
+contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" '--mode verify-health'
 contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'RELEASE_TAG=$ROLLBACK_EXPECTED_TAG'
 contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'EMAIL_SEND_DISABLED=true'
+contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'EMAIL_SEND_ENABLED=false'
+contains "$PROJECT_DIR/scripts/rollback-smoke-test.sh" 'ROLLBACK_SMOKE_MODE must be explicitly selected'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'joint rollback keeps the current backend stopped'
 contains "$PROJECT_DIR/scripts/rollback.sh" '--runtime-backup'
 contains "$PROJECT_DIR/scripts/rollback.sh" 'restore-runtime-data.sh'
@@ -1024,7 +1219,7 @@ contains "$PROJECT_DIR/docker-compose.prod.yml" 'test: ["CMD", "wget", "-Y", "of
 contains "$PROJECT_DIR/scripts/deploy-smoke-test.sh" 'wget -Y off'
 contains "$PROJECT_DIR/scripts/rollback.sh" '"wget", "-Y", "off"'
 contains "$PROJECT_DIR/backend/src/modules/whatsapp/evolution-webhook.controller.ts" '@Public()'
-if grep -R -nE 'fastenernails\.com|updates\.vaysenpackaging\.com|listen[[:space:]]+443' \
+if grep -R -nE 'fastenernails\.com|updates\.vaysen\.com|listen[[:space:]]+443' \
     "$PROJECT_DIR/docker-compose.prod.yml" "$PROJECT_DIR/nginx" "$PROJECT_DIR/electron/electron-builder.yml"; then
     fail "canonical LAN deployment path must not reference public domains, updater, or port 443"
 fi
@@ -1037,8 +1232,8 @@ pass "LAN-only bind, nginx, manual-update, and legacy-script contracts are prese
 
 case "$(uname -s)" in
     MINGW*|MSYS*)
-        printf '[SKIP] NTFS/MSYS reports synthesized 755/644 modes; sandbox chmod assertions require Linux\n'
-        printf 'TASK-109 deployment contract tests passed: %d groups (1 Linux-only group skipped)\n' "$PASS"
+        printf '[SKIP] MSYS cannot prove snapshot symlink behavior, node:sqlite managed-install fixtures, Linux permission/preflight sandboxes, rollback trust, or backup/restore archives\n'
+        printf 'TASK-109 deployment contract tests passed: %d pre-sandbox groups; all post-boundary Linux fixtures remain mandatory\n' "$PASS"
         exit 0
         ;;
 esac
@@ -1067,7 +1262,7 @@ mkdir -p "$FIXTURE/scripts" "$FIXTURE/backend" "$FIXTURE/frontend/scripts" "$FIX
     "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/test" \
     "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/src/security" \
     "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/dist/src/security" \
-    "$BACKUPS" "$RELEASES" "$APP_DATA" "$REHEARSALS"
+    "$FIXTURE/electron" "$FIXTURE/security" "$BACKUPS" "$RELEASES" "$APP_DATA" "$REHEARSALS"
 cp "$PROJECT_DIR/scripts/deploy-security-preflight.sh" "$PROJECT_DIR/scripts/compose-container-lifecycle.sh" \
     "$PROJECT_DIR/scripts/select-migration-rehearsal-mode.sh" "$FIXTURE/scripts/"
 chmod 750 "$FIXTURE/scripts/deploy-security-preflight.sh"
@@ -1096,6 +1291,15 @@ printf 'fixture\n' > "$FIXTURE/deploy/openclaw/config/openclaw.install-private.j
 printf 'fixture\n' > "$FIXTURE/deploy/openclaw/config/openclaw.production.json"
 printf '# fixture\n' > "$FIXTURE/deploy/openclaw/config/npm-user.empty"
 printf '# fixture\n' > "$FIXTURE/deploy/openclaw/config/npm-global.empty"
+cp "$PROJECT_DIR/package.json" "$PROJECT_DIR/package-lock.json" "$FIXTURE/"
+cp "$PROJECT_DIR/backend/package.json" "$PROJECT_DIR/backend/package-lock.json" "$FIXTURE/backend/"
+cp "$PROJECT_DIR/frontend/package.json" "$PROJECT_DIR/frontend/package-lock.json" "$FIXTURE/frontend/"
+cp "$PROJECT_DIR/electron/package.json" "$PROJECT_DIR/electron/package-lock.json" "$FIXTURE/electron/"
+cp "$PROJECT_DIR/scripts/verify-production-audit.mjs" "$FIXTURE/scripts/"
+cp "$PROJECT_DIR/security/npm-audit-exceptions.json" "$FIXTURE/security/"
+cp "$PROJECT_DIR/deploy/openclaw/plugins/vaysen-crm/package.json" \
+    "$PROJECT_DIR/deploy/openclaw/plugins/vaysen-crm/npm-shrinkwrap.json" \
+    "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/"
 printf 'fixture\n' > "$FIXTURE/backend/.dockerignore"
 printf 'fixture\n' > "$FIXTURE/backend/Dockerfile"
 printf 'fixture\n' > "$FIXTURE/backend/entrypoint.sh"
@@ -1113,7 +1317,8 @@ chmod 750 "$FIXTURE" "$FIXTURE/scripts" "$FIXTURE/backend" "$FIXTURE/frontend" "
     "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/src/security" \
     "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/dist" \
     "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/dist/src" \
-    "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/dist/src/security" "$APP_DATA"
+    "$FIXTURE/deploy/openclaw/plugins/vaysen-crm/weixin-patch-files/dist/src/security" \
+    "$FIXTURE/electron" "$FIXTURE/security" "$APP_DATA"
 chmod 700 "$BACKUPS"
 chmod 700 "$REHEARSALS"
 chmod 750 "$RELEASES"
@@ -1124,6 +1329,11 @@ chmod 640 "$FIXTURE/.gitattributes" "$FIXTURE/deploy.sh" "$FIXTURE/docker-compos
     "$FIXTURE/frontend/scripts/runtime-healthcheck.cjs" "$FIXTURE/python-service/.dockerignore" \
     "$FIXTURE/scripts/compose-container-lifecycle.sh" \
     "$FIXTURE/scripts/select-migration-rehearsal-mode.sh" \
+    "$FIXTURE/scripts/verify-production-audit.mjs" "$FIXTURE/security/npm-audit-exceptions.json" \
+    "$FIXTURE/package.json" "$FIXTURE/package-lock.json" \
+    "$FIXTURE/backend/package.json" "$FIXTURE/backend/package-lock.json" \
+    "$FIXTURE/frontend/package.json" "$FIXTURE/frontend/package-lock.json" \
+    "$FIXTURE/electron/package.json" "$FIXTURE/electron/package-lock.json" \
     "$FIXTURE/scripts/db-preflight.sh" "$FIXTURE/scripts/rehearse-db-migration.sh" "$FIXTURE/scripts/recreate-db-from-backup.sh" "$FIXTURE/scripts/backup-db.sh" "$FIXTURE/scripts/backup-runtime-data.sh" \
     "$FIXTURE/scripts/sanitize-openclaw-runtime-snapshot.sh" \
     "$FIXTURE/scripts/verify-db-backup.sh" \
@@ -1158,7 +1368,7 @@ chmod 640 "$FIXTURE/.gitattributes" "$FIXTURE/deploy.sh" "$FIXTURE/docker-compos
 FIXTURE_OWNER="$(stat -c '%U' "$FIXTURE")"
 FIXTURE_GROUP="$(stat -c '%G' "$FIXTURE")"
 git -C "$FIXTURE" init -q
-git -C "$FIXTURE" config user.name 'Vaysen AI CRM Security Fixture'
+git -C "$FIXTURE" config user.name 'Vaysen Security Fixture'
 git -C "$FIXTURE" config user.email 'security-fixture@localhost'
 git -C "$FIXTURE" add -A
 git -C "$FIXTURE" commit -qm 'secure fixture'
@@ -1205,13 +1415,14 @@ for trusted_path in scripts/rollback.sh scripts/compose-container-lifecycle.sh \
     scripts/recreate-db-from-backup.sh scripts/restore-runtime-data.sh \
     scripts/runtime-restore-transaction.sh scripts/runtime-link-manifest.sh \
     scripts/runtime-link-contract.mjs scripts/run-runtime-link-contract.sh \
-    scripts/rollback-smoke-test.sh docker-compose.prod.yml nginx/nginx.conf \
+    scripts/verify-runtime-image-baseline.mjs scripts/rollback-smoke-test.sh \
+    docker-compose.prod.yml nginx/nginx.conf \
     nginx/conf.d/vaysen-crm-lan.conf; do
     mkdir -p "$ROLLBACK_TRUST_FIXTURE/$(dirname "$trusted_path")"
     cp "$PROJECT_DIR/$trusted_path" "$ROLLBACK_TRUST_FIXTURE/$trusted_path"
 done
 git -C "$ROLLBACK_TRUST_FIXTURE" init -q
-git -C "$ROLLBACK_TRUST_FIXTURE" config user.name 'Vaysen AI CRM Rollback Trust Fixture'
+git -C "$ROLLBACK_TRUST_FIXTURE" config user.name 'Vaysen Rollback Trust Fixture'
 git -C "$ROLLBACK_TRUST_FIXTURE" config user.email 'rollback-trust@localhost'
 git -C "$ROLLBACK_TRUST_FIXTURE" add -A
 git -C "$ROLLBACK_TRUST_FIXTURE" commit -qm 'immutable rollback trust fixture'

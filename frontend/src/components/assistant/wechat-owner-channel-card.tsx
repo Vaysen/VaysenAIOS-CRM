@@ -180,7 +180,7 @@ export function WechatOwnerChannelCard({
               OpenClaw 执行内核
             </h3>
             <p className="mt-0.5 text-xs text-slate-500">
-              Vaysen AI 业务助理的业务主管执行引擎
+              JY AI 业务助理的业务主管执行引擎
             </p>
           </div>
         </div>

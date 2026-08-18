@@ -14,7 +14,7 @@ type DragRegionStyle = React.CSSProperties & {
 const dragStyle: DragRegionStyle = { WebkitAppRegion: 'drag' };
 const noDragStyle: DragRegionStyle = { WebkitAppRegion: 'no-drag' };
 
-const APP_NAME = 'Vaysen AI CRM';
+const APP_NAME = 'Vaysen 外贸系统';
 
 /**
  * 无边框窗口的自定义标题栏。

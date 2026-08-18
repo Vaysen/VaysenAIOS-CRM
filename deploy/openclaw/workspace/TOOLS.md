@@ -1,4 +1,4 @@
-# Vaysen AI CRM 工具规则
+# Vaysen CRM 工具规则
 
 ## 选择令牌
 
@@ -50,6 +50,6 @@
 
 ## Coding profile 边界
 
-OpenClaw 生产使用 `coding` profile，可使用受限工作区文件工具、浏览器、TTS、心跳和内部 `sessions_send`。文件系统限制在只读 `/opt/vaysen-workspace`。`exec`、`process`、`gateway`、`nodes` 和通用 `message` 始终禁用；CRM 外发必须使用上面的专用工具。
+OpenClaw 生产使用 `coding` profile，仅开放 21 个私有 CRM tools、TTS 和心跳。文件系统限制在只读 `/opt/vaysen-workspace`。`exec`、`process`、`gateway`、`nodes`、通用 `message`、`browser` 和 `browser-automation` 始终禁用；CRM 外发必须使用上面的专用工具并进入 Guard/Outbox。
 
 负责人微信验收 marker 格式为 `JYACC_OWNER_[a-f0-9]{16}`，只可作为 `acceptanceMarker` 调用一次 `crm_work_brief`。

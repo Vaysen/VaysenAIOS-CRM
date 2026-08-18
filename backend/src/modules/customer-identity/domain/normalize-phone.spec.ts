@@ -10,6 +10,11 @@
 import { normalizePhoneIdentity } from './normalize-phone';
 
 describe('TASK-102B normalizePhoneIdentity', () => {
+  it('+86 133 6592 3697 resolves to the complete E.164 number', () => {
+    const result = normalizePhoneIdentity('+86 133 6592 3697');
+    expect(result).toMatchObject({ status: 'resolved', e164: '+8613365923697' });
+  });
+
   describe('resolved (含国家代码)', () => {
     it('+86 138 0000 1234 解析为 E.164 并保留 +86 前缀', () => {
       const result = normalizePhoneIdentity('+86 138 0000 1234');

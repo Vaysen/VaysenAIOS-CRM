@@ -11,6 +11,7 @@ import { WhatsAppService } from './whatsapp.service';
 import { RealtimeEventBus } from '../../common/realtime/realtime-event-bus';
 import { EvolutionApiService } from './evolution-api.service';
 import { Public } from '../../common/decorators/public.decorator';
+import { safeLogEvent } from '../../common/security/safe-logging';
 
 @Controller('whatsapp/evolution-webhook')
 export class EvolutionWebhookController {
@@ -42,9 +43,10 @@ export class EvolutionWebhookController {
       const event = payload?.event || payload?.type;
       const instanceName = payload?.instance || payload?.instanceName;
 
-      this.logger.log(
-        `[Webhook] event=${event}, instance=${instanceName}`,
-      );
+      this.logger.log(safeLogEvent('whatsapp.evolution.webhook_received', {
+        eventType: event,
+        instanceName,
+      }));
 
       switch (event) {
         case 'qrcode.updated':
@@ -64,7 +66,7 @@ export class EvolutionWebhookController {
           break;
 
         default:
-          this.logger.debug(`[Webhook] Unhandled event: ${event}`);
+          this.logger.debug(safeLogEvent('whatsapp.evolution.event_unhandled', { eventType: event }));
       }
 
       return { status: 'ok' };
@@ -72,7 +74,7 @@ export class EvolutionWebhookController {
       // Evolution retries only when the webhook answers with a non-success
       // status. Never turn a database/processing failure into HTTP 200, or the
       // upstream event can be lost permanently.
-      this.logger.error(`[Webhook] Error: ${err?.message}`, err?.stack);
+      this.logger.error(safeLogEvent('whatsapp.evolution.webhook_failed', { error: err }));
       throw err;
     }
   }
@@ -85,7 +87,7 @@ export class EvolutionWebhookController {
     if (!qrcode) return;
 
     await this.whatsappService.updateQrCode(instanceName, qrcode);
-    this.logger.log(`[Webhook] QR code updated for ${instanceName}`);
+    this.logger.log(safeLogEvent('whatsapp.evolution.qr_updated', { instanceName, status: 'updated' }));
   }
 
   /**
@@ -121,10 +123,11 @@ export class EvolutionWebhookController {
       phoneNumber,
     );
 
-    this.logger.log(
-      `[Webhook] Connection update: ${instanceName} → ${dbStatus}` +
-      (phoneNumber ? ` (phone: ${phoneNumber})` : ''),
-    );
+    this.logger.log(safeLogEvent('whatsapp.evolution.connection_updated', {
+      instanceName,
+      status: dbStatus,
+      phoneNumber,
+    }));
   }
 
   /**
@@ -149,12 +152,12 @@ export class EvolutionWebhookController {
 
     const rawJid = message.key.remoteJid || '';
     const jidDomain = rawJid.split('@')[1]?.toLowerCase() || '';
-    const isGroup = jidDomain === 'g.us';
+    const isGroup = jidDomain === 'g.us' || jidDomain === 'broadcast';
     const isLid = jidDomain === 'lid';
     const isPhoneJid = ['s.whatsapp.net', 'c.us'].includes(jidDomain);
 
     if (!isGroup && !isLid && !isPhoneJid) {
-      this.logger.warn(`[Webhook] Unsupported WhatsApp JID domain: ${rawJid}`);
+      this.logger.warn(safeLogEvent('whatsapp.evolution.jid_domain_unsupported', { jid: rawJid }));
       return;
     }
 
@@ -170,10 +173,12 @@ export class EvolutionWebhookController {
     const fromPhone = isLid ? '' : (fromJid.split('@')[0] || '');
 
     if (!isLid && (!fromPhone || !/^\d{7,15}$/.test(fromPhone))) {
-      this.logger.warn(
-        `[Webhook] Invalid fromPhone: "${fromPhone}", isGroup=${isGroup}, ` +
-        `rawJid=${rawJid}, participant=${message.key.participant || 'N/A'}`,
-      );
+      this.logger.warn(safeLogEvent('whatsapp.evolution.sender_invalid', {
+        phoneNumber: fromPhone,
+        isGroup,
+        jid: rawJid,
+        participant: message.key.participant || 'N/A',
+      }));
       return;
     }
 
@@ -187,10 +192,13 @@ export class EvolutionWebhookController {
     // 提取媒体信息
     const mediaInfo = this.extractMediaInfo(message.message);
 
-    this.logger.log(
-      `[Webhook] Message from ${fromPhone} (group=${isGroup}): ` +
-      `${messageContent.substring(0, 100)}${messageContent.length > 100 ? '...' : ''}`,
-    );
+    this.logger.log(safeLogEvent('whatsapp.evolution.message_received', {
+      phoneNumber: fromPhone,
+      isGroup,
+      message: messageContent,
+      contentBytes: Buffer.byteLength(messageContent, 'utf8'),
+      contentType: mediaInfo?.type || 'text',
+    }));
 
     // 调用 WhatsAppService 处理消息入库 + SSE 推送
     await this.whatsappService.handleEvolutionMessage({
@@ -225,9 +233,10 @@ export class EvolutionWebhookController {
       const statusValue = status?.status;
 
       if (messageId && statusValue) {
-        this.logger.debug(
-          `[Webhook] Message status: ${messageId} → ${statusValue}`,
-        );
+        this.logger.debug(safeLogEvent('whatsapp.evolution.message_status_updated', {
+          messageId,
+          status: statusValue,
+        }));
         // 更新消息状态到数据库
         await this.whatsappService.updateMessageStatus(
           instanceName,

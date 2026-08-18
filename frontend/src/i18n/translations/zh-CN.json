@@ -1,7 +1,7 @@
 {
   "common": {
-    "appName": "Vaysen AI CRM",
-    "appDescription": "Vaysen AI CRM 国际B2B外贸业务中台",
+    "appName": "Vaysen外贸系统",
+    "appDescription": "Vaysen 国际B2B外贸业务中台",
     "welcome": "欢迎回来",
     "logout": "退出登录",
     "save": "保存",
@@ -77,9 +77,9 @@
     "registerTitle": "创建您的账户",
     "loginFailed": "登录失败，请检查邮箱和密码",
     "registerFailed": "注册失败",
-    "passwordMinLength": "密码至少6位",
+    "passwordMinLength": "密码至少12位",
     "emailPlaceholder": "you@company.com",
-    "passwordPlaceholder": "至少6位字符",
+    "passwordPlaceholder": "至少12位字符",
     "firstNamePlaceholder": "输入您的名",
     "lastNamePlaceholder": "输入您的姓",
     "companyNamePlaceholder": "输入公司名称"

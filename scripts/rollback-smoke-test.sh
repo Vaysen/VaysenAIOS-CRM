@@ -4,12 +4,14 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-vaysen-ai-crm}"
 LAN_BIND_IP="${LAN_BIND_IP:-}"
 LOCAL_LAN_BIND_IP="${LOCAL_LAN_BIND_IP:-}"
 APP_DATA_DIR="${APP_DATA_DIR:-/var/lib/vaysen-crm/data}"
 BASE_URL="http://$LAN_BIND_IP"
 WORKERS=(worker-email-compose worker-email-validate worker-email-send worker-prospect-search worker-deep-research worker-maintenance)
+ROLLBACK_SMOKE_MODE="${ROLLBACK_SMOKE_MODE:-}"
 
 fail() { printf '[ROLLBACK SMOKE ERROR] %s\n' "$*" >&2; exit 1; }
 pass() { printf '[ROLLBACK SMOKE OK] %s\n' "$*"; }
@@ -26,6 +28,61 @@ http_status() {
     curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' \
         --connect-timeout 5 --max-time 15 "$1"
 }
+
+validate_email_send_guard_values() {
+    local mode="$1" disabled="$2" enabled="$3" value
+    case "$mode" in
+        current-baseline|post-rollback) ;;
+        *) fail "ROLLBACK_SMOKE_MODE must be current-baseline or post-rollback" ;;
+    esac
+    for value in "$disabled" "$enabled"; do
+        case "$value" in
+            true|false|missing) ;;
+            *) fail "email send guard contains an invalid boolean value" ;;
+        esac
+    done
+
+    if [ "$mode" = current-baseline ]; then
+        case "$disabled/$enabled" in
+            true/missing|missing/false|true/false) return 0 ;;
+            missing/missing) fail "current baseline has neither explicit email send guard" ;;
+            true/true|false/false) fail "current baseline has contradictory email send guards" ;;
+            *) fail "current baseline explicitly permits email sending" ;;
+        esac
+    fi
+
+    [ "$disabled" = true ] && [ "$enabled" = false ] \
+        || fail "post-rollback email worker must set EMAIL_SEND_DISABLED=true and EMAIL_SEND_ENABLED=false"
+}
+
+email_guard_value() {
+    local env="$1" key="$2" matches count value
+    matches="$(printf '%s\n' "$env" | grep -E "^${key}=" || true)"
+    count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)"
+    [ "$count" -le 1 ] || fail "email send guard is duplicated: $key"
+    if [ "$count" -eq 0 ]; then
+        printf 'missing'
+        return
+    fi
+    value="${matches#*=}"
+    case "$value" in
+        true|false) printf '%s' "$value" ;;
+        *) fail "email send guard contains an invalid boolean value: $key" ;;
+    esac
+}
+
+if [ "${1:-}" = --validate-email-send-guard-values ]; then
+    [ "$#" -eq 4 ] \
+        || fail "usage: --validate-email-send-guard-values MODE DISABLED ENABLED"
+    validate_email_send_guard_values "$2" "$3" "$4"
+    pass "email send guard values satisfy $2"
+    exit 0
+fi
+[ "$#" -eq 0 ] || fail "unknown argument: $1"
+case "$ROLLBACK_SMOKE_MODE" in
+    current-baseline|post-rollback) ;;
+    *) fail "ROLLBACK_SMOKE_MODE must be explicitly selected" ;;
+esac
 
 [ -n "$LAN_BIND_IP" ] || fail "LAN_BIND_IP is required"
 [ -n "$LOCAL_LAN_BIND_IP" ] || fail "LOCAL_LAN_BIND_IP is required"
@@ -49,11 +106,10 @@ pass "all six legacy workers are running"
 
 send_id="$(container_for worker-email-send)"
 send_env="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$send_id")"
-printf '%s\n' "$send_env" | grep -Fx 'EMAIL_SEND_DISABLED=true' >/dev/null \
-    || fail "rollback email worker is not disabled"
-printf '%s\n' "$send_env" | grep -Fx 'EMAIL_SEND_ENABLED=false' >/dev/null \
-    || fail "rollback email worker lacks the negative send guard"
-pass "email sending remains fail-closed"
+send_disabled="$(email_guard_value "$send_env" EMAIL_SEND_DISABLED)"
+send_enabled="$(email_guard_value "$send_env" EMAIL_SEND_ENABLED)"
+validate_email_send_guard_values "$ROLLBACK_SMOKE_MODE" "$send_disabled" "$send_enabled"
+pass "email sending remains fail-closed for $ROLLBACK_SMOKE_MODE"
 
 backend_id="$(container_for backend)"
 for mapping in \
@@ -84,15 +140,16 @@ if [ -n "${ROLLBACK_EXPECTED_REVISION:-}" ]; then
     [[ "${ROLLBACK_EXPECTED_SHORT:-}" =~ ^[0-9a-f]{8}$ ]] \
         && [ "${ROLLBACK_EXPECTED_REVISION:0:8}" = "$ROLLBACK_EXPECTED_SHORT" ] \
         || fail "rollback expected short revision is invalid"
-    [[ "${ROLLBACK_EXPECTED_TAG:-}" =~ ^vaysen-crm-lan-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]] \
+    [[ "${ROLLBACK_EXPECTED_TAG:-}" =~ ^vaysen-crm-lan(-pilot)?-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]] \
         || fail "rollback expected release tag is invalid"
-    for service in backend frontend python-service worker-email-compose worker-email-validate worker-email-send worker-prospect-search worker-deep-research worker-maintenance; do
-        service_id="$(container_for "$service")"
-        actual_revision="$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$service_id")"
-        [ "$actual_revision" = "$ROLLBACK_EXPECTED_REVISION" ] \
-            || fail "rollback service $service does not use the expected immutable revision"
-    done
-    pass "rollback application images match the expected immutable revision"
+    [ -n "${ROLLBACK_RUNTIME_BASELINE:-}" ] \
+        || fail "ROLLBACK_RUNTIME_BASELINE is required for immutable image verification"
+    node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" \
+        --baseline "$ROLLBACK_RUNTIME_BASELINE" --expected-tag "$ROLLBACK_EXPECTED_TAG" \
+        --expected-commit "$ROLLBACK_EXPECTED_REVISION" --expected-project "$COMPOSE_PROJECT_NAME" \
+        --mode verify-containers --require-runtime-state \
+        || fail "rollback containers do not match the exact runtime image baseline"
+    pass "all sixteen rollback containers match exact image references, IDs, labels, and per-service revisions"
     backend_env="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$backend_id")"
     for expected in \
         "RELEASE_COMMIT=$ROLLBACK_EXPECTED_REVISION" \
@@ -123,6 +180,11 @@ if [ -n "${ROLLBACK_EXPECTED_REVISION:-}" ]; then
       });
     ' "$ROLLBACK_EXPECTED_REVISION" "$ROLLBACK_EXPECTED_SHORT" "$ROLLBACK_EXPECTED_TAG" \
         || fail "rollback /health release metadata does not match the immutable target"
+    printf '%s' "$health_body" | node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" \
+        --baseline "$ROLLBACK_RUNTIME_BASELINE" --expected-tag "$ROLLBACK_EXPECTED_TAG" \
+        --expected-commit "$ROLLBACK_EXPECTED_REVISION" --expected-project "$COMPOSE_PROJECT_NAME" \
+        --mode verify-health \
+        || fail "rollback /health does not satisfy the runtime baseline health contract"
     pass "rollback /health release metadata matches the immutable target"
 fi
 [ "$(http_status "$BASE_URL/login")" = "200" ] || fail "rollback /login is not 200"

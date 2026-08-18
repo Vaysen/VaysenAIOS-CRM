@@ -1,4 +1,4 @@
-import { NestFactory } from '@nestjs/core';
+﻿import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -7,6 +7,7 @@ import { AppModule } from './app.module';
 import { loadEnvFile } from './config/load-env';
 import { ensureUploadsRoot, uploadResponseSecurityHeaders } from './modules/communications/attachment-security';
 import { buildHealthPayload } from './health-metadata';
+import { safeLogEvent, safeRequestPath } from './common/security/safe-logging';
 
 loadEnvFile();
 
@@ -18,6 +19,11 @@ async function bootstrap() {
 
   // Register /health on raw Express instance — bypasses NestJS global prefix
   const expressApp = app.getHttpAdapter().getInstance();
+  // Trust exactly one reverse-proxy hop only when the deployer opts in. Rate
+  // limit keys never accept X-Forwarded-For in the default configuration.
+  if (process.env.TRUST_PROXY === 'true') {
+    expressApp.set('trust proxy', 1);
+  }
   expressApp.get('/health', (_req: any, res: any) => {
     res.json(buildHealthPayload());
   });
@@ -42,7 +48,10 @@ async function bootstrap() {
 
   // Request logger — logs every incoming HTTP request for diagnostics
   expressApp.use((req: any, _res: any, next: any) => {
-    logger.log(`${req.method} ${req.url}`);
+    logger.log(safeLogEvent('http.request.received', {
+      method: req.method,
+      requestPath: safeRequestPath(req.originalUrl || req.url),
+    }));
     next();
   });
 
@@ -91,8 +100,8 @@ async function bootstrap() {
   const enableSwagger = process.env.ENABLE_SWAGGER === 'true';
   if (enableSwagger) {
     const config = new DocumentBuilder()
-      .setTitle('Vaysen AI CRM API')
-      .setDescription('示例贸易公司 — 国际B2B外贸业务中台')
+      .setTitle('Vaysen Trade OS API')
+      .setDescription('Vaysen包装 — 国际B2B外贸业务中台')
       .setVersion('1.0')
       .addBearerAuth()
       .build();

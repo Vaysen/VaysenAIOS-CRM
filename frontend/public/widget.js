@@ -1,5 +1,5 @@
 /*!
- * Vaysen AI CRM Live Chat Widget — Chatwoot-style
+ * Vaysen Live Chat Widget — Chatwoot-style
  * Embed: <script src="https://your-domain.com/widget.js" data-api="https://your-api.com" defer></script>
  */
 (function () {
@@ -64,12 +64,12 @@
   function buildWindowHTML() {
     return [
       '<div class="vaysen-window-header">',
-      '<div class="avatar">VA</div>',
-      '<div class="info"><div class="name">示例贸易公司</div><div class="status">在线 · 通常几分钟内回复</div></div>',
+      '<div class="avatar">JY</div>',
+      '<div class="info"><div class="name">Vaysen包装</div><div class="status">在线 · 通常几分钟内回复</div></div>',
       '<button class="close-btn" onclick="this.closest(\'.vaysen-window\').classList.remove(\'open\');document.querySelector(\'.vaysen-bubble\').style.display=\'\'">&times;</button>',
       '</div>',
       '<div class="vaysen-messages" id="vaysen-msgs">',
-      '<div class="system-msg">欢迎联系示例贸易公司！请留下您的姓名和邮箱开始对话。</div>',
+      '<div class="system-msg">欢迎联系Vaysen包装！请留下您的姓名和邮箱开始对话。</div>',
       '</div>',
       '<div class="vaysen-form" id="vaysen-register">',
       '<input type="text" id="vaysen-name" placeholder="您的姓名" />',
@@ -80,7 +80,7 @@
       '<input type="text" id="vaysen-input" placeholder="输入消息..." />',
       '<div class="btn-row"><button class="btn-send" id="vaysen-send-btn">发送</button></div>',
       '</div>',
-      '<div class="footer-note">Example Trading Company · 定制包装解决方案</div>',
+      '<div class="footer-note">Vaysen Packaging · 定制包装解决方案</div>',
     ].join('');
   }
 
@@ -146,7 +146,7 @@
         startPolling();
       }
     }).catch(function () {
-      addSystemMsg('连接失败，请稍后重试或发送邮件至 info@example.com');
+      addSystemMsg('连接失败，请稍后重试或发送邮件至 info@vaysen.com');
     });
   }
 

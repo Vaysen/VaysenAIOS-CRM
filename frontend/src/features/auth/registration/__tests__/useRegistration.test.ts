@@ -57,7 +57,7 @@ describe('useRegistration', () => {
 
     act(() => {
       result.current.setField('username', 'chris');
-      result.current.setField('password', 'password123');
+      result.current.setField('password', 'password1234');
       result.current.setField('firstName', 'John');
       result.current.setField('lastName', 'Smith');
     });
@@ -70,7 +70,7 @@ describe('useRegistration', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         username: 'chris',
-        password: 'password123',
+        password: 'password1234',
         firstName: 'John',
         lastName: 'Smith',
       }),
@@ -87,7 +87,7 @@ describe('useRegistration', () => {
 
     act(() => {
       result.current.setField('username', 'chris');
-      result.current.setField('password', 'password123');
+      result.current.setField('password', 'password1234');
       result.current.setField('firstName', 'John');
       result.current.setField('lastName', 'Smith');
     });
@@ -109,7 +109,7 @@ describe('useRegistration', () => {
 
     act(() => {
       result.current.setField('username', 'chris');
-      result.current.setField('password', 'password123');
+      result.current.setField('password', 'password1234');
       result.current.setField('firstName', 'John');
       result.current.setField('lastName', 'Smith');
     });
@@ -140,7 +140,7 @@ describe('useRegistration', () => {
 
     act(() => {
       result.current.setField('username', 'chris');
-      result.current.setField('password', 'password123');
+      result.current.setField('password', 'password1234');
       result.current.setField('firstName', 'John');
       result.current.setField('lastName', 'Smith');
     });

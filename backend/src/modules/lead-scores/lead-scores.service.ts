@@ -6,6 +6,10 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LeadScoringService } from './lead-scoring.service';
 import { TimelineService } from '../timeline/timeline.service';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
 @Injectable()
 export class LeadScoresService {
@@ -16,8 +20,11 @@ export class LeadScoresService {
   ) {}
 
   async calculateAndSave(leadId: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
+    const companyId = requireActiveCompany(currentUser).id;
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
 
     await this.checkWriteAccess(currentUser, lead);
 
@@ -56,8 +63,7 @@ export class LeadScoresService {
   }
 
   async calculateAllForCompany(currentUser: any) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company associated');
+    const companyId = requireActiveCompany(currentUser).id;
 
     await this.checkWriteAccessForCompany(currentUser, companyId);
 
@@ -174,26 +180,18 @@ export class LeadScoresService {
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
-    const isSuperAdmin = currentUser.companies?.some(
-      (c: any) => c.role === 'super_admin',
-    );
-
-    if (!isSuperAdmin) {
-      const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-      where.companyId = { in: companyIds };
-
-      const isOnlySalesUser = this.isSalesUser(currentUser);
-      if (isOnlySalesUser) {
-        where.lead = { ownerUserId: currentUser.id };
-      }
+    const activeCompany = requireActiveCompany(currentUser);
+    const where: any = { companyId: activeCompany.id };
+    const isFullAccess = hasFullAccess(currentUser, activeCompany.id);
+    if (!isFullAccess) {
+      where.lead = { ownerUserId: currentUser.id };
     }
 
     if (query.grade) {
       where.grade = query.grade;
     }
-    if (query.companyId && isSuperAdmin) {
-      where.companyId = query.companyId;
+    if (query.companyId && query.companyId !== activeCompany.id) {
+      throw new ForbiddenException('Company is outside the active request context');
     }
 
     const [data, total] = await Promise.all([
@@ -216,7 +214,7 @@ export class LeadScoresService {
     ]);
 
     // Get grade distribution
-    const gradeDistribution = await this.getGradeDistribution(currentUser, isSuperAdmin);
+    const gradeDistribution = await this.getGradeDistribution(currentUser);
 
     return {
       data,
@@ -225,12 +223,10 @@ export class LeadScoresService {
     };
   }
 
-  private async getGradeDistribution(currentUser: any, isSuperAdmin: boolean) {
-    const companyWhere: any = {};
-    if (!isSuperAdmin) {
-      const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-      companyWhere.companyId = { in: companyIds };
-    }
+  private async getGradeDistribution(currentUser: any) {
+    const companyWhere: any = {
+      companyId: requireActiveCompany(currentUser).id,
+    };
 
     const isOnlySalesUser = this.isSalesUser(currentUser);
 
@@ -295,10 +291,10 @@ export class LeadScoresService {
   }
 
   private async checkWriteAccess(currentUser: any, lead: any) {
-    const isSuperAdmin = currentUser.companies?.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (isSuperAdmin) return;
+    if (requireActiveCompany(currentUser).id !== lead.companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, lead.companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === lead.companyId);
     if (!company) throw new ForbiddenException('Not a member of this company');
@@ -315,10 +311,10 @@ export class LeadScoresService {
   }
 
   private async checkWriteAccessForCompany(currentUser: any, companyId: string) {
-    const isSuperAdmin = currentUser.companies?.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (isSuperAdmin) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) throw new ForbiddenException('Not a member of this company');
@@ -330,15 +326,10 @@ export class LeadScoresService {
   }
 
   private async checkReadAccess(currentUser: any, lead: any) {
-    const isSuperAdmin = currentUser.companies?.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (isSuperAdmin) return;
-
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(lead.companyId)) {
+    if (requireActiveCompany(currentUser).id !== lead.companyId) {
       throw new ForbiddenException('Cannot access leads from another company');
     }
+    if (hasFullAccess(currentUser, lead.companyId)) return;
 
     if (this.isSalesUser(currentUser) && lead.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('You can only view scores for your own leads');
@@ -346,8 +337,6 @@ export class LeadScoresService {
   }
 
   private isSalesUser(currentUser: any): boolean {
-    const roles = currentUser.companies?.map((c: any) => c.role) || [];
-    return roles.length > 0 && roles.every((r: string) => r === 'sales_user' || r === 'viewer') &&
-      roles.some((r: string) => r === 'sales_user');
+    return requireActiveCompany(currentUser).role === 'sales_user';
   }
 }

@@ -780,6 +780,129 @@ info 'simulated first connection failure was observed and left the database unch
 
 CORRECT_DATABASE_URL="postgresql://${REHEARSAL_DB_USER}:${REHEARSAL_DB_PASSWORD}@postgres:5432/${REHEARSAL_DB_NAME}?schema=public"
 if [ "$REHEARSAL_MODE" = 'already-applied-noop' ]; then
+    set +e
+    run_candidate_command "$STATUS_CONTAINER" "$CORRECT_DATABASE_URL" "$TMP_ROOT/migrate-status.log" \
+        /app/node_modules/.bin/prisma migrate status
+    STATUS_RESULT=$?
+    set -e
+    if [ "$STATUS_RESULT" -ne 0 ]; then
+        if grep -Fq 'Following migrations have not yet been applied:' "$TMP_ROOT/migrate-status.log"; then
+            REHEARSAL_MODE='followup-forward-migrations'
+            info 'reviewed historical target is applied but later candidate migrations remain pending'
+        else
+            print_redacted_log "$TMP_ROOT/migrate-status.log"
+            fail 'candidate prisma migrate status rejected the restored production backup'
+        fi
+    fi
+fi
+
+if [ "$REHEARSAL_MODE" = 'followup-forward-migrations' ]; then
+    FIRST_DEPLOY_STARTED_AT="$(date +%s)"
+    run_candidate_migration "$DEPLOY_ONE_CONTAINER" "$CORRECT_DATABASE_URL" "$TMP_ROOT/deploy-one.log" \
+        || { print_redacted_log "$TMP_ROOT/deploy-one.log"; fail 'candidate follow-up migrations failed'; }
+    FIRST_DEPLOY_SECONDS=$(( $(date +%s) - FIRST_DEPLOY_STARTED_AT ))
+    [ "$FIRST_DEPLOY_SECONDS" -le "$MAX_DEPLOY_SECONDS" ] \
+        || fail "follow-up migrations exceeded rehearsal budget: ${FIRST_DEPLOY_SECONDS}s > ${MAX_DEPLOY_SECONDS}s"
+
+    run_candidate_migration "$DEPLOY_TWO_CONTAINER" "$CORRECT_DATABASE_URL" "$TMP_ROOT/deploy-two.log" \
+        || { print_redacted_log "$TMP_ROOT/deploy-two.log"; fail 'second follow-up prisma deploy failed'; }
+    grep -Eqi 'No pending migrations to apply|Database schema is up to date' "$TMP_ROOT/deploy-two.log" \
+        || { print_redacted_log "$TMP_ROOT/deploy-two.log"; fail 'second follow-up deploy did not prove idempotency'; }
+    run_candidate_command "$STATUS_CONTAINER" "$CORRECT_DATABASE_URL" "$TMP_ROOT/migrate-status-after.log" \
+        /app/node_modules/.bin/prisma migrate status \
+        || { print_redacted_log "$TMP_ROOT/migrate-status-after.log"; fail 'candidate status rejected the migrated rehearsal database'; }
+    grep -Eqi 'Database schema is up to date|No pending migrations' "$TMP_ROOT/migrate-status-after.log" \
+        || fail 'candidate status did not prove all follow-up migrations applied'
+
+    SOURCE_MIGRATION_COUNT="$(find "$PROJECT_DIR/backend/prisma/migrations" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')"
+    SUCCESSFUL_MIGRATION_COUNT="$(docker exec -e "$PG_CLIENT_ENV" "$POSTGRES_CONTAINER" psql \
+      -U "$REHEARSAL_DB_USER" -d "$REHEARSAL_DB_NAME" -Atqc \
+      'SELECT count(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;')"
+    DISTINCT_SUCCESSFUL_MIGRATION_COUNT="$(docker exec -e "$PG_CLIENT_ENV" "$POSTGRES_CONTAINER" psql \
+      -U "$REHEARSAL_DB_USER" -d "$REHEARSAL_DB_NAME" -Atqc \
+      'SELECT count(DISTINCT migration_name) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;')"
+    [ "$SUCCESSFUL_MIGRATION_COUNT" = "$SOURCE_MIGRATION_COUNT" ] \
+        && [ "$DISTINCT_SUCCESSFUL_MIGRATION_COUNT" = "$SOURCE_MIGRATION_COUNT" ] \
+        || fail "candidate migration ledger is not exactly complete: source=$SOURCE_MIGRATION_COUNT successful=$SUCCESSFUL_MIGRATION_COUNT distinct=$DISTINCT_SUCCESSFUL_MIGRATION_COUNT"
+
+    FOLLOWUP_SCHEMA_SHA="$(schema_fingerprint)" \
+        || fail 'could not fingerprint schema after follow-up migrations'
+    FOLLOWUP_LEDGER_SHA="$(ledger_fingerprint)" \
+        || fail 'could not fingerprint migration ledger after follow-up migrations'
+    FOLLOWUP_ROW_COUNTS_SHA="$(row_count_fingerprint)" \
+        || fail 'could not fingerprint row counts after follow-up migrations'
+    FOLLOWUP_DATA_SHA="$(data_fingerprint)" \
+        || fail 'could not fingerprint data after follow-up migrations'
+
+    FOLLOWUP_ROLLBACK_OUTPUT="$(bash "$PROJECT_DIR/scripts/recreate-db-from-backup.sh" \
+        --backup "$BACKUP_FILE" --container "$POSTGRES_CONTAINER" \
+        --user "$REHEARSAL_DB_USER" --database "$REHEARSAL_DB_NAME" \
+        --max-restore-seconds "$MAX_RESTORE_SECONDS" --confirm-database-recreate)" \
+        || fail 'follow-up migrated database could not be restored through the production rollback primitive'
+    FOLLOWUP_ROLLBACK_SECONDS="$(printf '%s\n' "$FOLLOWUP_ROLLBACK_OUTPUT" | sed -n 's/^databaseRestoreSeconds=//p' | tail -1)"
+    [[ "$FOLLOWUP_ROLLBACK_SECONDS" =~ ^[0-9]+$ ]] \
+        || fail 'rollback primitive returned no auditable restore duration'
+    FOLLOWUP_RESTORED_SCHEMA_SHA="$(schema_fingerprint)" \
+        || fail 'could not fingerprint schema after follow-up rollback'
+    FOLLOWUP_RESTORED_LEDGER_SHA="$(ledger_fingerprint)" \
+        || fail 'could not fingerprint migration ledger after follow-up rollback'
+    FOLLOWUP_RESTORED_ROW_COUNTS_SHA="$(row_count_fingerprint)" \
+        || fail 'could not fingerprint row counts after follow-up rollback'
+    FOLLOWUP_RESTORED_DATA_SHA="$(data_fingerprint)" \
+        || fail 'could not fingerprint data after follow-up rollback'
+    [ "$FOLLOWUP_RESTORED_SCHEMA_SHA" = "$BASELINE_SCHEMA_SHA" ] \
+        && [ "$FOLLOWUP_RESTORED_LEDGER_SHA" = "$BASELINE_LEDGER_SHA" ] \
+        && [ "$FOLLOWUP_RESTORED_ROW_COUNTS_SHA" = "$BASELINE_ROW_COUNTS_SHA" ] \
+        && [ "$FOLLOWUP_RESTORED_DATA_SHA" = "$BASELINE_DATA_SHA" ] \
+        || fail 'follow-up migration rollback did not reproduce the production backup exactly'
+    info 'all candidate follow-up migrations, idempotency, and exact rollback restore passed'
+
+    [ ! -f "$STORAGE_GUARD_FILE" ] || fail 'storage reserve guard was triggered during the rehearsal'
+    stop_storage_watchdog
+    cleanup_resources || fail 'disposable Docker resources could not be removed safely'
+    EVIDENCE_TMP="$(mktemp "$EVIDENCE_DIR/.migration-rehearsal-XXXXXX.tmp")"
+    cat > "$EVIDENCE_TMP" <<EOF
+status=passed
+completedAt=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+runId=$RUN_ID
+rehearsalMode=$REHEARSAL_MODE
+backupSha256=$ACTUAL_BACKUP_SHA
+backupBytes=$BACKUP_BYTES
+sourceDatabaseBytes=$SOURCE_DATABASE_BYTES
+candidateImage=$CANDIDATE_IMAGE
+candidateImageId=$CANDIDATE_IMAGE_ID
+candidateRevision=$CANDIDATE_REVISION
+sourceMigrationCount=$SOURCE_MIGRATION_COUNT
+successfulMigrationCount=$SUCCESSFUL_MIGRATION_COUNT
+firstPrismaDeploySeconds=$FIRST_DEPLOY_SECONDS
+secondPrismaDeployIdempotent=passed-noop
+candidateMigrationStatus=up-to-date
+migratedSchemaSha256=$FOLLOWUP_SCHEMA_SHA
+migratedMigrationLedgerSha256=$FOLLOWUP_LEDGER_SHA
+migratedTableRowCountsSha256=$FOLLOWUP_ROW_COUNTS_SHA
+migratedDataSha256=$FOLLOWUP_DATA_SHA
+rollbackPrimitiveRestore=passed
+rollbackRestoreSeconds=$FOLLOWUP_ROLLBACK_SECONDS
+baselineSchemaSha256=$BASELINE_SCHEMA_SHA
+baselineMigrationLedgerSha256=$BASELINE_LEDGER_SHA
+baselineTableRowCountsSha256=$BASELINE_ROW_COUNTS_SHA
+baselineDataSha256=$BASELINE_DATA_SHA
+restoredSchemaSha256=$FOLLOWUP_RESTORED_SCHEMA_SHA
+restoredMigrationLedgerSha256=$FOLLOWUP_RESTORED_LEDGER_SHA
+restoredTableRowCountsSha256=$FOLLOWUP_RESTORED_ROW_COUNTS_SHA
+restoredDataSha256=$FOLLOWUP_RESTORED_DATA_SHA
+disposableResourcesCleaned=passed
+productionDatabaseOrVolumeTouched=false
+EOF
+    chmod 600 "$EVIDENCE_TMP"
+    ln -- "$EVIDENCE_TMP" "$EVIDENCE_FILE" || fail 'evidence path appeared concurrently; refusing to overwrite it'
+    rm -f -- "$EVIDENCE_TMP"
+    EVIDENCE_TMP=""
+    info "auditable follow-up migration evidence written with mode 600: $EVIDENCE_FILE"
+    exit 0
+fi
+
+if [ "$REHEARSAL_MODE" = 'already-applied-noop' ]; then
     run_candidate_command "$STATUS_CONTAINER" "$CORRECT_DATABASE_URL" "$TMP_ROOT/migrate-status.log" \
         /app/node_modules/.bin/prisma migrate status \
         || { print_redacted_log "$TMP_ROOT/migrate-status.log"; fail 'candidate prisma migrate status rejected the already-applied production backup'; }

@@ -15,6 +15,14 @@ const REVIEWED_TRANSIENT_LINK = Object.freeze({
   target: '/app/dist/extensions/browser/skills/browser-automation',
 });
 
+function compareAscii(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function comparePluginLinks(left, right) {
+  return compareAscii(left.relativePath, right.relativePath);
+}
+
 const PLUGINS = Object.freeze([
   Object.freeze({
     pluginId: 'vaysen-crm',
@@ -30,7 +38,7 @@ const PLUGINS = Object.freeze([
   }),
 ]);
 
-const EXPECTED_PLUGIN_IDS = PLUGINS.map(({ pluginId }) => pluginId).sort();
+const EXPECTED_PLUGIN_IDS = PLUGINS.map(({ pluginId }) => pluginId).sort(compareAscii);
 const V2_TOP_LEVEL_KEYS = ['links', 'schemaVersion'];
 const V2_LINK_KEYS = ['packageName', 'pluginId', 'relativePath', 'target', 'version'];
 
@@ -42,7 +50,7 @@ function assertSupportedNode() {
 }
 
 function sortedKeys(value) {
-  return Object.keys(value).sort();
+  return Object.keys(value).sort(compareAscii);
 }
 
 function sameStrings(left, right) {
@@ -226,7 +234,7 @@ export function deriveRuntimeLinkContract(stateRoot, options = {}) {
     fileSystem,
     spec,
     record: records[spec.pluginId],
-  })).sort((left, right) => left.relativePath.localeCompare(right.relativePath, 'en'));
+  })).sort(comparePluginLinks);
   return Object.freeze({ schemaVersion: 2, links: Object.freeze(links) });
 }
 
@@ -242,7 +250,7 @@ function parseV1Manifest(content) {
   if (links.length !== 2 || links.some((link) => link.length === 0)) {
     throw new Error('v1 runtime-link manifest must contain exactly two non-empty lines');
   }
-  return links.sort((left, right) => left.localeCompare(right, 'en'));
+  return links.sort(compareAscii);
 }
 
 function parseV2Manifest(content) {
@@ -267,13 +275,13 @@ function parseV2Manifest(content) {
       version: link.version,
       relativePath: link.relativePath,
       target: link.target,
-    })).sort((left, right) => left.relativePath.localeCompare(right.relativePath, 'en')),
+    })).sort(comparePluginLinks),
   };
 }
 
 function expectedPaths(contract) {
   return contract.links.map(({ relativePath }) => relativePath)
-    .sort((left, right) => left.localeCompare(right, 'en'));
+    .sort(compareAscii);
 }
 
 export function verifyRuntimeLinkManifest(stateRoot, manifestPath, options = {}) {
@@ -299,7 +307,7 @@ export function verifyRuntimeLinkManifest(stateRoot, manifestPath, options = {})
 function collectSymlinks(fileSystem, stateRoot) {
   const links = [];
   const walk = (directory, relativeDirectory = '') => {
-    const names = fileSystem.readdirSync(directory).sort((left, right) => left.localeCompare(right, 'en'));
+    const names = fileSystem.readdirSync(directory).sort(compareAscii);
     for (const name of names) {
       const relative = relativeDirectory ? `${relativeDirectory}/${name}` : name;
       const absolute = path.join(directory, name);
@@ -315,7 +323,7 @@ function collectSymlinks(fileSystem, stateRoot) {
   };
   assertRealDirectory(fileSystem, stateRoot, 'runtime state root');
   walk(stateRoot);
-  return links.sort((left, right) => left.relativePath.localeCompare(right.relativePath, 'en'));
+  return links.sort(comparePluginLinks);
 }
 
 export function verifyRuntimeLinkTree(stateRoot, options = {}) {

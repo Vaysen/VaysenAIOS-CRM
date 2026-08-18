@@ -94,6 +94,8 @@ describe('OpenClawCrmSessionService', () => {
       user: {
         id: 'admin-1',
         email: 'admin@example.com',
+        activeCompanyId: COMPANY_ID,
+        activeCompany: { id: COMPANY_ID, role: 'company_admin' },
         companies: [{ id: COMPANY_ID, role: 'company_admin' }],
       },
       executionLeaseToken: 'lease-live',

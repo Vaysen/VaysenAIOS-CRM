@@ -8,8 +8,8 @@ const UNREPLACED_VARIABLE_REGEX = /\{\{[a-zA-Z0-9_]+\}\}/g;
 const LEGACY_BRAND_REGEX = /\b(?:jingseyewear|surface[\s-]*polish|fastener[\s-]*nails)\b/i;
 const LEGACY_DOMAIN_REGEX = /\b(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)*[a-z0-9-]*(?:jingseyewear|surface-?polish|fastener-?nails|eyewear)[a-z0-9-]*(?:\.[a-z0-9-]+)+\b/i;
 
-export const DEFAULT_EMAIL_COMPANY_NAME = 'Example Trading Company';
-export const DEFAULT_EMAIL_COMPANY_WEBSITE = 'https://example.com';
+export const DEFAULT_EMAIL_COMPANY_NAME = 'Vaysen Packaging';
+export const DEFAULT_EMAIL_COMPANY_WEBSITE = 'https://vaysen.com';
 
 export interface EmailContentValidationResult {
   valid: boolean;
@@ -25,7 +25,7 @@ export function findLegacyEmailBrandReference(...values: Array<string | null | u
 export function replaceLegacyEmailBrandReferences(value: string): string {
   return (value || '')
     .replace(/\b(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)*[a-z0-9-]*(?:jingseyewear|surface-?polish|fastener-?nails|eyewear)[a-z0-9-]*(?:\.[a-z0-9-]+)+\b/gi, (match) => (
-      /^https?:\/\//i.test(match) ? DEFAULT_EMAIL_COMPANY_WEBSITE : 'example.com'
+      /^https?:\/\//i.test(match) ? DEFAULT_EMAIL_COMPANY_WEBSITE : 'vaysen.com'
     ))
     .replace(/\b(?:jingseyewear|surface[\s-]*polish|fastener[\s-]*nails)\b/gi, DEFAULT_EMAIL_COMPANY_NAME);
 }
@@ -113,6 +113,6 @@ export function ensureCompanyWebsite(bodyHtml: string, website?: string | null, 
   return bodyHtml.includes('</body>') ? bodyHtml.replace('</body>', `${cta}</body>`) : `${bodyHtml}${cta}`;
 }
 
-export function ensureDefaultCompanyWebsite(bodyHtml: string) {
-  return ensureCompanyWebsite(bodyHtml, DEFAULT_EMAIL_COMPANY_WEBSITE, 'example.com');
+export function ensureVaysenWebsite(bodyHtml: string) {
+  return ensureCompanyWebsite(bodyHtml, DEFAULT_EMAIL_COMPANY_WEBSITE, 'vaysen.com');
 }

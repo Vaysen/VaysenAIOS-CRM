@@ -89,7 +89,7 @@ export default function NewEmailTemplatePage() {
     colorTheme: 'Clean Blue',
     layout: 'Image + CTA',
     description: '',
-    personalizationRules: 'AI写开发信时必须读取客户资料卡，结合客户公司产品、市场、国家和我们Example Trading Company的供应能力匹配内容。',
+    personalizationRules: 'AI写开发信时必须读取客户资料卡，结合客户公司产品、市场、国家和我们Vaysen Packaging的供应能力匹配内容。',
     forbiddenContent: '不要出现任何虚构地址、美国地址、办公室地址、虚构电话、虚构工厂规模、虚构证书或客户未公开事实。',
     whatsapp: '',
   });

@@ -31,7 +31,7 @@ export function Header() {
   const { t } = useT();
 
   const showBack = pathname !== '/' && pathname !== '/login' && pathname !== '/register';
-  const appName = process.env.NEXT_PUBLIC_APP_NAME || 'Vaysen AI CRM';
+  const appName = process.env.NEXT_PUBLIC_APP_NAME || 'Vaysen Trade OS';
   const [open, setOpen] = useState(false);
   const [notices, setNotices] = useState<Notice[]>([]);
   const previousRef = useRef<Record<string, any> | null>(null);
@@ -114,36 +114,44 @@ export function Header() {
     setNotices((items) => items.map((item) => ({ ...item, read: true })));
   };
 
+  const displayName = [user?.firstName, user?.lastName].filter(Boolean).join(' ');
+
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur">
-      <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 flex h-16 min-w-0 items-center justify-between border-b border-border bg-background/95 px-3 backdrop-blur sm:px-6">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
         {showBack && (
           <button
             onClick={() => router.back()}
             className="flex items-center justify-center h-9 w-9 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            aria-label="返回上一页"
             title="返回上一页"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
         )}
-        <img src="/logo.png" alt="Logo" className="h-9 w-9 rounded-lg object-cover" />
-        <div>
-          <h1 className="text-lg font-semibold text-foreground">{appName}</h1>
-          <p className="text-xs text-muted-foreground">
-            {user ? `${user.firstName} ${user.lastName}` : ''}
+        <img src="/logo.png" alt="Logo" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
+        <div className="hidden min-w-0 lg:block">
+          <h1 className="max-w-[220px] truncate whitespace-nowrap text-lg font-semibold text-foreground">{appName}</h1>
+          <p className="max-w-[220px] truncate whitespace-nowrap text-xs text-muted-foreground">
+            {displayName || user?.email || ''}
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-2 sm:gap-4">
         {user?.companies && user.companies.length > 1 && (
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             <Building2 className="h-4 w-4" />
             <select
-              value={activeCompanyId || user.companies.find((company) => company.isDefault)?.id || user.companies[0]?.id || ''}
+              value={activeCompanyId || ''}
               onChange={(event) => setActiveCompany(event.target.value)}
               className="h-9 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none hover:bg-muted focus:border-ring"
               title="项目空间"
             >
+              {!activeCompanyId && (
+                <option value="" disabled>
+                  Select company
+                </option>
+              )}
               {user.companies.map((company) => (
                 <option key={company.id} value={company.id}>
                   {company.name}
@@ -158,6 +166,7 @@ export function Header() {
             type="button"
             onClick={openNotices}
             className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900"
+            aria-label="消息提醒"
             title="消息提醒"
           >
             <Bell className="h-4 w-4" />
@@ -171,7 +180,7 @@ export function Header() {
             <div className="absolute right-0 top-11 z-50 w-80 rounded-xl border border-gray-200 bg-white shadow-lg dark:border-gray-800 dark:bg-gray-950">
               <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-800">
                 <div className="font-medium text-gray-900 dark:text-white">消息提醒</div>
-                <button type="button" onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-600">
+                <button type="button" aria-label="关闭消息提醒" onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-600">
                   <X className="h-4 w-4" />
                 </button>
               </div>
@@ -194,13 +203,13 @@ export function Header() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+        <div className="hidden items-center gap-2 text-sm text-gray-600 dark:text-gray-300 lg:flex">
           <User className="h-4 w-4" />
           {user?.email || '未登录'}
         </div>
-        <Button variant="outline" size="sm" onClick={logout}>
-          <LogOut className="mr-2 h-4 w-4" />
-          {t('common.logout')}
+        <Button variant="outline" size="sm" onClick={logout} aria-label="退出登录" className="px-2 sm:px-3">
+          <LogOut className="h-4 w-4 sm:mr-2" />
+          <span className="hidden sm:inline">{t('common.logout')}</span>
         </Button>
       </div>
     </header>

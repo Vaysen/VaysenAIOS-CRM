@@ -7,8 +7,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
-  title: 'Vaysen AI CRM — 国际 B2B 智能客户管理系统',
-  description: 'Example Trading Company — International B2B Trade Operation System',
+  title: 'Vaysen Trade OS — Vaysen外贸系统',
+  description: 'Vaysen Packaging — International B2B Trade Operation System',
 };
 
 export default function RootLayout({

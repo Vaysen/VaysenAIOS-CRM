@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Vaysen AI CRM — Database Restore Script
+# Vaysen Pilot — Database Restore Script
 # =============================================================================
 # Usage: ./scripts/restore-db.sh <backup_file.dump>
 #
@@ -61,7 +61,7 @@ POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-vaysen-crm-postgres}" \
     || exit 1
 
 echo "============================================"
-echo " Vaysen AI CRM — Database Restore"
+echo " Vaysen Pilot — Database Restore"
 echo "============================================"
 echo ""
 echo "WARNING: This will OVERWRITE the current database with:"

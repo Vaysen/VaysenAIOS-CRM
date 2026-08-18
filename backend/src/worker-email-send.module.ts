@@ -7,6 +7,7 @@ import { QUEUES } from './common/queues/queue-names';
 import { TimelineModule } from './modules/timeline/timeline.module';
 import { FollowUpRemindersModule } from './modules/follow-up-reminders/follow-up-reminders.module';
 import { EmailSendProcessor } from './modules/emails/email-send.processor';
+import { OutboundModule } from './modules/outbound/outbound.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { EmailSendProcessor } from './modules/emails/email-send.processor';
     PrismaModule,
     TimelineModule,
     FollowUpRemindersModule,
+    OutboundModule,
   ],
   providers: [EmailSendProcessor],
 })

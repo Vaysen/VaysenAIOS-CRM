@@ -4,13 +4,12 @@ import { useState, useRef } from 'react';
 import { Send, Paperclip, X, FileText, Image as ImageIcon, File, Loader2 } from 'lucide-react';
 import type { CommunicationMessage } from './types';
 import { cn } from '@/lib/utils';
+import { getRuntimeApiBaseUrl } from '@/lib/runtime-config';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
-const BACKEND_URL = API_BASE.replace(/\/api$/, '');
 function fileUrl(url: string): string {
   if (!url) return '';
   if (url.startsWith('http')) return url;
-  return `${BACKEND_URL}${url}`;
+  return `${getRuntimeApiBaseUrl().replace(/\/api$/, '')}${url}`;
 }
 
 const channelLabels: Record<string, string> = {
@@ -89,7 +88,7 @@ export function MessageThread({ messages, channel, subject, onSend, sending, dra
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
+       const apiUrl = getRuntimeApiBaseUrl();
       const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') || '' : '';
       const response = await fetch(`${apiUrl}/communications/upload`, {
         method: 'POST',

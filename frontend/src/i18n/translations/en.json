@@ -1,7 +1,7 @@
 {
   "common": {
-    "appName": "Vaysen AI CRM",
-    "appDescription": "Example Trading Company — International B2B Trade Operation System",
+    "appName": "Vaysen Trade OS",
+    "appDescription": "Vaysen Packaging — International B2B Trade Operation System",
     "welcome": "Welcome back",
     "logout": "Logout",
     "save": "Save",

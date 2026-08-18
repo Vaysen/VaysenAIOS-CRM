@@ -1,10 +1,10 @@
 /**
- * 运行时配置（解耦部署方的真实局域网地址）
+ * 运行时配置（不携带真实 LAN 地址，运行时由用户填写）
  *
  * TASK-111 v1.1 红线 5 复审后：将 API 与 updateFeedUrl 的校验策略**完全分离**。
  *
- * 策略 A（API）：公网必须 HTTPS；ZeroTier/RFC1918 私网无论 HTTP 或 HTTPS，
- *   都必须与 `APPROVED_ZEROTIER_API_ORIGINS` 的精确 origin 匹配。
+ * 策略 A（API）：公网必须 HTTPS；局域网/内网地址允许 HTTP 或 HTTPS，
+ *   也可以通过 `APPROVED_ZEROTIER_API_ORIGINS` 启用精确 origin 限制。
  *   localhost、loopback 始终拒绝，allowlist 也不能放行。
  *
  * 策略 B（updateFeedUrl）：局域网发行版默认关闭自动更新；只有显式启用时才要求
@@ -13,7 +13,7 @@
  * 凭据仍走 safeStorage，不在本文件落盘。
  *
  * 精度说明（红线 5）：使用**精确 origin**（scheme://host[:port]）作为 allowlist 单元，
- * 而非仅 host——避免“批准一个私网主机后放行同 IP 的任意端口”。
+ * 而非仅 host——避免 allowlist 配置时放行同 IP 的任意端口。
  *
  * 本模块为惰性读取（函数调用时才读 store），导入时不触碰 fs/electron，
  * 以便单测复用（electron-store 已被测试 setup 内存 mock）。
@@ -44,8 +44,9 @@ export interface RuntimeConfigStatus {
 const CONFIG_STORE_NAME = 'runtime-config';
 const CONFIG_KEY = 'config';
 
-/** 开源演示用私网入口；部署时必须通过配置页或 API_BASE_URL 替换。 */
-export const DEFAULT_API_BASE_URL = 'http://10.0.0.2/api';
+/** Vaysen ZeroTier 后端的稳定局域网入口。 */
+/** 首次启动不预设任何真实服务器地址；Electron 先显示配置向导。 */
+export const DEFAULT_API_BASE_URL = '';
 
 /** 未批准真实发布源前保持空值，自动更新器保持禁用。 */
 export const DEFAULT_UPDATE_FEED_URL = '';
@@ -55,8 +56,8 @@ const DEFAULTS: RuntimeConfig = {
   updateFeedUrl: DEFAULT_UPDATE_FEED_URL,
 };
 
-/** 内置批准项仅包含无真实归属的开源演示入口，仍按精确 origin 校验。 */
-const BUILTIN_LAN_API_ORIGINS = new Set(['http://10.0.0.2']);
+/** 不在仓库内携带真实 LAN/ZeroTier 地址。 */
+const BUILTIN_LAN_API_ORIGINS = new Set<string>();
 
 function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
@@ -152,7 +153,7 @@ function getOrigin(url: string): string | null {
  * 规则：
  *   - 非 http(s) 协议 → 拒绝
  *   - 公网 HTTPS → 通过；公网 HTTP → 拒绝
- *   - ZeroTier/RFC1918 私网 → HTTP/HTTPS 均须精确命中 allowlist
+ *   - ZeroTier/RFC1918 私网 → HTTP/HTTPS 均可用；设置 allowlist 后精确命中
  *   - localhost/loopback → 始终拒绝
  *   - URL 含 userinfo、query 或 fragment → 拒绝
  */
@@ -186,12 +187,13 @@ export function validateApiUrl(url: unknown): string | null {
   //   - 公网 HTTP：拒绝（必须 HTTPS）
   //   - 私网 HTTP：必须 origin 精确命中 allowlist
   if (isPrivate) {
-    // 私网：必须 origin 命中 allowlist（无论 HTTP 还是 HTTPS）
     const origin = getOrigin(trimmed);
     if (!origin) return `URL 无法派生 origin: ${trimmed}`;
     const allowed = parseApprovedOrigins();
-    if (!allowed.has(origin)) {
-      return `私网 API origin 未在 APPROVED_ZEROTIER_API_ORIGINS 中: ${origin}（HTTPS 也不能绕过 allowlist）`;
+    // 功能优先：没有部署者 allowlist 时允许普通用户输入局域网地址。
+    // 一旦设置 allowlist，则仍按精确 scheme/host/port 限制，避免误连错服务。
+    if ((process.env.APPROVED_ZEROTIER_API_ORIGINS || '').trim() && !allowed.has(origin)) {
+      return `私网 API origin 未在 APPROVED_ZEROTIER_API_ORIGINS 中: ${origin}`;
     }
     return null;
   }
@@ -294,7 +296,7 @@ export function loadRuntimeConfig(): RuntimeConfig {
   const { apiBaseUrl, updateFeedUrl } = resolveRuntimeConfigRaw();
 
   // API 与更新源完全解耦：业务 API 可用性不得被空更新源连带禁用。
-  const apiErr = validateApiUrl(apiBaseUrl);
+  const apiErr = apiBaseUrl ? validateApiUrl(apiBaseUrl) : null;
   if (apiErr) throw new RuntimeConfigError('apiBaseUrl', apiBaseUrl, apiErr);
 
   return { apiBaseUrl, updateFeedUrl };
@@ -308,7 +310,7 @@ export function tryLoadRuntimeConfig(): RuntimeConfigStatus {
   const config = resolveRuntimeConfigRaw();
   const { apiBaseUrl, updateFeedUrl } = config;
   const errors: RuntimeConfigIssue[] = [];
-  const apiErr = validateApiUrl(apiBaseUrl);
+  const apiErr = apiBaseUrl ? validateApiUrl(apiBaseUrl) : null;
   if (apiErr) errors.push({ field: 'apiBaseUrl', value: apiBaseUrl, reason: apiErr });
   // 自动更新关闭时空 feed 是合法状态；若用户填了值，仍严格校验并展示错误。
   if (updateFeedUrl || isAutoUpdateEnabled()) {
@@ -374,7 +376,9 @@ export function saveRuntimeConfig(partial: Partial<RuntimeConfig>): RuntimeConfi
 
   if (partial.apiBaseUrl !== undefined) {
     const trimmed = partial.apiBaseUrl.trim();
-    if (trimmed) {
+    if (!trimmed) {
+      next.apiBaseUrl = '';
+    } else {
       const err = validateApiUrl(trimmed);
       if (err) throw new Error(`apiBaseUrl ${err}`);
       next.apiBaseUrl = trimmed;

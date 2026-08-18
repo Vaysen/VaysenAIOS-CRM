@@ -23,7 +23,8 @@
  *  - 只调用锁文件安装出的本地工具，通过 `npm run <script>` 执行；绝不调用 `npx`，
  *    避免无依赖环境隐式联网下载并长时间挂起。
  *  - 依赖缺失时 `npm run` 立即失败（非 0 退出），不再静默降级。
- *  - 只读：不改源码、不写数据库、不发网络请求、不生成产物到仓库。
+ *  - 只读：不改源码、不写数据库、不生成产物到仓库；五域生产依赖 audit 会访问 npm registry，
+ *    网络、进程或 audit 报告异常均 fail closed。
  *    （覆盖率报告在临时目录，写后即删）
  *
  * 用法：
@@ -115,7 +116,8 @@ function failNoDeps(step, sub) {
 }
 
 console.log('==================================================');
-console.log(' TASK-107 verify-baseline  v1.4 (read-only, local-tools-only)');
+console.log(' TASK-107 verify-baseline  v1.4 (read-only; live npm registry access required)');
+console.log(' Five production npm audits fail closed on registry/network/report errors.');
 console.log('==================================================');
 
 // 1) Node 运行时契约（精确钉版 20.18.0，门禁比较完整版本号）
@@ -153,6 +155,8 @@ if (depsInstalled('backend')) {
 }
 
 // 2) backend
+npmRun('production dependency audits (five independent locks)', ROOT, 'verify:production-audits');
+
 if (!skip.has('backend')) {
   const cwd = join(ROOT, 'backend');
   if (!depsInstalled('backend')) {
@@ -214,7 +218,7 @@ if (!skip.has('electron')) {
     const tmpCov = join(tmpdir(), `verify-baseline-electron-coverage-${process.pid}-${Date.now()}`);
     // shell:true 跨平台：Windows 上 npm 是 .cmd/.bat，spawnSync 需 shell 才能解析；
     // POSIX 走 /bin/sh。stdio:'inherit' 让用户能看到测试输出。
-// 注意：tmpCov 使用 os.tmpdir() 返回的系统原生临时目录，
+    // 注意：tmpCov 用 os.tmpdir() 拿 Windows 原生路径（如 <system temp dir>/），
     // 避免 Git Bash 把 /tmp 解释成 F:\tmp 而报 ENOENT。
     const r = spawnSync(
       process.platform === 'win32' ? 'npm.cmd' : 'npm',

@@ -1,16 +1,20 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
-describe('Example Trading Company production-domain regression', () => {
+describe('Vaysen Packaging production-domain regression', () => {
   const productionBusinessFiles = [
     'src/modules/continuous-prospect/continuous-prospect.service.ts',
     'src/modules/search/prospect-categories.ts',
     'src/modules/search/search.service.ts',
     'src/modules/leads/leads.service.ts',
+    'worker-customs-hunter.js',
     '../tools/deep-research-cli.js',
     '../scripts/launch-acquisition.mjs',
+    '../scripts/claude-lead-hunt-24h.sh',
+    '../workflows/vaysen-crm-long-lead-research.json',
     'src/modules/deep-research/report-template.ts',
     '../workflows/ai-lead-scoring-test.json',
+    '../scripts/watch-hunters.sh',
     '../scripts/start-local.ps1',
   ];
 

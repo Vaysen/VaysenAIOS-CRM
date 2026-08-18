@@ -9,6 +9,10 @@ import { QueryFollowUpRemindersDto } from './dto/query-follow-up-reminders.dto';
 import { GenerateRemindersDto } from './dto/generate-reminders.dto';
 import { SnoozeReminderDto } from './dto/snooze-reminder.dto';
 import { Prisma } from '@prisma/client';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
 const REMINDER_CONFIGS: Record<string, { title: string; reason: string; priority: string; dueDays: number }> = {
   EMAIL_SENT_NO_OPEN: {
@@ -179,8 +183,8 @@ export class FollowUpRemindersService {
     const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
     if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
 
-    const currentCompanyId = currentUser.companies?.[0]?.id;
-    if (!currentCompanyId || lead.companyId !== currentCompanyId) {
+    const currentCompanyId = requireActiveCompany(currentUser).id;
+    if (lead.companyId !== currentCompanyId) {
       throw new ForbiddenException('Cannot access leads from another company');
     }
 
@@ -534,12 +538,10 @@ export class FollowUpRemindersService {
   // ========== Access Control ==========
 
   private buildCompanyWhere(currentUser: any): any {
-    const companyId = currentUser.companies?.[0]?.id;
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = hasFullAccess(currentUser, companyId);
 
-    const where: any = { companyId: companyId || '__no_company__', deletedAt: null };
+    const where: any = { companyId, deletedAt: null };
 
     if (!isFullAccess) {
       where.userId = currentUser.id;
@@ -549,16 +551,13 @@ export class FollowUpRemindersService {
   }
 
   private getCompanyIds(currentUser: any): string[] {
-    const companyId = currentUser.companies?.[0]?.id;
-    return companyId ? [companyId] : [];
+    return [requireActiveCompany(currentUser).id];
   }
 
   private checkCompanyAccess(currentUser: any, record: any) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    const currentCompanyId = currentUser.companies?.[0]?.id;
-    if (!currentCompanyId || record.companyId !== currentCompanyId) {
+    const currentCompanyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = hasFullAccess(currentUser, currentCompanyId);
+    if (record.companyId !== currentCompanyId) {
       throw new ForbiddenException('Cannot access reminders from another company');
     }
 
@@ -568,12 +567,13 @@ export class FollowUpRemindersService {
   }
 
   private checkWriteAccess(currentUser: any, companyId: string) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
+    const activeCompanyId = requireActiveCompany(currentUser).id;
+    if (companyId !== activeCompanyId) {
+      throw new ForbiddenException('Cannot modify reminders from another company');
+    }
+    if (hasFullAccess(currentUser, activeCompanyId)) return;
 
-    const company = currentUser.companies?.find((c: any) => c.id === companyId);
+    const company = currentUser.companies?.find((c: any) => c.id === activeCompanyId);
     if (!company) throw new ForbiddenException('Not a member of this company');
 
     if (company.role === 'viewer') {

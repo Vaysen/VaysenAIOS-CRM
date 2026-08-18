@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
 @Injectable()
 export class AnalyticsService {
@@ -116,6 +120,9 @@ export class AnalyticsService {
       statusDistribution,
       scoreDistribution,
       countryDistribution,
+      // R111 批次D：countryTop 与 countryDistribution 同源（全量前10），
+      // 供驾驶舱一次取用，前端省一次调用。
+      countryTop: countryDistribution,
       email: {
         total: emailTotal,
         sent: emailSent,
@@ -198,6 +205,162 @@ export class AnalyticsService {
     return { dailyEmailTrend: Object.values(daily) };
   }
 
+  /**
+   * R111 批次D：邮件互动率趋势（每日 sent/opened/clicked/replied + 率）。
+   * 口径：EmailMessage 按 sentAt||createdAt 归日；sent=status in (Sent,Opened,Clicked,Replied)；
+   * opened=openedAt 非空，clicked=clickedAt 非空，replied=status='Replied'；
+   * 率 = 对应值/sent*100，保留 1 位小数。
+   */
+  async getEngagementTrends(currentUser: any, query: any = {}) {
+    const range = this.resolveDateRange(query);
+    const now = range.end;
+    const days = Math.max(1, Math.min(120, Math.ceil((range.end.getTime() - range.start.getTime()) / 86400000) + 1));
+    const messages = await this.prisma.emailMessage.findMany({
+      where: {
+        ...this.buildEmailScopedWhere(currentUser, query),
+        deletedAt: null,
+        createdAt: { gte: range.start, lte: range.end },
+      },
+      select: { createdAt: true, sentAt: true, openedAt: true, clickedAt: true, status: true },
+    });
+    const daily: Record<string, { date: string; sent: number; opened: number; clicked: number; replied: number }> = {};
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 86400000);
+      const key = d.toISOString().slice(0, 10);
+      daily[key] = { date: key, sent: 0, opened: 0, clicked: 0, replied: 0 };
+    }
+    for (const m of messages) {
+      const key = (m.sentAt || m.createdAt).toISOString().slice(0, 10);
+      if (!daily[key] || !this.isActuallySent(m)) continue;
+      daily[key].sent++;
+      if (m.openedAt) daily[key].opened++;
+      if (m.clickedAt) daily[key].clicked++;
+      if (m.status === 'Replied') daily[key].replied++;
+    }
+    return {
+      daily: Object.values(daily).map((item) => ({
+        ...item,
+        openRate: this.percentRate(item.opened, item.sent),
+        clickRate: this.percentRate(item.clicked, item.sent),
+        replyRate: this.percentRate(item.replied, item.sent),
+      })),
+    };
+  }
+
+  /**
+   * R111 批次D：邮件中心收发信日趋势（CommunicationMessage 按 receivedAt/sentAt 归日）。
+   * inbound=direction='inbound'（按 receivedAt||createdAt），outbound=direction='outbound'（按 sentAt||createdAt）。
+   * companyId 位于 Conversation，经 conversation 关联过滤。
+   */
+  async getMailCenterTrends(currentUser: any, query: any = {}) {
+    const companyId = requireActiveCompany(currentUser).id;
+    const days = Math.max(1, Math.min(90, Number(query?.days || 7)));
+    const now = new Date();
+    const start = new Date(now.getTime() - (days - 1) * 86400000);
+    start.setHours(0, 0, 0, 0);
+    const messages = await this.prisma.communicationMessage.findMany({
+      where: {
+        deletedAt: null,
+        createdAt: { gte: start },
+        conversation: { companyId },
+      },
+      select: { direction: true, sentAt: true, receivedAt: true, createdAt: true },
+    });
+    const daily: Record<string, { date: string; inbound: number; outbound: number }> = {};
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 86400000);
+      const key = d.toISOString().slice(0, 10);
+      daily[key] = { date: key, inbound: 0, outbound: 0 };
+    }
+    for (const m of messages) {
+      const ts = m.direction === 'inbound' ? m.receivedAt || m.createdAt : m.sentAt || m.createdAt;
+      const key = ts.toISOString().slice(0, 10);
+      if (!daily[key]) continue;
+      if (m.direction === 'inbound') daily[key].inbound++;
+      else if (m.direction === 'outbound') daily[key].outbound++;
+    }
+    return { daily: Object.values(daily) };
+  }
+
+  /**
+   * R111 批次D：询盘来源分布（Lead groupBy sourceType，sourceType 空归为 'unknown'，
+   * 按 count 降序，pct 为占比保留 1 位小数；全量返回，由前端截断）。
+   */
+  async getSources(currentUser: any) {
+    const leadWhere = this.buildScopedWhere(currentUser);
+    leadWhere.deletedAt = null;
+    const groups = await this.prisma.lead.groupBy({
+      by: ['sourceType'],
+      where: leadWhere,
+      _count: true,
+    });
+    const total = groups.reduce((acc, g) => acc + g._count, 0);
+    const sources = groups
+      .map((g) => ({ source: g.sourceType || 'unknown', count: g._count }))
+      .sort((a, b) => b.count - a.count)
+      .map((item) => ({ ...item, pct: this.percentRate(item.count, total) }));
+    return { sources };
+  }
+
+  /**
+   * R111 批次D：WhatsApp 聚合统计。
+   * 口径：Conversation.channel='whatsapp'（active=status='active'，unread=unreadCount>0）；
+   * CommunicationMessage 经 conversation.channel='whatsapp' 按 direction groupBy；
+   * read=deliveryStatus='read' 或 readAt 非空。
+   */
+  async getWhatsappStats(currentUser: any) {
+    const companyId = requireActiveCompany(currentUser).id;
+    const conversationWhere = { companyId, channel: 'whatsapp' };
+    const messageWhere = { conversation: conversationWhere, deletedAt: null };
+    const [conversationStatusGroups, conversationRows, messageDirectionGroups, readMessages] = await Promise.all([
+      this.prisma.conversation.groupBy({
+        by: ['status'],
+        where: conversationWhere,
+        _count: true,
+      }),
+      this.prisma.conversation.findMany({
+        where: conversationWhere,
+        select: { unreadCount: true },
+      }),
+      this.prisma.communicationMessage.groupBy({
+        by: ['direction'],
+        where: messageWhere,
+        _count: true,
+      }),
+      this.prisma.communicationMessage.findMany({
+        where: { ...messageWhere, OR: [{ deliveryStatus: 'read' }, { readAt: { not: null } }] },
+        select: { id: true },
+      }),
+    ]);
+    const conversations = conversationRows.length;
+    const activeConversations = conversationStatusGroups.find((g) => g.status === 'active')?._count ?? 0;
+    const unreadConversations = conversationRows.filter((c) => c.unreadCount > 0).length;
+    const inbound = messageDirectionGroups.find((g) => g.direction === 'inbound')?._count ?? 0;
+    const outbound = messageDirectionGroups.find((g) => g.direction === 'outbound')?._count ?? 0;
+    const messages = inbound + outbound;
+    const read = readMessages.length;
+    return {
+      conversations,
+      activeConversations,
+      messages,
+      inbound,
+      outbound,
+      read,
+      unreadConversations,
+      readRate: this.percentRate(read, messages),
+    };
+  }
+
+  private isActuallySent(message: { status: string }) {
+    return this.sentStatuses.includes(message.status);
+  }
+
+  /** 百分比率，保留 1 位小数（如 12.3）。 */
+  private percentRate(part: number, total: number): number {
+    if (!total || part <= 0) return 0;
+    return Math.round((part / total) * 1000) / 10;
+  }
+
   private resolveDateRange(query: any) {
     const now = new Date();
     const end = query?.endDate ? new Date(query.endDate) : now;
@@ -215,12 +378,12 @@ export class AnalyticsService {
   }
 
   private isFullAccess(currentUser: any) {
-    return currentUser.companies?.some((c: any) => ['super_admin', 'company_admin'].includes(c.role));
+    const companyId = requireActiveCompany(currentUser).id;
+    return hasFullAccess(currentUser, companyId);
   }
 
   private async getSalespersonPerformance(currentUser: any, range: { start: Date; end: Date }, ownerUserId?: string) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) return [];
+    const companyId = requireActiveCompany(currentUser).id;
     const fullAccess = this.isFullAccess(currentUser);
     const relations = fullAccess
       ? await this.prisma.userCompanyRelation.findMany({
@@ -278,14 +441,10 @@ export class AnalyticsService {
 
   private buildScopedWhere(currentUser: any, query: any = {}): any {
     const where: any = {};
-    const companyId = currentUser.companies?.[0]?.id;
-
-    if (!companyId) return where;
+    const companyId = requireActiveCompany(currentUser).id;
 
     // Super admin sees all, company admin sees all in company, others isolated
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const isFullAccess = hasFullAccess(currentUser, companyId);
 
     where.companyId = companyId;
 
@@ -296,11 +455,9 @@ export class AnalyticsService {
   }
 
   private buildEmailScopedWhere(currentUser: any, query: any = {}): any {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    const companyId = currentUser.companies?.[0]?.id;
-    const where: any = companyId ? { companyId } : {};
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = hasFullAccess(currentUser, companyId);
+    const where: any = { companyId };
 
     const ownerUserId = isFullAccess ? query?.ownerUserId : currentUser.id;
     if (ownerUserId) where.senderUserId = ownerUserId;
@@ -309,8 +466,8 @@ export class AnalyticsService {
   }
 
   private buildAccountScopedWhere(currentUser: any, query: any = {}): any {
-    const companyId = currentUser.companies?.[0]?.id;
-    const where: any = companyId ? { companyId } : {};
+    const companyId = requireActiveCompany(currentUser).id;
+    const where: any = { companyId };
     const ownerScope = this.resolveOwnerScope(currentUser, query);
     if (ownerScope.ownerUserId) where.userId = ownerScope.ownerUserId;
     return where;
@@ -325,8 +482,8 @@ export class AnalyticsService {
   }
 
   private async getAvailableSalesUsers(currentUser: any) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId || !this.isFullAccess(currentUser)) return [];
+    const companyId = requireActiveCompany(currentUser).id;
+    if (!this.isFullAccess(currentUser)) return [];
     const relations = await this.prisma.userCompanyRelation.findMany({
       where: { companyId, isActive: true, user: { isActive: true, deletedAt: null } },
       include: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },

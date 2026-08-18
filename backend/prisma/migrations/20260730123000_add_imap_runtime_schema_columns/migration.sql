@@ -1,0 +1,5 @@
+ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "language" TEXT;
+ALTER TABLE "CommunicationMessage" ADD COLUMN IF NOT EXISTS "deliveryStatus" TEXT;
+ALTER TABLE "ContactPoint" ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT;
+ALTER TABLE "ContactPoint" ADD COLUMN IF NOT EXISTS "language" TEXT;
+ALTER TABLE "EmailAccount" ADD COLUMN IF NOT EXISTS "replyToEmail" TEXT;

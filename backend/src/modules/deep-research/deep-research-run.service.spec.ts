@@ -1,9 +1,14 @@
-import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { AgentRunKind, AgentRunStatus } from '@prisma/client';
 import { DeepResearchRunService } from './deep-research-run.service';
 
 const companyId = '11111111-1111-4111-8111-111111111111';
-const operator = { id: 'user-1', companies: [{ id: companyId, role: 'sales_user' }] };
+const operator = {
+  id: 'user-1',
+  activeCompanyId: companyId,
+  activeCompany: { id: companyId, role: 'sales_user' },
+  companies: [{ id: companyId, role: 'sales_user' }],
+};
 
 function createPrismaMock() {
   const prisma: any = {
@@ -28,6 +33,7 @@ function createPrismaMock() {
 describe('DeepResearchRunService', () => {
   describe('startup reconciliation guard', () => {
     const originalSetting = process.env.DEEP_RESEARCH_RECONCILE_ENABLED;
+    const originalIntervalSetting = process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS;
 
     afterEach(() => {
       if (originalSetting === undefined) {
@@ -35,6 +41,12 @@ describe('DeepResearchRunService', () => {
       } else {
         process.env.DEEP_RESEARCH_RECONCILE_ENABLED = originalSetting;
       }
+      if (originalIntervalSetting === undefined) {
+        delete process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS;
+      } else {
+        process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS = originalIntervalSetting;
+      }
+      jest.useRealTimers();
       jest.restoreAllMocks();
     });
 
@@ -65,6 +77,42 @@ describe('DeepResearchRunService', () => {
       expect(reconcile).toHaveBeenCalledTimes(1);
       expect((service as any).reconciliationTimer).toBeDefined();
       service.onModuleDestroy();
+    });
+
+    it('sanitizes startup and interval reconciliation failures', async () => {
+      jest.useFakeTimers();
+      const originalInterval = process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS;
+      process.env.DEEP_RESEARCH_RECONCILE_ENABLED = 'true';
+      process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS = '5000';
+      const prisma = createPrismaMock();
+      const queue: any = { add: jest.fn() };
+      const service = new DeepResearchRunService(prisma, queue);
+      const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const providerError = 'startup-sentinel@example.com Error.stack /opt/app?token=secret';
+      const reconcile = jest.spyOn(service, 'reconcilePendingRuns')
+        .mockRejectedValueOnce(new Error(providerError))
+        .mockRejectedValueOnce({
+          message: providerError,
+          response: { data: providerError },
+          cause: providerError,
+        });
+
+      service.onModuleInit();
+      await Promise.resolve();
+      await Promise.resolve();
+      jest.advanceTimersByTime(5000);
+      await Promise.resolve();
+      await Promise.resolve();
+      service.onModuleDestroy();
+
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      const output = JSON.stringify(loggerError.mock.calls);
+      expect(output).toContain('deep_research.reconcile_startup_failed');
+      expect(output).toContain('deep_research.reconcile_interval_failed');
+      expect(output).not.toContain(providerError);
+      expect(output).not.toContain('Error.stack');
+      if (originalInterval === undefined) delete process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS;
+      else process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS = originalInterval;
     });
   });
 
@@ -117,7 +165,9 @@ describe('DeepResearchRunService', () => {
 
   it('marks the run failed when BullMQ cannot accept the job', async () => {
     const prisma = createPrismaMock();
-    const queue: any = { add: jest.fn().mockRejectedValue(new Error('redis offline')) };
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const providerError = 'redis-sentinel@example.com https://redis.example/?token=secret';
+    const queue: any = { add: jest.fn().mockRejectedValue(new Error(providerError)) };
     const service = new DeepResearchRunService(prisma, queue);
     prisma.lead.findFirst.mockResolvedValue({
       id: 'lead-1', companyId, companyName: 'Buyer Ltd', ownerUserId: operator.id,
@@ -135,10 +185,17 @@ describe('DeepResearchRunService', () => {
     expect(prisma.agentRun.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: AgentRunStatus.FAILED, errorCode: 'RESEARCH_QUEUE_UNAVAILABLE' }),
     }));
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.queue_enqueue_failed');
+    expect(output).not.toContain(providerError);
+    expect(output).not.toContain('run-1');
+    expect(output).not.toContain(companyId);
   });
 
   it('does not fail or return 503 after BullMQ accepted the job when RUN_QUEUED audit append fails', async () => {
     const prisma = createPrismaMock();
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const providerError = 'audit-sentinel@example.com stack /var/app?token=secret';
     const queue: any = { add: jest.fn().mockResolvedValue({ id: 'agent-run-run-1' }) };
     const service = new DeepResearchRunService(prisma, queue);
     prisma.lead.findFirst.mockResolvedValue({
@@ -150,7 +207,7 @@ describe('DeepResearchRunService', () => {
     });
     prisma.agentAuditLog.create
       .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error('audit storage unavailable'));
+      .mockRejectedValueOnce(new Error(providerError));
     prisma.agentRun.findUniqueOrThrow.mockResolvedValue({
       id: 'run-1', kind: AgentRunKind.BACKGROUND_RESEARCH, status: AgentRunStatus.PENDING,
       tasks: [], authorizations: [],
@@ -162,6 +219,11 @@ describe('DeepResearchRunService', () => {
     }, operator)).resolves.toEqual(expect.objectContaining({ id: 'run-1' }));
     expect(queue.add).toHaveBeenCalledTimes(1);
     expect(prisma.agentRun.updateMany).not.toHaveBeenCalled();
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.run_queued_audit_failed');
+    expect(output).not.toContain(providerError);
+    expect(output).not.toContain('run-1');
+    expect(output).not.toContain('agent-run-run-1');
   });
 
   it('reuses the same run and stable BullMQ job id for the same request key', async () => {
@@ -301,5 +363,77 @@ describe('DeepResearchRunService', () => {
         metadata: expect.objectContaining({ reason: 'expired_execution_lease_reconciliation' }),
       }),
     }));
+  });
+
+  it('sanitizes a non-Error reconcile queue failure while preserving rejection', async () => {
+    const prisma = createPrismaMock();
+    const providerError = 'reconcile-sentinel@example.com provider response /srv/app?token=secret';
+    const queue: any = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockRejectedValue({
+        message: providerError,
+        response: { data: providerError },
+        cause: providerError,
+      }),
+    };
+    const service = new DeepResearchRunService(prisma, queue);
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    prisma.agentRun.findMany.mockResolvedValue([{
+      id: 'run-reconcile-sentinel', companyId, operatorUserId: operator.id,
+      subjectId: 'lead-reconcile-sentinel', status: AgentRunStatus.PENDING,
+      tasks: [{ toolName: 'research.background_check' }],
+    }]);
+
+    await expect(service.reconcilePendingRuns()).rejects.toMatchObject({ message: providerError });
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.reconcile_enqueue_failed');
+    expect(output).not.toContain(providerError);
+    expect(output).not.toContain('run-reconcile-sentinel');
+    expect(output).not.toContain('lead-reconcile-sentinel');
+  });
+
+  it('sanitizes a reconcile audit failure without changing the repaired count', async () => {
+    const prisma = createPrismaMock();
+    const providerError = 'reconcile-audit-sentinel@example.com stack /srv/app?token=secret';
+    const queue: any = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue({ id: 'agent-run-audit-sentinel' }),
+    };
+    const service = new DeepResearchRunService(prisma, queue);
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    prisma.agentRun.findMany.mockResolvedValue([{
+      id: 'run-audit-sentinel', companyId, operatorUserId: operator.id,
+      subjectId: 'lead-audit-sentinel', status: AgentRunStatus.RUNNING,
+      tasks: [{ toolName: 'research.background_check' }],
+    }]);
+    prisma.agentAuditLog.create.mockRejectedValue({
+      message: providerError,
+      response: { data: providerError },
+      cause: providerError,
+    });
+
+    await expect(service.reconcilePendingRuns()).resolves.toBe(1);
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.run_requeued_audit_failed');
+    expect(output).not.toContain(providerError);
+    expect(output).not.toContain('run-audit-sentinel');
+  });
+
+  it('uses a safe event for a pending run with no recognized task', async () => {
+    const prisma = createPrismaMock();
+    const queue: any = { getJob: jest.fn(), add: jest.fn() };
+    const service = new DeepResearchRunService(prisma, queue);
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    prisma.agentRun.findMany.mockResolvedValue([{
+      id: 'run-missing-task-sentinel', companyId, operatorUserId: operator.id,
+      subjectId: 'lead-missing-task-sentinel', status: AgentRunStatus.PENDING,
+      tasks: [{ toolName: 'research.unknown' }],
+    }]);
+
+    await expect(service.reconcilePendingRuns()).resolves.toBe(0);
+    const output = JSON.stringify(loggerError.mock.calls);
+    expect(output).toContain('deep_research.reconcile_task_missing');
+    expect(output).not.toContain('run-missing-task-sentinel');
+    expect(queue.getJob).not.toHaveBeenCalled();
   });
 });

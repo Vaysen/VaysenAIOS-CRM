@@ -1,10 +1,10 @@
 import axios from 'axios';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { getRuntimeApiBaseUrl } from './electron/runtime-config';
 
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: getRuntimeApiBaseUrl(),
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true,
   timeout: 15000, // 15秒超时，避免无限等待
 });
 
@@ -32,6 +32,9 @@ api.interceptors.response.use(
 );
 
 api.interceptors.request.use((config) => {
+  // Web settings can change without a rebuild. Electron deliberately remains
+  // on /api so the main-process LAN proxy is the single target source.
+  config.baseURL = getRuntimeApiBaseUrl();
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('access_token');
     if (token) {
@@ -82,43 +85,37 @@ api.interceptors.response.use(
       originalRequest._retry = true;
       isRefreshing = true;
 
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (refreshToken) {
-        try {
-          const res = await axios.post(
-            `${api.defaults.baseURL}/auth/refresh`,
-            { refreshToken },
-          );
-          const { accessToken, refreshToken: newRefreshToken } = res.data;
-          localStorage.setItem('access_token', accessToken);
-          localStorage.setItem('refresh_token', newRefreshToken);
+      try {
+        const electronAuth = typeof window !== 'undefined'
+          ? window.electronAPI?.auth
+          : undefined;
+        const refreshed = electronAuth
+          ? await electronAuth.refreshSession()
+          : (await axios.post(
+              `${getRuntimeApiBaseUrl()}/auth/refresh`,
+              {},
+              { withCredentials: true },
+            )).data;
+        const { accessToken } = refreshed;
+        localStorage.setItem('access_token', accessToken);
+        localStorage.removeItem('refresh_token');
 
-          // Wake up all queued requests with the new token
-          processQueue(null, accessToken);
+        // Wake up all queued requests with the new token
+        processQueue(null, accessToken);
 
-          originalRequest.headers.Authorization = `Bearer ${accessToken}`;
-          return api(originalRequest);
-        } catch (refreshError) {
-          // Refresh failed — reject all queued requests and redirect to login
-          processQueue(refreshError as Error);
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login';
-          }
-          return Promise.reject(refreshError);
-        } finally {
-          isRefreshing = false;
-        }
-      } else {
-        isRefreshing = false;
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
+        return api(originalRequest);
+      } catch (refreshError) {
+        // Refresh failed — reject all queued requests and redirect to login
+        processQueue(refreshError as Error);
         localStorage.removeItem('access_token');
-        if (
-          typeof window !== 'undefined' &&
-          !window.location.pathname.startsWith('/login')
-        ) {
+        localStorage.removeItem('refresh_token');
+        if (typeof window !== 'undefined') {
           window.location.href = '/login';
         }
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
       }
     }
 

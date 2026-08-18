@@ -8,6 +8,7 @@ import { timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EmailIdentityAdapter } from '../customer-identity/email-identity.adapter';
 import { OwnerNotificationService } from '../owner-notifications/owner-notification.service';
+import { safeDigest, safeLogEvent } from '../../common/security/safe-logging';
 
 interface BrevoMailbox {
   Address?: string;
@@ -43,6 +44,32 @@ export class BrevoInboundService {
     private readonly emailIdentityAdapter: EmailIdentityAdapter,
     private readonly ownerNotificationService: OwnerNotificationService,
   ) {}
+
+  private logSafe(
+    level: 'log' | 'warn' | 'error' | 'debug',
+    eventCode: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    const message = safeLogEvent(eventCode, fields);
+    if (level === 'error') this.logger.error(message);
+    else if (level === 'warn') this.logger.warn(message);
+    else if (level === 'debug') this.logger.debug(message);
+    else this.logger.log(message);
+  }
+
+  private safeMessageRef(messageId: unknown) {
+    const value = typeof messageId === 'string' ? messageId.trim() : '';
+    return value ? safeDigest(value, 'brevo-message') : undefined;
+  }
+
+  private publicResult(status: 'received' | 'skipped', reason?: string, messageId?: unknown) {
+    const messageRef = this.safeMessageRef(messageId);
+    return {
+      status,
+      ...(reason ? { reason } : {}),
+      ...(messageRef ? { messageRef } : {}),
+    };
+  }
 
   getStatus() {
     const inboundDomain = this.getInboundDomain();
@@ -85,7 +112,7 @@ export class BrevoInboundService {
       const recipients = this.collectRecipients(item);
       const messageId = item?.MessageId?.trim();
       if (!fromEmail || !messageId || recipients.length === 0) {
-        results.push({ status: 'skipped', reason: 'missing_identity' });
+        results.push(this.publicResult('skipped', 'missing_identity', messageId));
         continue;
       }
 
@@ -102,13 +129,23 @@ export class BrevoInboundService {
       });
 
       if (accounts.length === 0) {
-        this.logger.warn(`No active email account matches Brevo recipients: ${recipients.join(', ')}`);
-        results.push({ status: 'skipped', reason: 'unknown_recipient', messageId });
+        this.logSafe('warn', 'brevo.inbound.recipient_unknown', {
+          eventType: 'recipient_unknown',
+          count: recipients.length,
+          messageRef: this.safeMessageRef(messageId),
+          status: 'unknown',
+        });
+        results.push(this.publicResult('skipped', 'unknown_recipient', messageId));
         continue;
       }
       if (accounts.length > 1) {
-        this.logger.error(`Ambiguous Brevo recipient mapping: ${recipients.join(', ')}`);
-        results.push({ status: 'skipped', reason: 'ambiguous_recipient', messageId });
+        this.logSafe('error', 'brevo.inbound.recipient_ambiguous', {
+          eventType: 'recipient_ambiguous',
+          count: accounts.length,
+          messageRef: this.safeMessageRef(messageId),
+          status: 'rejected',
+        });
+        results.push(this.publicResult('skipped', 'ambiguous_recipient', messageId));
         continue;
       }
       const account = accounts[0];
@@ -158,12 +195,7 @@ export class BrevoInboundService {
         preview: bodyText,
       });
 
-      results.push({
-        status: 'received',
-        accountId: account.id,
-        messageId,
-        ...ingestResult,
-      });
+      results.push(this.publicResult('received', undefined, messageId));
     }
 
     return {

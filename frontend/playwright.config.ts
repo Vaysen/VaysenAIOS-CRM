@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const e2eBaseUrl = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3100';
+const e2ePort = new URL(e2eBaseUrl).port || '3100';
 const browserChannel = process.env.PLAYWRIGHT_CHANNEL as 'chrome' | undefined;
 
 export default defineConfig({
@@ -25,7 +26,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev -- -p 3100',
+    command: `npm run dev -- -p ${e2ePort}`,
     url: e2eBaseUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

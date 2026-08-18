@@ -1,4 +1,4 @@
-export const DEFAULT_BUSINESS_BRAND_NAME = 'Example Trading Company';
+export const DEFAULT_BUSINESS_BRAND_NAME = 'Vaysen Packaging (Vaysen包装)';
 export const DEFAULT_BUSINESS_PRODUCT_FOCUS =
   'packaging products: poly mailers, kraft paper bags, garbage bags, zip-lock bags, and other customizable flexible packaging';
 export const DEFAULT_TARGET_CUSTOMER_PROFILE =

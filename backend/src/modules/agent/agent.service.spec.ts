@@ -108,13 +108,13 @@ describe('AgentService secure core', () => {
   it('does not treat negated or capability-question wording as an executable action', () => {
     const internal = service as any;
     expect(internal.isBackgroundResearchIntent('不要给这个客户做背调')).toBe(false);
-    expect(internal.isBackgroundResearchIntent('你能给 Sample Buyer 做背调吗？')).toBe(false);
+    expect(internal.isBackgroundResearchIntent('你能给 AcmeCorp 做背调吗？')).toBe(false);
     expect(internal.isBackgroundResearchIntent('如何做客户背景调查？')).toBe(false);
-    expect(internal.isBackgroundResearchIntent('是不是帮我给 Sample Buyer 做背调')).toBe(false);
+    expect(internal.isBackgroundResearchIntent('是不是帮我给 AcmeCorp 做背调')).toBe(false);
     expect(internal.isBackgroundResearchIntent('Can we run a background check')).toBe(false);
     expect(internal.isBackgroundResearchIntent('Should I start a background check')).toBe(false);
-    expect(internal.isBackgroundResearchIntent('之前你已经帮我给 Sample Buyer 做背调了')).toBe(false);
-    expect(internal.isBackgroundResearchIntent('我已经开始对 Sample Buyer 做背景调查')).toBe(false);
+    expect(internal.isBackgroundResearchIntent('之前你已经帮我给 AcmeCorp 做背调了')).toBe(false);
+    expect(internal.isBackgroundResearchIntent('我已经开始对 AcmeCorp 做背景调查')).toBe(false);
     expect(internal.isBackgroundResearchIntent('我们已进行客户调查')).toBe(false);
     expect(internal.isBackgroundResearchIntent('We started a background check')).toBe(false);
     expect(internal.isBackgroundResearchIntent('We conducted customer research')).toBe(false);
@@ -127,20 +127,20 @@ describe('AgentService secure core', () => {
     expect(internal.isQuoteDeliveryIntent('能不能发送最新报价单？')).toBe(false);
     expect(internal.isQuoteDeliveryIntent('I already sent the latest quote')).toBe(false);
 
-    expect(internal.isBackgroundResearchIntent('帮我给 Sample Buyer 做背调')).toBe(true);
+    expect(internal.isBackgroundResearchIntent('帮我给 AcmeCorp 做背调')).toBe(true);
     expect(internal.isBackgroundResearchIntent('给当前客户做背调')).toBe(true);
     expect(internal.isBackgroundResearchIntent('请完成当前客户背调')).toBe(true);
-    expect(internal.isBackgroundResearchIntent('现在开始对 Sample Buyer 做背景调查')).toBe(true);
-    expect(internal.isQuoteDeliveryIntent('给 Sample Buyer 发送最新报价单')).toBe(true);
+    expect(internal.isBackgroundResearchIntent('现在开始对 AcmeCorp 做背景调查')).toBe(true);
+    expect(internal.isQuoteDeliveryIntent('给 AcmeCorp 发送最新报价单')).toBe(true);
     expect(internal.isUnsupportedOperationalIntent('帮我创建客户待办并发送邮件')).toBe(false);
-    expect(internal.isUnsupportedOperationalIntent('帮我给 Sample Buyer 生成一份 PI')).toBe(false);
-    expect(internal.isUnsupportedOperationalIntent('帮我整理一下 Sample Buyer 的客户资料')).toBe(false);
+    expect(internal.isUnsupportedOperationalIntent('帮我给 AcmeCorp 生成一份 PI')).toBe(false);
+    expect(internal.isUnsupportedOperationalIntent('帮我整理一下 AcmeCorp 的客户资料')).toBe(false);
     expect(internal.isUnsupportedOperationalIntent('安排明天跟进客户的提醒')).toBe(false);
     expect(internal.isUnsupportedOperationalIntent('审批这份报价')).toBe(true);
     expect(internal.isUnsupportedOperationalIntent('同步联系人')).toBe(true);
     expect(internal.isUnsupportedOperationalIntent('分配客户给业务员A')).toBe(true);
     expect(internal.isUnsupportedOperationalIntent('取消任务')).toBe(true);
-    expect(internal.isUnsupportedOperationalIntent('帮我给 Sample Buyer 回复一句谢谢')).toBe(true);
+    expect(internal.isUnsupportedOperationalIntent('帮我给 AcmeCorp 回复一句谢谢')).toBe(true);
     expect(internal.isUnsupportedOperationalIntent('把这个客户设为已成交')).toBe(false);
     expect(internal.isUnsupportedOperationalIntent('给客户下一个订单')).toBe(false);
     expect(internal.isUnsupportedOperationalIntent('不要取消任务')).toBe(false);
@@ -152,11 +152,17 @@ describe('AgentService secure core', () => {
     expect(internal.isUnsupportedOperationalIntent('OpenClaw 能不能控制微信？')).toBe(false);
     expect(internal.isUnsupportedOperationalIntent('帮我起草一封跟进邮件')).toBe(false);
     expect(internal.isUnsupportedOperationalIntent('执行 SQL 删除客户')).toBe(true);
-    expect(internal.isWhatsappTextSendIntent('给 Sample Buyer 回复一句谢谢', false)).toBe(false);
-    expect(internal.isWhatsappTextSendIntent('给 Sample Buyer 回复一句谢谢', true)).toBe(true);
+    expect(internal.isWhatsappTextSendIntent('给 AcmeCorp 回复一句谢谢', false)).toBe(false);
+    expect(internal.isWhatsappTextSendIntent('给 AcmeCorp 回复一句谢谢', true)).toBe(true);
 
     expect(internal.openClawToolRoutingHint('请根据当前 CRM 真实数据生成一份今日工作简报'))
       .toContain('必须调用 crm_work_brief 恰好一次');
+    const productionE2ePrompt = '这是只读生产验收。必须调用 crm_work_brief 恰好一次，不得调用其他工具。只按工具真实回执汇报，不得编造已完成事项。';
+    const productionE2eHint = internal.openClawToolRoutingHint(productionE2ePrompt);
+    expect(productionE2eHint).toContain('必须调用 crm_work_brief 恰好一次');
+    expect(internal.requiresOpenClawToolReceipt(productionE2eHint)).toBe(true);
+    expect(internal.openClawToolRoutingHint('能不能调用 crm_work_brief？'))
+      .toContain('无强制工具');
     expect(internal.openClawToolRoutingHint('查询客户 Chris 的真实资料'))
       .toContain('crm_customer_search');
     expect(internal.openClawToolRoutingHint('查看 Chris 的订单列表'))
@@ -188,7 +194,7 @@ describe('AgentService secure core', () => {
       '当前 CRM 实时摘要显示有 26 个客户。由于没有明确的动作提案，我将等待进一步指示。',
     )).toBe(true);
     expect(internal.isUnhelpfulOpenClawReply('你好', generic)).toBe(false);
-    expect(internal.isUnhelpfulOpenClawReply('你是谁？', '我是示例贸易公司的 AI 业务助理。')).toBe(false);
+    expect(internal.isUnhelpfulOpenClawReply('你是谁？', '我是Vaysen包装的 AI 业务助理。')).toBe(false);
     expect(internal.containsUnsupportedExecutionClaim(generic)).toBe(false);
     expect(internal.containsUnsupportedExecutionClaim('我已经为你发送了消息。')).toBe(true);
   });
@@ -623,7 +629,7 @@ describe('AgentService secure core', () => {
   });
 
   it('treats colloquial quote delivery wording as a real action proposal, not chat', async () => {
-    expect((service as any).isQuoteDeliveryIntent('帮我把报价发过去给 Sample Buyer')).toBe(true);
+    expect((service as any).isQuoteDeliveryIntent('帮我把报价发过去给 AcmeCorp')).toBe(true);
     expect((service as any).isQuoteDeliveryIntent('把最新 quotation 寄过去给客户')).toBe(true);
     expect((service as any).isQuoteDeliveryIntent('不要把报价发过去')).toBe(false);
   });
@@ -649,7 +655,7 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '00000000-0000-4000-8000-000000000098',
       companyId: operator.companies[0].id,
-      message: '  帮我搞一下 Sample Buyer\n',
+      message: '  帮我搞一下 AcmeCorp\n',
       threadId: 'thread-1',
     }, operator);
 
@@ -657,11 +663,11 @@ describe('AgentService secure core', () => {
     expect(result.actionStatus).toBeNull();
     expect(result.output).toBe('已经帮你发送给客户，任务处理好了。');
     expect(prisma.aiArtifact.upsert.mock.calls[0][0].create).toEqual(expect.objectContaining({
-      inputContent: '  帮我搞一下 Sample Buyer\n',
+      inputContent: '  帮我搞一下 AcmeCorp\n',
       provider: 'zhipu',
       model: 'glm-4.5-air',
     }));
-    expect(ai.chat.mock.calls[0][1]).toContain('用户原文（必须按原意处理，不得改写为权限模板）：  帮我搞一下 Sample Buyer\n\n工具路由要求');
+    expect(ai.chat.mock.calls[0][1]).toContain('用户原文（必须按原意处理，不得改写为权限模板）：  帮我搞一下 AcmeCorp\n\n工具路由要求');
   });
 
   it('does not rewrite a colloquial model reply in the chat transport', async () => {
@@ -685,7 +691,7 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '00000000-0000-4000-8000-000000000095',
       companyId: operator.companies[0].id,
-      message: '帮我看看 Sample Buyer 的报价是否合适',
+      message: '帮我看看 AcmeCorp 的报价是否合适',
       threadId: 'thread-1',
     }, operator);
 
@@ -746,14 +752,14 @@ describe('AgentService secure core', () => {
       isGroup: false,
       externalThreadId: '12025550123@s.whatsapp.net',
       leadId: '33333333-3333-4333-8333-333333333333',
-      subject: 'Sample Buyer',
+      subject: 'AcmeCorp',
       contactPoint: {
         type: 'whatsapp',
-        originalValue: '+12025550123',
-        normalizedValue: '+12025550123',
+        originalValue: '+8613800000000',
+        normalizedValue: '+8613800000000',
         isVerified: true,
       },
-      lead: { id: '33333333-3333-4333-8333-333333333333', companyName: 'Sample Buyer', contactName: 'Elvis' },
+      lead: { id: '33333333-3333-4333-8333-333333333333', companyName: 'AcmeCorp', contactName: 'Elvis' },
     });
     prisma.quote.findFirst.mockResolvedValue({
       id: '44444444-4444-4444-8444-444444444444',
@@ -773,7 +779,7 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '00000000-0000-4000-8000-000000000002',
       companyId: operator.companies[0].id,
-      message: '给 Sample Buyer 发送最新的报价单',
+      message: '给 AcmeCorp 发送最新的报价单',
       pathname: '/whatsapp/chat',
       threadId: 'thread-1',
       whatsapp: {
@@ -787,7 +793,7 @@ describe('AgentService secure core', () => {
     expect(result.actionProposal).toEqual(expect.objectContaining({
       status: 'REQUIRES_CONFIRMATION',
       quote: expect.objectContaining({ referenceNo: 'QT-20260712-2511', status: 'draft' }),
-      target: expect.objectContaining({ name: 'Elvis', phone: '12025550123' }),
+      target: expect.objectContaining({ name: 'Elvis', phone: '8613800000000' }),
     }));
     expect(prisma.quote.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
@@ -839,16 +845,16 @@ describe('AgentService secure core', () => {
     prisma.conversation.findFirst.mockResolvedValue({
       id: '22222222-2222-4222-8222-222222222222',
       isGroup: false,
-      externalThreadId: '12025550123@s.whatsapp.net',
+      externalThreadId: '8613800000000@s.whatsapp.net',
       leadId: '33333333-3333-4333-8333-333333333333',
-      subject: 'Sample Buyer',
+      subject: 'AcmeCorp',
       contactPoint: {
         type: 'whatsapp',
-        originalValue: '+12025550123',
-        normalizedValue: '+12025550123',
+        originalValue: '+8613800000000',
+        normalizedValue: '+8613800000000',
         isVerified: true,
       },
-      lead: { companyName: 'Sample Buyer', contactName: 'Elvis' },
+      lead: { companyName: 'AcmeCorp', contactName: 'Elvis' },
     });
     ai.chat.mockResolvedValue({
       success: true,
@@ -865,7 +871,7 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '00000000-0000-4000-8000-000000000088',
       companyId: operator.companies[0].id,
-      message: '请通过 WhatsApp 告诉 Sample Buyer：我们已经准备好资料，请回复收货地址',
+      message: '请通过 WhatsApp 告诉 AcmeCorp：我们已经准备好资料，请回复收货地址',
       pathname: '/whatsapp/chat',
       threadId: 'thread-1',
       whatsapp: {
@@ -881,7 +887,7 @@ describe('AgentService secure core', () => {
       text: expect.stringContaining('Hello Elvis'),
       target: expect.objectContaining({
         name: 'Elvis',
-        phone: '12025550123',
+        phone: '8613800000000',
         conversationId: '22222222-2222-4222-8222-222222222222',
       }),
       safety: { automaticSend: false, requiresHumanConfirmation: true },
@@ -1330,9 +1336,9 @@ describe('AgentService secure core', () => {
   it('creates a real background-research AgentRun from an explicit WhatsApp command', async () => {
     prisma.conversation.findFirst.mockResolvedValue({
       id: 'conversation-1', companyId: operator.companies[0].id, leadId: 'lead-server',
-      isGroup: false, externalThreadId: '12025550123@s.whatsapp.net',
+      isGroup: false, externalThreadId: '8613800000000@s.whatsapp.net',
       contactPoint: {
-        type: 'whatsapp', originalValue: '+12025550123', normalizedValue: '+12025550123', isVerified: true,
+        type: 'whatsapp', originalValue: '+8613800000000', normalizedValue: '+8613800000000', isVerified: true,
       },
       lead: {
         id: 'lead-server', companyId: operator.companies[0].id, companyName: 'Verified Buyer Ltd',
@@ -1350,7 +1356,7 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '00000000-0000-4000-8000-000000000005',
       companyId: operator.companies[0].id,
-      message: '帮我给 Sample Buyer 做背调',
+      message: '帮我给 AcmeCorp 做背调',
       pathname: '/whatsapp/chat',
       threadId: 'thread-1',
       whatsapp: {
@@ -1509,7 +1515,7 @@ describe('AgentService secure core', () => {
       id: 'group-conversation', companyId: operator.companies[0].id, leadId: 'lead-1',
       isGroup: true, externalThreadId: '120363000000@g.us',
       contactPoint: {
-        type: 'whatsapp', originalValue: '+12025550123', normalizedValue: '+12025550123', isVerified: true,
+        type: 'whatsapp', originalValue: '+8613800000000', normalizedValue: '+8613800000000', isVerified: true,
       },
       lead: {
         id: 'lead-1', companyId: operator.companies[0].id, companyName: 'Buyer Ltd',
@@ -1527,7 +1533,7 @@ describe('AgentService secure core', () => {
       message: '请开始客户背景调查',
       pathname: '/whatsapp/chat',
       whatsapp: {
-        name: 'Buyer', phone: '+12025550123', conversationId: 'group-conversation', isGroup: false,
+        name: 'Buyer', phone: '+8613800000000', conversationId: 'group-conversation', isGroup: false,
       },
     }, operator);
 
@@ -1567,10 +1573,10 @@ describe('AgentService secure core', () => {
   it('recovers a historical direct chat from its exact verified E.164 identity anchor', async () => {
     prisma.conversation.findFirst.mockResolvedValue({
       id: 'historical-direct-conversation', companyId: operator.companies[0].id, leadId: 'lead-1',
-      isGroup: null, externalThreadId: '+12025550123',
+      isGroup: null, externalThreadId: '+8613800000000',
       contactPoint: {
         type: 'whatsapp', originalValue: '+86 156 2458 4719',
-        normalizedValue: '+12025550123', isVerified: true,
+        normalizedValue: '+8613800000000', isVerified: true,
       },
       lead: {
         id: 'lead-1', companyId: operator.companies[0].id, companyName: 'Buyer Ltd',
@@ -1688,7 +1694,7 @@ describe('AgentService secure core', () => {
       id: 'conversation-1', companyId: operator.companies[0].id, leadId: 'lead-1',
       isGroup: false, externalThreadId: '8613800000000@s.whatsapp.net',
       lead: {
-        id: 'lead-1', companyId: operator.companies[0].id, companyName: 'Sample Buyer',
+        id: 'lead-1', companyId: operator.companies[0].id, companyName: 'AcmeCorp',
         companyNameSource: 'untrusted_display', companyNameConfidence: 'low',
         ownerUserId: operator.id, deletedAt: null,
       },
@@ -1700,9 +1706,9 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '00000000-0000-4000-8000-000000000012',
       companyId: operator.companies[0].id,
-      message: '帮我给 Sample Buyer 做背调',
+      message: '帮我给 AcmeCorp 做背调',
       pathname: '/whatsapp/chat',
-      whatsapp: { name: 'Sample Buyer', phone: '', conversationId: 'conversation-1' },
+      whatsapp: { name: 'AcmeCorp', phone: '', conversationId: 'conversation-1' },
     }, operator);
 
     expect(result.responseKind).toBe('ACTION_BLOCKED');
@@ -1743,7 +1749,7 @@ describe('AgentService secure core', () => {
     expect(result.output).toContain(text);
   });
 
-  it('uses OpenClaw only for a company administrator and stores the true response source', async () => {
+  it('uses OpenClaw chat only for a company administrator and stores the true response source', async () => {
     prisma.lead.findMany = jest.fn().mockResolvedValue([]);
     prisma.followUpReminder.findMany.mockResolvedValue([]);
     prisma.quote.findMany.mockResolvedValue([]);
@@ -1772,7 +1778,7 @@ describe('AgentService secure core', () => {
     const result: any = await service.chat({
       requestId: '10000000-0000-4000-8000-000000000001',
       companyId: admin.companies[0].id,
-      message: '请根据当前 CRM 真实数据生成一份今日工作简报',
+      message: '请分析一下当前业务方向，不要执行任何工具',
       threadId: 'admin-thread',
     }, admin);
 
@@ -1784,15 +1790,14 @@ describe('AgentService secure core', () => {
     );
     expect(openClaw.chat).toHaveBeenCalledWith(
       expect.stringContaining('明确要求某个可用 CRM 工具或受支持业务动作时，必须调用对应工具'),
-      expect.stringContaining('必须调用 crm_work_brief 恰好一次'),
+      expect.stringContaining('无强制工具'),
       expect.stringMatching(/^[a-f0-9]{64}$/),
       900,
     );
-    expect(openClaw.chat).toHaveBeenCalledTimes(2);
+    expect(openClaw.chat).toHaveBeenCalledTimes(1);
     expect(openClaw.chat.mock.calls[0][1]).toMatch(
-      /用户原文（必须按原意处理，不得改写为权限模板）：请根据当前 CRM 真实数据生成一份今日工作简报\n工具路由要求（本轮最后且最高优先级）：必须调用 crm_work_brief/,
+      /用户原文（必须按原意处理，不得改写为权限模板）：请分析一下当前业务方向，不要执行任何工具\n工具路由要求（本轮最后且最高优先级）：无强制工具/,
     );
-    expect(openClaw.chat.mock.calls[1][1]).toContain('上一次响应没有调用必需工具');
     const create = prisma.aiArtifact.upsert.mock.calls[0][0].create;
     expect(create.provider).toBe('openclaw');
     expect(create.model).toBe('openclaw/vaysen-crm');
@@ -1803,6 +1808,67 @@ describe('AgentService secure core', () => {
     );
     expect(JSON.stringify(openClaw.chat.mock.calls[0])).not.toContain(admin.id);
     expect(ai.chat).not.toHaveBeenCalled();
+  });
+
+  it('deterministically invokes an explicitly required work brief and returns its durable receipt', async () => {
+    prisma.lead.findMany = jest.fn().mockResolvedValue([]);
+    prisma.followUpReminder.findMany.mockResolvedValue([]);
+    prisma.quote.findMany.mockResolvedValue([]);
+    prisma.agentRun.findMany.mockResolvedValue([]);
+    prisma.aiArtifact.findMany.mockResolvedValue([]);
+    prisma.openClawToolReceipt.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        requestKey: 'c'.repeat(64),
+        runId: '20000000-0000-4000-8000-000000000093',
+        toolName: 'work-brief',
+        status: 'COMPLETED',
+        businessStatus: 'SUCCEEDED',
+        errorCode: null,
+        completedAt: new Date('2026-08-02T04:30:00.000Z'),
+      }]);
+    prisma.aiArtifact.upsert.mockImplementation(async ({ create }: any) => ({
+      id: 'artifact-deterministic-work-brief', createdAt: new Date(), acceptedAt: null, ...create,
+    }));
+    const openClaw = {
+      isEnabled: jest.fn().mockReturnValue(true),
+      invokeWorkBrief: jest.fn().mockResolvedValue({ success: true, reason: 'success' }),
+      chat: jest.fn(),
+    };
+    const sessions = {
+      register: jest.fn().mockResolvedValue(undefined),
+      claimExecution: jest.fn().mockResolvedValue('lease-token'),
+      settleExecution: jest.fn().mockResolvedValue(true),
+      releaseExecution: jest.fn().mockResolvedValue(true),
+    };
+    service = new AgentService(prisma, ai, researchRuns, openClaw as any, sessions as any);
+
+    const result: any = await service.chat({
+      requestId: '10000000-0000-4000-8000-000000000093',
+      companyId: admin.companies[0].id,
+      message: '这是只读生产验收。必须调用 crm_work_brief 恰好一次，不得调用其他工具。只按工具真实回执汇报，不得编造已完成事项。',
+      threadId: 'r93-work-brief-thread',
+    }, admin);
+
+    expect(openClaw.invokeWorkBrief).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]{64}$/));
+    expect(openClaw.chat).not.toHaveBeenCalled();
+    expect(ai.chat).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      responseKind: 'OPENCLAW_TOOL_RESULT',
+      actionStatus: 'COMPLETED',
+      businessStatus: 'SUCCEEDED',
+      agentRunId: '20000000-0000-4000-8000-000000000093',
+    }));
+    expect(result.toolReceipts).toEqual([expect.objectContaining({
+      requestId: 'c'.repeat(64),
+      toolName: 'crm.work_brief',
+      status: 'COMPLETED',
+      businessStatus: 'SUCCEEDED',
+    })]);
+    const create = prisma.aiArtifact.upsert.mock.calls[0][0].create;
+    expect(create.provider).toBe('openclaw');
+    expect(create.model).toBe('openclaw/verified-tool-receipt');
+    expect(create.extraData.permission).toBe('verified_openclaw_tool_receipt');
   });
 
   it('preserves an OpenClaw conversational reply without a client-side quality filter', async () => {
@@ -1816,7 +1882,7 @@ describe('AgentService secure core', () => {
     }));
     ai.chat.mockResolvedValue({
       success: true,
-      content: '我是示例贸易公司的 AI 业务助理，可以和你正常讨论客户、报价、订单和工作安排；需要真实操作时我会调用 CRM 工具。',
+      content: '我是Vaysen包装的 AI 业务助理，可以和你正常讨论客户、报价、订单和工作安排；需要真实操作时我会调用 CRM 工具。',
       model: 'glm-4.5-air',
       reason: 'success',
     });

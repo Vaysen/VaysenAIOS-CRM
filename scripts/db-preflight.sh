@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vaysen AI CRM database preflight.
+# Vaysen Pilot database preflight.
 # --backup: validate current PostgreSQL and create a rollback point before build.
 # --candidate: after build, run Prisma status with the candidate backend image.
 

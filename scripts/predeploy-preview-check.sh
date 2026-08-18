@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Vaysen AI CRM — Preview Deploy Pre-Check
+# Vaysen Trade OS — Preview Deploy Pre-Check
 # Run before: docker compose -f docker-compose.preview.yml up -d
 # ============================================================
 set -e
@@ -9,7 +9,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-echo "=== Vaysen AI CRM Preview Deploy Pre-Check ==="
+echo "=== Vaysen Preview Deploy Pre-Check ==="
 echo ""
 
 # 1. Docker

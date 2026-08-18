@@ -52,15 +52,15 @@ describe('messaging control API parsers', () => {
     const accounts = parseBusinessEmailAccounts({
       data: [{
         id: 'mail-1',
-        senderName: 'Vaysen AI CRM Sales',
-        senderEmail: 'sales@example.com',
-        replyToEmail: 'reply@reply.example.com',
+        senderName: 'Vaysen Sales',
+        senderEmail: 'sales@vaysen.com',
+        replyToEmail: 'reply@reply.vaysen.com',
         status: 'active',
         smtpPasswordEncrypted: 'secret',
       }],
     });
     expect(accounts[0]).not.toHaveProperty('smtpPasswordEncrypted');
-    expect(accounts[0].senderEmail).toBe('sales@example.com');
+    expect(accounts[0].senderEmail).toBe('sales@vaysen.com');
   });
 
   it('requires an SMTP message id and accepted recipient before claiming success', () => {

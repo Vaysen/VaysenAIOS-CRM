@@ -10,6 +10,10 @@ import { TimelineService } from '../timeline/timeline.service';
 import { QueryDuplicateLeadsDto } from './dto/query-duplicate-leads.dto';
 import { UpdateDuplicateStatusDto } from './dto/update-duplicate-status.dto';
 import { MergeDuplicateLeadsDto } from './dto/merge-duplicate-leads.dto';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
 @Injectable()
 export class DuplicateLeadsService {
@@ -24,12 +28,10 @@ export class DuplicateLeadsService {
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = hasFullAccess(currentUser, companyId);
 
-    const where: any = { companyId: { in: companyIds } };
+    const where: any = { companyId };
 
     if (!isFullAccess) {
       where.primaryLead = { ownerUserId: currentUser.id };
@@ -124,18 +126,11 @@ export class DuplicateLeadsService {
   }
 
   async checkLead(leadId: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
-
-    const isSuperAdmin = currentUser.companies?.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (!isSuperAdmin) {
-      const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-      if (!companyIds.includes(lead.companyId)) {
-        throw new ForbiddenException('Cannot access leads from another company');
-      }
-    }
+    const companyId = requireActiveCompany(currentUser).id;
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
 
     return this.detectDuplicates(lead, currentUser);
   }
@@ -516,28 +511,31 @@ export class DuplicateLeadsService {
   }
 
   private async checkAccess(currentUser: any, record: any) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
-
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(record.companyId)) {
+    const activeCompany = requireActiveCompany(currentUser);
+    if (record.companyId !== activeCompany.id) {
       throw new ForbiddenException('Cannot access duplicate leads from another company');
     }
+    const isFullAccess = hasFullAccess(currentUser, record.companyId);
+    if (isFullAccess) return;
 
     // Isolated users: check lead ownership
-    const lead = await this.prisma.lead.findUnique({ where: { id: record.primaryLeadId } });
+    const lead = await this.prisma.lead.findFirst({
+      where: {
+        id: record.primaryLeadId,
+        companyId: requireActiveCompany(currentUser).id,
+        deletedAt: null,
+      },
+    });
     if (!lead || lead.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('You can only access duplicates for your own leads');
     }
   }
 
   private async checkWriteAccess(currentUser: any, companyId: string) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) throw new ForbiddenException('Not a member of this company');

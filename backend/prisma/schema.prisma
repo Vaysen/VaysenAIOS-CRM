@@ -26,22 +26,24 @@ model Company {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  users              UserCompanyRelation[]
-  leads              Lead[]
-  contacts           Contact[]
-  leadSources        LeadSource[]
-  leadScores         LeadScore[]
-  leadActivities     LeadActivity[]
-  emailAccounts      EmailAccount[]
-  emailTemplates     EmailTemplate[]
-  campaigns          Campaign[]
-  emailMessages      EmailMessage[]
-  unsubscribeRecords UnsubscribeRecord[]
-  aiGenerationLogs   AIGenerationLog[]
-  settings_obj       SystemSetting[]
-  auditLogs          AuditLog[]
-  productCategories  ProductCategory[]
-  products           Product[]
+  users                 UserCompanyRelation[]
+  leads                 Lead[]
+  contacts              Contact[]
+  leadSources           LeadSource[]
+  leadScores            LeadScore[]
+  leadActivities        LeadActivity[]
+  emailAccounts         EmailAccount[]
+  emailInboundReviews   EmailInboundReview[]
+  emailTemplates        EmailTemplate[]
+  campaigns             Campaign[]
+  emailMessages         EmailMessage[]
+  emailDispatchRequests EmailDispatchRequest[]
+  unsubscribeRecords    UnsubscribeRecord[]
+  aiGenerationLogs      AIGenerationLog[]
+  settings_obj          SystemSetting[]
+  auditLogs             AuditLog[]
+  productCategories     ProductCategory[]
+  products              Product[]
 
   // Communication hub
   contactPoints ContactPoint[]
@@ -49,10 +51,13 @@ model Company {
   aiArtifacts   AiArtifact[]
 
   // Phase 7 new models
-  whatsappSessions       WhatsAppSession[]
-  whatsappBroadcastTasks WhatsAppBroadcastTask[]
-  quotes                 Quote[]
-  orders                 Order[]
+  whatsappSessions          WhatsAppSession[]
+  whatsappBroadcastTasks    WhatsAppBroadcastTask[]
+  quotes                    Quote[]
+  orders                    Order[]
+  opportunities             Opportunity[]
+  opportunityStageHistories OpportunityStageHistory[]
+  opportunityContactRoles   OpportunityContactRole[]
 
   // Customizer
   customizerTemplates        CustomizerTemplate[]
@@ -68,14 +73,58 @@ model Company {
   openClawSelections         OpenClawSelectionToken[]
   assistantPermissionProfile AssistantPermissionProfile?
   assistantTemporaryGrants   AssistantTemporaryGrant[]
+  assistantGrantConsumptions AssistantGrantConsumption[]
   assistantBusinessActions   AssistantBusinessAction[]
+  assistantToolExecutions    AssistantToolExecution[]
+  externalActionOutbox       ExternalActionOutbox[]
+  externalSuppressions       ExternalSuppression[]
   ownerNotificationOutbox    OwnerNotificationOutbox[]
+  salesSequences              SalesSequence[]
+  salesSequenceEnrollments    SalesSequenceEnrollment[]
+  salesSequenceExecutions     SalesSequenceStepExecution[]
+  salesSequenceReceipts       SalesSequenceExecutionReceipt[]
+  salesSequenceDraftOutboxes  SalesSequenceDraftOutbox[]
+  factSources                 FactSource[]
+  factEvidence                FactEvidence[]
+  customerFacts               CustomerFact[]
+  customerFactProposals       CustomerFactProposal[]
+  factCommandReceipts         FactCommandReceipt[]
+  proposalEvidenceLinks       ProposalEvidenceLink[]
+  customerFactEvidenceLinks   CustomerFactEvidenceLink[]
 
   // TASK-102A: 统一客户身份 — 反向关系
   externalIdentities      ExternalIdentity[]
   identityMatchCandidates IdentityMatchCandidate[]
   identityExclusions      IdentityExclusion[]
   customerMergeAudits     CustomerMergeAudit[]
+
+  // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
+  marketingCampaigns          MarketingCampaign[]
+  marketingCampaignEvents     MarketingCampaignEvent[]
+  marketingChannelPlans       MarketingChannelPlan[]
+  marketingAudienceSnapshots  MarketingAudienceSnapshot[]
+  marketingAudienceMembers    MarketingAudienceMember[]
+  marketingContentVersions    MarketingContentVersion[]
+  marketingPreflightRuns      MarketingPreflightRun[]
+  marketingPreflightAttempts  MarketingPreflightAttempt[]
+  marketingConsents           MarketingConsent[]
+  marketingSuppressions       MarketingSuppression[]
+  marketingKillSwitches       MarketingKillSwitch[]
+  marketingAttributions       MarketingAttribution[]
+  marketingDeliveryRuns       MarketingDeliveryRun[]
+
+  // wesley-ai-crm 批次3: sales-delivery 报价交付回执链 — 反向关系
+  quoteRenderJobs               QuoteRenderJob[]
+  outboundRequests              OutboundRequest[]
+  outboundProviderReceipts      OutboundProviderReceipt[]
+  deliveryConnectionBindings    DeliveryConnectionBinding[]
+  secretRefs                    SecretRef[]
+  metaTemplateSnapshots         MetaTemplateSnapshot[]
+  salesDeliveryWorkerHeartbeats SalesDeliveryWorkerHeartbeat[]
+  outboundApprovalRequests      OutboundApprovalRequest[]
+
+  // wesley-ai-crm 批次A: audience-segments 客群系统 — 反向关系
+  audienceSegments AudienceSegment[]
 
   @@index([slug])
   @@index([isActive])
@@ -101,9 +150,11 @@ model User {
 
   companies                          UserCompanyRelation[]
   ownedLeads                         Lead[]                       @relation("LeadOwner")
+  ownedOpportunities                 Opportunity[]                @relation("OpportunityOwner")
   activities                         LeadActivity[]
   emailAccounts                      EmailAccount[]
   sentEmails                         EmailMessage[]               @relation("EmailSender")
+  emailDispatchRequests              EmailDispatchRequest[]       @relation("EmailDispatchRequestOperator")
   reminders                          FollowUpReminder[]           @relation("ReminderAssignee")
   auditLogs                          AuditLog[]
   assignedConversations              Conversation[]
@@ -118,7 +169,41 @@ model User {
   updatedAssistantPermissionProfiles AssistantPermissionProfile[] @relation("AssistantPermissionProfileUpdatedBy")
   assistantTemporaryGrants           AssistantTemporaryGrant[]    @relation("AssistantTemporaryGrantOperator")
   createdAssistantTemporaryGrants    AssistantTemporaryGrant[]    @relation("AssistantTemporaryGrantCreator")
+  assistantGrantConsumptions         AssistantGrantConsumption[]  @relation("AssistantGrantConsumptionOperator")
   assistantBusinessActions           AssistantBusinessAction[]    @relation("AssistantBusinessActionOperator")
+  assistantToolExecutions            AssistantToolExecution[]     @relation("AssistantToolExecutionOperator")
+  externalActionOutbox               ExternalActionOutbox[]       @relation("ExternalActionOutboxOperator")
+  inboundReviewsResolved             EmailInboundReview[]         @relation("EmailInboundReviewResolvedBy")
+  opportunityStageChanges            OpportunityStageHistory[]    @relation("OpportunityStageHistoryChangedBy")
+  createdOpportunityContactRoles     OpportunityContactRole[]     @relation("OpportunityContactRoleCreatedBy")
+  ownedSalesSequences                SalesSequence[]
+  createdSalesSequenceEnrollments    SalesSequenceEnrollment[]    @relation("SalesSequenceEnrollmentCreator")
+  createdFactSources                 FactSource[]                  @relation("FactSourceCreator")
+  createdFactEvidence                FactEvidence[]                 @relation("FactEvidenceCreator")
+  confirmedCustomerFacts             CustomerFact[]                 @relation("CustomerFactConfirmer")
+  reviewedCustomerFactProposals      CustomerFactProposal[]          @relation("CustomerFactProposalReviewer")
+  createdProposalEvidenceLinks       ProposalEvidenceLink[]
+  createdCustomerFactEvidenceLinks   CustomerFactEvidenceLink[]
+
+  // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
+  ownedMarketingCampaigns            MarketingCampaign[]             @relation("MarketingCampaignOwner")
+  createdMarketingCampaigns          MarketingCampaign[]             @relation("MarketingCampaignCreator")
+  createdMarketingCampaignEvents     MarketingCampaignEvent[]        @relation("MarketingCampaignEventCreator")
+  createdMarketingAudienceSnapshots  MarketingAudienceSnapshot[]     @relation("MarketingAudienceSnapshotCreator")
+  createdMarketingContentVersions    MarketingContentVersion[]       @relation("MarketingContentVersionCreator")
+  createdMarketingPreflightRuns      MarketingPreflightRun[]         @relation("MarketingPreflightRunCreator")
+  grantedMarketingConsents           MarketingConsent[]              @relation("MarketingConsentGrantedBy")
+  createdMarketingSuppressions       MarketingSuppression[]          @relation("MarketingSuppressionCreator")
+  activatedMarketingKillSwitches     MarketingKillSwitch[]           @relation("MarketingKillSwitchActivator")
+  deactivatedMarketingKillSwitches   MarketingKillSwitch[]           @relation("MarketingKillSwitchDeactivator")
+
+  // wesley-ai-crm 批次3: sales-delivery 报价交付回执链 — 反向关系
+  createdQuoteRenderJobs            QuoteRenderJob[]            @relation("SalesDeliveryRenderJobCreator")
+  createdOutboundRequests           OutboundRequest[]           @relation("SalesDeliveryOutboundCreator")
+  createdDeliveryConnectionBindings DeliveryConnectionBinding[] @relation("SalesDeliveryBindingCreator")
+  createdSecretRefs                 SecretRef[]                 @relation("SalesDeliverySecretRefCreator")
+  requestedOutboundApprovals        OutboundApprovalRequest[]   @relation("SalesDeliveryApprovalRequester")
+  decidedOutboundApprovals          OutboundApprovalRequest[]   @relation("SalesDeliveryApprovalApprover")
 
   @@index([email])
   @@index([isActive])
@@ -190,6 +275,37 @@ enum AssistantActionState {
   FAILED
   UNKNOWN
   CANCELLED
+}
+
+enum AssistantToolExecutionState {
+  REQUESTED
+  PLANNING
+  AWAITING_CONFIRMATION
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum AssistantGrantConsumptionStatus {
+  RESERVED
+  CONSUMED
+  CANCELLED
+}
+
+enum ExternalActionStatus {
+  PENDING
+  EXECUTING
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+  CANCELLED
+  EXPIRED
+}
+
+enum ExternalActionChannel {
+  EMAIL
+  WHATSAPP
 }
 
 enum OwnerNotificationStatus {
@@ -362,12 +478,118 @@ model AssistantTemporaryGrant {
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
 
-  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  operator  User    @relation("AssistantTemporaryGrantOperator", fields: [operatorUserId], references: [id], onDelete: Cascade)
-  createdBy User    @relation("AssistantTemporaryGrantCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  company      Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator     User                        @relation("AssistantTemporaryGrantOperator", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  createdBy    User                        @relation("AssistantTemporaryGrantCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  consumptions AssistantGrantConsumption[]
 
   @@index([companyId, operatorUserId, capability, status, expiresAt])
   @@index([scopeDigest, status, expiresAt])
+}
+
+/// Canonical idempotency record for a bounded assistant grant. A retry with
+/// the same company/operator/idempotency key reuses this row and never spends
+/// another use. Provider failure or cancellation does not refund a use.
+model AssistantGrantConsumption {
+  id             String                          @id @default(uuid())
+  companyId      String
+  operatorUserId String
+  grantId        String
+  idempotencyKey String
+  capability     String
+  scopeDigest    String
+  status         AssistantGrantConsumptionStatus @default(RESERVED)
+  actionId       String?
+  reservedAt     DateTime                        @default(now())
+  consumedAt     DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime                        @default(now())
+  updatedAt      DateTime                        @updatedAt
+
+  company  Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User                    @relation("AssistantGrantConsumptionOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+  grant    AssistantTemporaryGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, operatorUserId, idempotencyKey])
+  @@index([grantId, status, createdAt])
+  @@index([companyId, capability, scopeDigest, createdAt])
+}
+
+/// The only durable fact for an attempted external send. Compliance checks,
+/// target snapshotting, idempotency and optional grant consumption are
+/// committed before a provider call. Provider I/O is never awaited inside the
+/// reservation transaction.
+model ExternalActionOutbox {
+  id                String                @id @default(uuid())
+  companyId         String
+  operatorUserId    String
+  actorType         String
+  operatorRole      String
+  idempotencyKey    String
+  channel           ExternalActionChannel
+  actionType        String
+  status            ExternalActionStatus  @default(PENDING)
+  targetType        String
+  targetId          String
+  targetAddressHash String
+  targetDomain      String?
+  targetSnapshot    Json
+  payloadDigest     String
+  contentSnapshot   Json
+  policySnapshot    Json
+  approvalId        String?
+  attemptCount      Int                   @default(0)
+  maxAttempts       Int                   @default(3)
+  nextAttemptAt     DateTime?
+  claimedAt         DateTime?
+  leaseExpiresAt    DateTime?
+  leaseToken        String?
+  attemptVersion    Int                   @default(0)
+  provider          String?
+  providerScope     String                @default("legacy")
+  providerReceiptId String?
+  providerReceipt   Json?
+  lastErrorCode     String?
+  lastError         String?
+  acceptedAt        DateTime?
+  completedAt       DateTime?
+  cancelledAt       DateTime?
+  expiresAt         DateTime
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User    @relation("ExternalActionOutboxOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, idempotencyKey])
+  @@unique([channel, providerScope, provider, providerReceiptId])
+  @@index([status, leaseExpiresAt, leaseToken, attemptVersion])
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@index([companyId, channel, createdAt])
+  @@index([companyId, targetAddressHash, createdAt])
+  @@index([companyId, targetDomain, createdAt])
+}
+
+/// Channel-neutral do-not-contact record. Raw target values are never stored;
+/// callers normalize the address and persist only its SHA-256 digest.
+model ExternalSuppression {
+  id                String                @id @default(uuid())
+  companyId         String
+  channel           ExternalActionChannel
+  targetAddressHash String?
+  leadId            String?
+  reason            String
+  source            String
+  isActive          Boolean               @default(true)
+  expiresAt         DateTime?
+  createdByUserId   String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, channel, targetAddressHash, isActive])
+  @@index([companyId, channel, leadId, isActive])
 }
 
 model AssistantBusinessAction {
@@ -401,6 +623,36 @@ model AssistantBusinessAction {
   @@index([companyId, operatorUserId, state, createdAt])
   @@index([companyId, capability, createdAt])
   @@index([targetType, targetId, createdAt])
+}
+
+/// Durable LAN assistant tool execution. Payloads are never stored verbatim;
+/// only a digest and a redacted parameter summary are retained.
+model AssistantToolExecution {
+  id                   String                      @id @default(uuid())
+  requestKey           String                      @unique
+  idempotencyKey       String                      @unique
+  companyId            String
+  operatorUserId       String
+  toolName             String
+  state                AssistantToolExecutionState @default(REQUESTED)
+  inputDigest          String
+  parameterSummary     Json
+  result               Json?
+  resultRef            Json?
+  errorCode            String?
+  confirmationRequired Boolean                     @default(false)
+  confirmedAt          DateTime?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User    @relation("AssistantToolExecutionOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, operatorUserId, createdAt])
+  @@index([companyId, state, createdAt])
+  @@index([companyId, toolName, createdAt])
 }
 
 enum OpenClawBindingStatus {
@@ -613,65 +865,66 @@ model UserCompanyRelation {
 
 // ========== 客户线索 ==========
 model Lead {
-  id                      String    @id @default(uuid())
-  companyId               String
-  leadName                String?
-  companyName             String?
-  companyNameSource       String?
-  companyNameConfidence   String?
-  website                 String?
-  websiteDomain           String?
-  country                 String?
-  city                    String?
-  industry                String?
-  productCategory         String?
-  businessType            String?
-  contactName             String?
-  contactTitle            String?
-  contactEmail            String?
-  contactPhone            String?
-  linkedinUrl             String?
-  facebookUrl             String?
-  instagramUrl            String?
-  twitterUrl              String?
-  pinterestUrl            String?
-  redditUrl               String?
-  youtubeUrl              String?
-  tiktokUrl               String?
-  otherSocialLinks        Json?
-  whatsapp                String?
-  emailVerificationStatus String    @default("unverified")
-  emailVerificationReason String?
-  yearEstablished         Int?
-  employeeCount           String?
-  annualRevenue           String?
-  mainProducts            String?
-  importPorts             String?
-  currentSuppliers        String?
-  hasChinaImport          Boolean?
-  estimatedOrderVolume    String?
-  sourceUrl               String?
-  sourceType              String?
-  sourceKeyword           String?
-  sourceCountry           String?
-  language                String? // 客户偏好语言 ISO 639-1 (en/ja/ko/es/fr/de/it/zh)
-  collectedAt             DateTime?
-  confidenceScore         Int?
-  leadScore               Int?
-  leadGrade               String?
-  status                  String    @default("new")
-  reviewStatus            String    @default("pending")
-  ownerUserId             String?
-  lastContactedAt         DateTime?
-  nextFollowUpAt          DateTime?
-  notes                   String?
-  isUncertain             Boolean   @default(false)
-  uncertainFields         String[]
-  mergedToId              String?
-  isMerged                Boolean   @default(false)
-  deletedAt               DateTime?
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  id                       String    @id @default(uuid())
+  companyId                String
+  leadName                 String?
+  companyName              String?
+  companyNameSource        String?
+  companyNameConfidence    String?
+  website                  String?
+  websiteDomain            String?
+  country                  String?
+  city                     String?
+  industry                 String?
+  productCategory          String?
+  businessType             String?
+  contactName              String?
+  contactTitle             String?
+  contactEmail             String?
+  contactPhone             String?
+  linkedinUrl              String?
+  facebookUrl              String?
+  instagramUrl             String?
+  twitterUrl               String?
+  pinterestUrl             String?
+  redditUrl                String?
+  youtubeUrl               String?
+  tiktokUrl                String?
+  otherSocialLinks         Json?
+  whatsapp                 String?
+  emailVerificationStatus  String    @default("unverified")
+  emailVerificationReason  String?
+  emailVerifiedAddressHash String?
+  yearEstablished          Int?
+  employeeCount            String?
+  annualRevenue            String?
+  mainProducts             String?
+  importPorts              String?
+  currentSuppliers         String?
+  hasChinaImport           Boolean?
+  estimatedOrderVolume     String?
+  sourceUrl                String?
+  sourceType               String?
+  sourceKeyword            String?
+  sourceCountry            String?
+  language                 String? // 客户偏好语言 ISO 639-1 (en/ja/ko/es/fr/de/it/zh)
+  collectedAt              DateTime?
+  confidenceScore          Int?
+  leadScore                Int?
+  leadGrade                String?
+  status                   String    @default("new")
+  reviewStatus             String    @default("pending")
+  ownerUserId              String?
+  lastContactedAt          DateTime?
+  nextFollowUpAt           DateTime?
+  notes                    String?
+  isUncertain              Boolean   @default(false)
+  uncertainFields          String[]
+  mergedToId               String?
+  isMerged                 Boolean   @default(false)
+  deletedAt                DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   company         Company              @relation(fields: [companyId], references: [id])
   owner           User?                @relation("LeadOwner", fields: [ownerUserId], references: [id])
@@ -698,8 +951,12 @@ model Lead {
   pins          LeadPin[]
 
   // Phase 7
-  quotes Quote[]
-  orders Order[]
+  quotes        Quote[]
+  orders        Order[]
+  opportunities Opportunity[]
+  salesSequenceEnrollments SalesSequenceEnrollment[]
+  customerFacts             CustomerFact[]
+  customerFactProposals     CustomerFactProposal[]
 
   // Customizer
   customizerDesigns CustomizerDesign[]
@@ -712,6 +969,17 @@ model Lead {
   identityExclusionsRight   IdentityExclusion[]      @relation("ExclusionRight")
   customerMergeAuditsSource CustomerMergeAudit[]     @relation("CustomerMergeAuditSource")
   customerMergeAuditsTarget CustomerMergeAudit[]     @relation("CustomerMergeAuditTarget")
+  inboundReviewsResolved    EmailInboundReview[]
+
+  // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
+  marketingAudienceMembers MarketingAudienceMember[]
+  marketingConsents        MarketingConsent[]
+  marketingSuppressions    MarketingSuppression[]
+  marketingAttributions    MarketingAttribution[]
+  marketingDeliveryRuns    MarketingDeliveryRun[]
+
+  // wesley-ai-crm 批次A: audience-segments 客群系统 — 反向关系
+  audienceSegmentMembers AudienceSegmentMember[]
 
   @@index([companyId, status])
   @@index([companyId, reviewStatus])
@@ -721,6 +989,357 @@ model Lead {
   @@index([companyId, leadGrade])
   @@index([companyId, createdAt])
   @@index([nextFollowUpAt])
+}
+
+enum SalesSequenceStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum SalesSequenceEnrollmentStatus {
+  ACTIVE
+  PAUSED
+  STOPPED
+  COMPLETED
+}
+
+enum SalesSequenceStepExecutionStatus {
+  DRAFT_PENDING
+  APPROVED
+  CANCELLED
+}
+
+enum SalesSequenceReceiptKind {
+  DRAFT_CREATED
+  DRAFT_APPROVED
+  DRAFT_CANCELLED
+}
+
+model SalesSequence {
+  id          String             @id @default(uuid())
+  companyId   String
+  ownerUserId String
+  name        String
+  description String?
+  status      SalesSequenceStatus @default(DRAFT)
+  version     Int                @default(1)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  company     Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  owner       User                    @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  steps       SalesSequenceStep[]
+  enrollments SalesSequenceEnrollment[]
+
+  @@unique([companyId, ownerUserId, name])
+  @@index([companyId, status, createdAt])
+  @@index([companyId, ownerUserId])
+}
+
+model SalesSequenceStep {
+  id              String   @id @default(uuid())
+  sequenceId      String
+  position        Int
+  channel         String
+  delaySeconds    Int      @default(0)
+  templateDigest  String
+  templateSnapshot Json
+  version         Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sequence   SalesSequence              @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  executions SalesSequenceStepExecution[]
+
+  @@unique([sequenceId, position])
+  @@index([sequenceId, position])
+}
+
+model SalesSequenceEnrollment {
+  id          String                         @id @default(uuid())
+  companyId   String
+  sequenceId  String
+  leadId      String
+  createdById String
+  status      SalesSequenceEnrollmentStatus @default(ACTIVE)
+  version     Int                            @default(1)
+  createdAt   DateTime                       @default(now())
+  updatedAt   DateTime                       @updatedAt
+
+  company     Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sequence    SalesSequence               @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  lead        Lead                         @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  createdBy   User                         @relation("SalesSequenceEnrollmentCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  executions  SalesSequenceStepExecution[]
+
+  @@unique([companyId, sequenceId, leadId])
+  @@index([companyId, status, createdAt])
+}
+
+model SalesSequenceStepExecution {
+  id             String                              @id @default(uuid())
+  companyId      String
+  enrollmentId   String
+  stepId         String
+  status         SalesSequenceStepExecutionStatus   @default(DRAFT_PENDING)
+  version        Int                                 @default(1)
+  idempotencyKey String
+  draftDigest    String
+  draftSnapshot  Json
+  createdAt      DateTime                            @default(now())
+  updatedAt      DateTime                            @updatedAt
+
+  company      Company                        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  enrollment   SalesSequenceEnrollment        @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  step         SalesSequenceStep              @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  receipts     SalesSequenceExecutionReceipt[]
+  draftOutbox  SalesSequenceDraftOutbox?
+
+  @@unique([companyId, idempotencyKey])
+  @@unique([enrollmentId, stepId])
+  @@index([companyId, status, createdAt])
+}
+
+model SalesSequenceExecutionReceipt {
+  id             String                  @id @default(uuid())
+  companyId      String
+  executionId    String
+  kind           SalesSequenceReceiptKind
+  operationDigest String
+  receipt        Json
+  createdAt      DateTime                @default(now())
+
+  company   Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  execution SalesSequenceStepExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, operationDigest])
+  @@index([executionId, createdAt])
+}
+
+model SalesSequenceDraftOutbox {
+  id             String   @id @default(uuid())
+  companyId      String
+  executionId    String   @unique
+  idempotencyKey String
+  channel        String
+  targetRef      String
+  targetDigest   String
+  payloadDigest  String
+  contentSnapshot Json
+  status         String   @default("DRAFT_ONLY")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company   Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  execution SalesSequenceStepExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, status, createdAt])
+}
+
+enum FactEvidenceKind {
+  SOURCE_EXCERPT
+  MANUAL_ATTESTATION
+}
+
+enum FactEvidenceRelation {
+  SUPPORTS
+  CONTRADICTS
+}
+
+enum CustomerFactProposalStatus {
+  PROPOSED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum CustomerFactStatus {
+  CONFIRMED
+  CONFLICT
+  EXPIRED
+  SUPERSEDED
+  INVALIDATED
+}
+
+enum FactCommandReceiptKind {
+  PROPOSAL_CREATED
+  PROPOSAL_ACCEPTED
+  PROPOSAL_REJECTED
+}
+
+model FactSource {
+  id                 String   @id @default(uuid())
+  companyId          String
+  kind               String
+  canonicalUri       String?
+  title              String?
+  publisher          String?
+  observedAt         DateTime
+  retrievedAt        DateTime
+  contentHash        String?
+  trustLevel         String?
+  attestedById       String?
+  attestedAt         DateTime?
+  attestationReasonHash String?
+  inputDigest        String?
+  metadata           Json?
+  createdById        String
+  createdAt          DateTime @default(now())
+
+  company    Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy  User          @relation("FactSourceCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  evidence   FactEvidence[]
+
+  @@index([companyId, kind, createdAt])
+}
+
+model FactEvidence {
+  id                 String             @id @default(uuid())
+  companyId          String
+  sourceId           String
+  evidenceKind       FactEvidenceKind
+  excerpt            String
+  excerptHash        String
+  locator            String
+  capturedAt         DateTime
+  publishedAt        DateTime?
+  evidenceConfidence Int                @default(50)
+  createdById        String
+  createdAt          DateTime           @default(now())
+
+  company       Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  source        FactSource                  @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  createdBy     User                        @relation("FactEvidenceCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  proposalLinks ProposalEvidenceLink[]
+  factLinks     CustomerFactEvidenceLink[]
+
+  @@unique([companyId, excerptHash])
+  @@index([companyId, sourceId, capturedAt])
+}
+
+model CustomerFactProposal {
+  id                 String                       @id @default(uuid())
+  companyId          String
+  leadId             String
+  factKey            String
+  valueType          String
+  valueJson          Json
+  status             CustomerFactProposalStatus  @default(PROPOSED)
+  origin             String
+  confidenceScore    Int                          @default(50)
+  generatedAt        DateTime
+  expiresAt          DateTime?
+  reviewedById       String?
+  reviewedAt         DateTime?
+  reviewReasonHash   String?
+  baseFactId         String?
+  version            Int                          @default(1)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  company       Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead          Lead                       @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  reviewedBy    User?                      @relation("CustomerFactProposalReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  baseFact      CustomerFact?              @relation("CustomerFactProposalBase", fields: [baseFactId], references: [id], onDelete: Restrict)
+  evidenceLinks ProposalEvidenceLink[]
+  factLinks     CustomerFactEvidenceLink[]
+  receipts      FactCommandReceipt[]
+
+  @@index([companyId, leadId, factKey, status])
+  @@index([companyId, status, createdAt])
+}
+
+model CustomerFact {
+  id                 String             @id @default(uuid())
+  companyId          String
+  leadId             String
+  factKey            String
+  valueType          String
+  valueJson          Json
+  status             CustomerFactStatus
+  origin             String
+  confidenceScore    Int                @default(50)
+  observedAt         DateTime
+  validFrom          DateTime?
+  validUntil         DateTime?
+  staleAt            DateTime?
+  conflictGroupKey   String?
+  confirmedById      String?
+  confirmedAt        DateTime?
+  supersedesFactId   String?
+  version            Int                @default(1)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  company       Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead          Lead                       @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  confirmedBy   User?                      @relation("CustomerFactConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
+  supersedes    CustomerFact?              @relation("CustomerFactSupersede", fields: [supersedesFactId], references: [id], onDelete: Restrict)
+  supersededBy  CustomerFact[]              @relation("CustomerFactSupersede")
+  baseProposals CustomerFactProposal[]      @relation("CustomerFactProposalBase")
+  evidenceLinks CustomerFactEvidenceLink[]
+
+  @@index([companyId, leadId, factKey, status])
+  @@index([companyId, status, validUntil])
+}
+
+model ProposalEvidenceLink {
+  id         String             @id @default(uuid())
+  companyId  String
+  proposalId String
+  evidenceId String
+  relation   FactEvidenceRelation
+  createdById String
+  createdAt  DateTime           @default(now())
+
+  company  Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  proposal CustomerFactProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  evidence FactEvidence          @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+  createdBy User                 @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, proposalId, evidenceId, relation])
+  @@index([companyId, evidenceId])
+}
+
+model CustomerFactEvidenceLink {
+  id         String             @id @default(uuid())
+  companyId  String
+  factId     String
+  proposalId String?
+  evidenceId String
+  relation   FactEvidenceRelation
+  createdById String
+  createdAt  DateTime           @default(now())
+
+  company  Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fact     CustomerFact         @relation(fields: [factId], references: [id], onDelete: Cascade)
+  proposal CustomerFactProposal? @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+  evidence FactEvidence          @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+  createdBy User                 @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, factId, evidenceId, relation])
+  @@index([companyId, evidenceId])
+}
+
+model FactCommandReceipt {
+  id              String                 @id @default(uuid())
+  companyId       String
+  proposalId      String?
+  requestId       String
+  operationDigest String
+  kind            FactCommandReceiptKind
+  receipt         Json
+  createdAt       DateTime               @default(now())
+
+  company  Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  proposal CustomerFactProposal? @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, requestId])
+  @@unique([companyId, operationDigest])
+  @@index([companyId, createdAt])
 }
 
 // ========== 标签系统 ==========
@@ -818,10 +1437,101 @@ model Contact {
 
   // TASK-102A: 统一客户身份 — 反向关系
   externalIdentities ExternalIdentity[]
+  opportunityRoles   OpportunityContactRole[]
 
   @@index([companyId])
   @@index([leadId])
   @@index([email])
+}
+
+// ========== CRM-02: 正式商机基础模型 ==========
+// Opportunity.stage is the authoritative transaction stage. Lead.status remains
+// a legacy/customer-lifecycle compatibility field until the later consumer split.
+model Opportunity {
+  id                String    @id @default(uuid())
+  companyId         String
+  leadId            String
+  ownerUserId       String?
+  name              String
+  description       String?   @db.Text
+  stage             String    @default("new")
+  amount            Decimal?  @db.Decimal(14, 2)
+  // ISO 4217-style uppercase ASCII currency code; DB CHECK is in the migration.
+  currency          String    @default("USD")
+  probability       Int       @default(10)
+  expectedCloseDate DateTime?
+  nextStep          String?
+  wonAt             DateTime?
+  lostAt            DateTime?
+  lostReason        String?
+  // Null is allowed; uniqueness is scoped to companyId in the DB.
+  legacySeedKey     String?
+  version           Int       @default(1)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead         Lead                      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  owner        User?                     @relation("OpportunityOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  stageHistory OpportunityStageHistory[]
+  contactRoles OpportunityContactRole[]
+  quotes       Quote[]
+  orders       Order[]
+
+  @@unique([companyId, legacySeedKey])
+  @@index([companyId, stage, expectedCloseDate])
+  @@index([companyId, leadId, createdAt])
+  @@index([companyId, ownerUserId, stage])
+  @@index([leadId, stage])
+}
+
+// Append-only snapshots of Opportunity stage changes. The initial row has a
+// null fromStage and source=LEGACY_MIGRATION or SYSTEM when applicable.
+model OpportunityStageHistory {
+  id                        String    @id @default(uuid())
+  companyId                 String
+  opportunityId             String
+  fromStage                 String?
+  toStage                   String
+  changedBy                 String?
+  changedAt                 DateTime  @default(now())
+  note                      String?   @db.Text
+  amountSnapshot            Decimal?  @db.Decimal(14, 2)
+  probabilitySnapshot       Int?
+  expectedCloseDateSnapshot DateTime?
+  source                    String    @default("USER")
+
+  company       Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  opportunity   Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  changedByUser User?       @relation("OpportunityStageHistoryChangedBy", fields: [changedBy], references: [id], onDelete: SetNull)
+
+  @@index([opportunityId, changedAt])
+  @@index([companyId, changedAt])
+}
+
+// One contact can have one role assignment per Opportunity. Role replacement
+// is an update to roleType, not a second row for the same pair.
+model OpportunityContactRole {
+  id            String   @id @default(uuid())
+  companyId     String
+  opportunityId String
+  contactId     String
+  roleType      String
+  // PostgreSQL migration enforces at most one true primary per opportunity
+  // with a partial unique index; 02B must maintain it transactionally.
+  isPrimary     Boolean  @default(false)
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  company       Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  opportunity   Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  contact       Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdByUser User?       @relation("OpportunityContactRoleCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@unique([opportunityId, contactId])
+  @@index([companyId, contactId])
+  @@index([companyId, opportunityId, roleType])
 }
 
 // ========== 客户来源记录 ==========
@@ -924,35 +1634,57 @@ model LeadActivity {
 }
 
 // ========== 邮件账号 ==========
+
+/// 邮箱账户用途分级：CORE 核心商务 / MARKETING 营销 / SUPPORT 客服
+enum AccountRole {
+  CORE
+  MARKETING
+  SUPPORT
+}
+
 model EmailAccount {
-  id                     String    @id @default(uuid())
-  companyId              String
-  userId                 String?
-  senderName             String
-  senderEmail            String
-  smtpHost               String
-  smtpPort               Int
-  smtpSecure             Boolean   @default(true)
-  smtpUsername           String
-  replyToEmail           String?
-  smtpPasswordEncrypted  String
-  dailySendLimit         Int       @default(50)
-  hourlySendLimit        Int       @default(10)
-  sendIntervalSeconds    Int       @default(60)
-  warmupEnabled          Boolean   @default(false)
-  warmupDay              Int?
-  dailySentCount         Int       @default(0)
-  hourlySentCount        Int       @default(0)
-  lastSentAt             DateTime?
-  status                 String    @default("active")
-  failureCount           Int       @default(0)
-  maxFailuresBeforePause Int       @default(10)
-  lastTestedAt           DateTime?
-  spfConfigured          Boolean   @default(false)
-  dkimConfigured         Boolean   @default(false)
-  dmarcConfigured        Boolean   @default(false)
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  id                         String      @id @default(uuid())
+  companyId                  String
+  userId                     String?
+  senderName                 String
+  senderEmail                String
+  accountRole                AccountRole @default(CORE) // 角色：CORE | MARKETING | SUPPORT
+  tags                       String[]    @default([])   // 自由标签，如 ["主域名","备用域1"]
+  smtpHost                   String
+  smtpPort                   Int
+  smtpSecure                 Boolean   @default(true)
+  smtpUsername               String
+  replyToEmail               String?
+  smtpPasswordEncrypted      String
+  imapHost                   String?
+  imapPort                   Int?
+  imapSecure                 Boolean?
+  imapUsername               String?
+  imapPasswordEncrypted      String?
+  inboundEnabled             Boolean   @default(false)
+  inboundPollIntervalSeconds Int       @default(300)
+  inboundLastSyncAt          DateTime?
+  inboundLastSyncStatus      String?
+  inboundLastSyncError       String?
+  inboundUidValidity         BigInt?
+  inboundUidCursor           BigInt?
+  dailySendLimit             Int       @default(50)
+  hourlySendLimit            Int       @default(10)
+  sendIntervalSeconds        Int       @default(60)
+  warmupEnabled              Boolean   @default(false)
+  warmupDay                  Int?
+  dailySentCount             Int       @default(0)
+  hourlySentCount            Int       @default(0)
+  lastSentAt                 DateTime?
+  status                     String    @default("active")
+  failureCount               Int       @default(0)
+  maxFailuresBeforePause     Int       @default(10)
+  lastTestedAt               DateTime?
+  spfConfigured              Boolean   @default(false)
+  dkimConfigured             Boolean   @default(false)
+  dmarcConfigured            Boolean   @default(false)
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   company       Company        @relation(fields: [companyId], references: [id])
   user          User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -1098,6 +1830,28 @@ model EmailMessage {
   @@index([messageId])
   @@index([senderUserId])
   @@index([companyId, createdAt])
+}
+
+/// Durable request-level idempotency and queue-repair ledger for the email
+/// send-single and send-batch HTTP boundaries. Provider delivery remains
+/// authoritative in ExternalActionOutbox, one row per EmailMessage.
+model EmailDispatchRequest {
+  id             String   @id @default(uuid())
+  companyId      String
+  operatorUserId String
+  kind           String
+  idempotencyKey String
+  payloadDigest  String
+  status         String   @default("RESERVED")
+  result         Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  operator User    @relation("EmailDispatchRequestOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, operatorUserId, status, createdAt])
 }
 
 // ========== 邮件打开事件 ==========
@@ -1471,15 +2225,40 @@ model Product {
 
 // ========== Session 管理 ==========
 model RefreshToken {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique
+  familyId     String
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  revokedAt    DateTime?
+  replacedById String?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([familyId, revokedAt])
+  @@index([expiresAt])
+}
+
+/// Durable singleton written before the first administrator is created.
+/// The setup secret itself is never persisted.
+model DeploymentInitialization {
+  id                  String   @id
+  companyId           String
+  initializedByUserId String
+  initializedAt       DateTime @default(now())
+}
+
+/// Replay boundary for signed public ingress such as website WhatsApp clicks.
+model PublicRequestNonce {
   id        String   @id @default(uuid())
-  userId    String
-  token     String   @unique
+  sourceKey String
+  nonce     String
   expiresAt DateTime
-  isRevoked Boolean  @default(false)
   createdAt DateTime @default(now())
 
-  @@index([token])
-  @@index([userId])
+  @@unique([sourceKey, nonce])
+  @@index([expiresAt])
 }
 
 // ========== 客户置顶 ==========
@@ -1527,6 +2306,13 @@ model ContactPoint {
 
   // TASK-102A: 统一客户身份 — 反向关系
   externalIdentities ExternalIdentity[]
+
+  // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
+  marketingAudienceMembers MarketingAudienceMember[]
+  marketingConsents        MarketingConsent[]
+  marketingSuppressions    MarketingSuppression[]
+  marketingAttributions    MarketingAttribution[]
+  marketingDeliveryRuns    MarketingDeliveryRun[]
 
   @@unique([companyId, type, normalizedValue])
   @@index([companyId, type])
@@ -1593,14 +2379,50 @@ model CommunicationMessage {
   readAt            DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  htmlContent       String?   @db.Text
+  ccAddresses       Json?
+  rawMessageId      String?
+  sourceAccountId   String?
+  imapUid           BigInt?
+  imapUidValidity   BigInt?
+  isArchived        Boolean   @default(false) // R111 批次B：邮件中心归档标记
+  isStarred         Boolean   @default(false) // R111 批次B：邮件中心星标标记
+  deletedAt         DateTime? // R111 批次B：邮件中心软删除
 
-  conversation Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  aiArtifacts  AiArtifact[]
-  activities   LeadActivity[]
+  conversation  Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  aiArtifacts   AiArtifact[]
+  activities    LeadActivity[]
+  inboundReview EmailInboundReview?
 
   @@index([conversationId, createdAt])
   @@index([externalMessageId])
+  @@index([sourceAccountId, imapUidValidity, imapUid])
   @@index([direction])
+  // R111 批次B：companyId 位于 Conversation，收件箱/账号过滤等价索引落在消息自身列上
+  @@index([direction, isArchived])
+  @@index([isStarred])
+}
+
+model EmailInboundReview {
+  id                     String    @id @default(uuid())
+  companyId              String
+  communicationMessageId String    @unique
+  fromEmail              String
+  reason                 String
+  candidateLeadIds       Json
+  status                 String    @default("pending")
+  resolvedLeadId         String?
+  resolvedById           String?
+  resolvedAt             DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  company              Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  communicationMessage CommunicationMessage @relation(fields: [communicationMessageId], references: [id], onDelete: Cascade)
+  resolvedLead         Lead?                @relation(fields: [resolvedLeadId], references: [id], onDelete: SetNull)
+  resolvedBy           User?                @relation("EmailInboundReviewResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status, createdAt])
 }
 
 // AI 辅助产物 — 翻译/摘要/回复建议/报价字段提取
@@ -1662,6 +2484,11 @@ model WhatsAppSession {
   disconnectedAt DateTime?
   lastSeenAt     DateTime?
   authStatePath  String? // Baileys auth state 目录路径
+  // R111 批次C：每账号营销风控参数（默认保守，见任务包）
+  sendLimitPerHour    Int       @default(60) // 每小时发送上限
+  sendLimitDaily      Int       @default(300) // 每天发送上限
+  sendIntervalSeconds Int       @default(8) // 同账号发送间隔（秒）
+  lastSentAt          DateTime? // 最近一次发送时间（执行器限速基准）
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -1734,6 +2561,7 @@ model Quote {
   type           String  @default("quote") // quote / pi / contract / sample
   status         String  @default("draft") // draft / pending / approved / sent / accepted / rejected / expired
   leadId         String?
+  opportunityId  String?
   conversationId String?
   assignedUserId String?
 
@@ -1742,6 +2570,7 @@ model Quote {
   paymentTerms String?
   deliveryTime String?
   sampleFee    Decimal? @db.Decimal(10, 2)
+  moldFee      Decimal? @db.Decimal(10, 2)
   discount     Decimal  @default(0) @db.Decimal(10, 2)
   taxRate      Decimal? @db.Decimal(5, 2)
 
@@ -1762,11 +2591,18 @@ model Quote {
 
   company             Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   lead                Lead?               @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  opportunity         Opportunity?        @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
   lineItems           QuoteLineItem[]
   customizerInquiries CustomizerInquiry[]
 
+  // wesley-ai-crm 批次3: sales-delivery 报价交付回执链 — 反向关系
+  renderJobs         QuoteRenderJob[]
+  outboundRequests   OutboundRequest[]
+  outboundApprovals  OutboundApprovalRequest[]
+
   @@index([companyId])
   @@index([leadId])
+  @@index([opportunityId])
   @@index([status])
   @@index([type])
   @@index([referenceNo])
@@ -1868,6 +2704,7 @@ model Order {
   companyId      String
   orderNo        String  @unique
   leadId         String?
+  opportunityId  String?
   quoteId        String?
   assignedUserId String?
 
@@ -1887,11 +2724,13 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  lead    Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead        Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
 
   @@index([companyId])
   @@index([leadId])
+  @@index([opportunityId])
   @@index([stage])
   @@index([quoteId])
 }
@@ -2110,4 +2949,710 @@ model CustomerMergeAudit {
   Company       Company   @relation(fields: [companyId], references: [id])
 
   @@index([companyId, targetLeadId, createdAt])
+}
+
+// ============================================================================
+// wesley-ai-crm 批次2：marketing-campaigns 营销活动（获客自动化补缺）
+// 模块：backend/src/modules/marketing-campaigns/
+// 说明：活动排程 / 投放状态机 / 客户偏好退订管理 / 合规 kill-switch
+// ============================================================================
+
+enum MarketingCampaignStatus {
+  DRAFT
+  PLANNING
+  IN_REVIEW
+  APPROVED_PLAN
+  PAUSED
+  CANCELLED
+  ARCHIVED
+}
+
+enum MarketingCampaignEventKind {
+  CAMPAIGN_CREATED
+  CAMPAIGN_UPDATED
+  STATUS_CHANGED
+  CHANNEL_PLAN_ADDED
+  CHANNEL_PLAN_UPDATED
+  CHANNEL_PLAN_REMOVED
+  AUDIENCE_SNAPSHOTTED
+  CONTENT_VERSION_CREATED
+  CONTENT_VERSION_ACTIVATED
+  PREFLIGHT_RUN
+  PREFLIGHT_ATTEMPT
+  CAMPAIGN_APPROVED
+  CAMPAIGN_PAUSED
+  CAMPAIGN_CANCELLED
+  CAMPAIGN_ARCHIVED
+  CONSENT_UPDATED
+  SUPPRESSION_ADDED
+  SUPPRESSION_REMOVED
+  KILL_SWITCH_ACTIVATED
+  KILL_SWITCH_DEACTIVATED
+  ATTRIBUTION_RECORDED
+  DELIVERY_RUN_CREATED
+  DELIVERY_RUN_STATUS_CHANGED
+}
+
+enum MarketingConsentStatus {
+  GRANTED
+  DENIED
+  UNKNOWN
+}
+
+enum MarketingSuppressionScope {
+  LEAD
+  CONTACT_POINT
+}
+
+enum MarketingKillSwitchScope {
+  GLOBAL
+  CHANNEL_EMAIL
+  CHANNEL_WHATSAPP
+}
+
+enum MarketingPreflightStatus {
+  PENDING
+  PASSED
+  FAILED
+}
+
+enum MarketingDeliveryRunStatus {
+  PENDING
+  WAITING
+  AWAITING_APPROVAL
+  READY
+  CLAIMED
+  UNKNOWN
+  SUCCEEDED
+  FAILED
+  BLOCKED
+  DEAD_LETTER
+}
+
+// 营销活动主表（活动排程、投放状态机、审计事件）
+model MarketingCampaign {
+  id            String                  @id @default(uuid())
+  companyId     String
+  ownerUserId   String
+  name          String
+  description   String?                 @db.Text
+  channel       String? // 固定渠道：email | whatsapp（null=未定，创建时可留空，snapshot 前必填）
+  status        MarketingCampaignStatus @default(DRAFT)
+  revision      Int                     @default(1)
+  // 排程意图：materializeMarketingScheduleIntent 的输入（窗口 + 频控）
+  scheduleIntent Json?
+  windowStart   DateTime?
+  windowEnd     DateTime?
+  createdById   String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  company          Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  owner            User                       @relation("MarketingCampaignOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  createdBy        User?                      @relation("MarketingCampaignCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  events           MarketingCampaignEvent[]
+  channelPlans     MarketingChannelPlan[]
+  audienceSnapshot MarketingAudienceSnapshot?
+  contentVersions  MarketingContentVersion[]
+  preflightRuns    MarketingPreflightRun[]
+  attributions     MarketingAttribution[]
+  deliveryRuns     MarketingDeliveryRun[]
+  segments         MarketingCampaignSegment[]
+
+  @@unique([companyId, name])
+  @@index([companyId, status, createdAt])
+  @@index([companyId, ownerUserId])
+}
+
+// 活动 ↔ 客群关联（R111 批次B：客群驱动营销，一个活动可关联多个客群）
+model MarketingCampaignSegment {
+  id         String   @id @default(cuid())
+  companyId  String
+  campaignId String
+  segmentId  String
+  createdAt  DateTime @default(now())
+
+  campaign MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, segmentId])
+  @@index([segmentId])
+}
+
+// 活动审计事件（revision + payloadHash 证据链）
+model MarketingCampaignEvent {
+  id          String                     @id @default(uuid())
+  companyId   String
+  campaignId  String
+  revision    Int                        @default(1)
+  kind        MarketingCampaignEventKind
+  payload     Json?
+  payloadHash String
+  createdById String?
+  createdAt   DateTime                   @default(now())
+
+  campaign  MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?             @relation("MarketingCampaignEventCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, createdAt])
+  @@index([companyId, createdAt])
+  @@index([payloadHash])
+}
+
+// 渠道投放计划（channel + 窗口 + 频控 maxPerContact/windowSeconds）
+model MarketingChannelPlan {
+  id            String   @id @default(uuid())
+  companyId     String
+  campaignId    String
+  channel       String // email / whatsapp / ...
+  windowSeconds Int      @default(0)
+  maxPerContact Int      @default(1)
+  scheduleJson  Json?
+  enabled       Boolean  @default(true)
+  status        String   @default("active") // active / paused / archived
+  version       Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  campaign     MarketingCampaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  company      Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  deliveryRuns MarketingDeliveryRun[]
+  attributions MarketingAttribution[]
+
+  @@unique([campaignId, channel])
+  @@index([companyId, campaignId])
+}
+
+// 受众快照（一次活动一个快照，成员落 MarketingAudienceMember）
+model MarketingAudienceSnapshot {
+  id           String   @id @default(uuid())
+  companyId    String
+  campaignId   String   @unique
+  criteriaJson Json?
+  memberCount  Int      @default(0)
+  createdById  String?
+  createdAt    DateTime @default(now())
+
+  campaign  MarketingCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  company   Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?                   @relation("MarketingAudienceSnapshotCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  members   MarketingAudienceMember[]
+
+  @@index([companyId, createdAt])
+}
+
+// 受众成员（contactRef = 归一化触点值，如 email/phone）
+model MarketingAudienceMember {
+  id             String   @id @default(uuid())
+  companyId      String
+  snapshotId     String
+  leadId         String?
+  contactPointId String?
+  contactRef     String // 归一化触点值
+  channel        String
+  status         String   @default("eligible") // eligible / suppressed / skipped
+  createdAt      DateTime @default(now())
+
+  snapshot     MarketingAudienceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead         Lead?                     @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contactPoint ContactPoint?             @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+  deliveryRuns MarketingDeliveryRun[]
+
+  @@unique([snapshotId, contactRef, channel])
+  @@index([companyId, channel])
+  @@index([snapshotId])
+}
+
+// 内容版本（digest 证据，isActive 当前投放版本）
+model MarketingContentVersion {
+  id          String   @id @default(uuid())
+  companyId   String
+  campaignId  String
+  version     Int      @default(1)
+  title       String?
+  subject     String?
+  body        String   @db.Text
+  channel     String?
+  digest      String
+  isActive    Boolean  @default(false)
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  campaign  MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?             @relation("MarketingContentVersionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, version])
+  @@index([companyId, campaignId])
+}
+
+// 投放前审计运行（十道闸逐项落 MarketingPreflightAttempt）
+model MarketingPreflightRun {
+  id          String                  @id @default(uuid())
+  companyId   String
+  campaignId  String
+  status      MarketingPreflightStatus @default(PENDING)
+  summary     Json?
+  startedAt   DateTime                @default(now())
+  finishedAt  DateTime?
+  createdById String?
+  createdAt   DateTime                @default(now())
+
+  campaign  MarketingCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  company   Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?                    @relation("MarketingPreflightRunCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  attempts  MarketingPreflightAttempt[]
+
+  @@index([companyId, campaignId, createdAt])
+}
+
+// 十道闸逐项结果
+model MarketingPreflightAttempt {
+  id             String   @id @default(uuid())
+  companyId      String
+  preflightRunId String
+  gate           String // migration / executionEnabled / nodeWhitelist / accountReady / consent / suppression / killSwitch / approval / frequency / window
+  passed         Boolean
+  detail         Json?
+  createdAt      DateTime @default(now())
+
+  preflightRun MarketingPreflightRun @relation(fields: [preflightRunId], references: [id], onDelete: Cascade)
+  company      Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([preflightRunId])
+  @@index([companyId, gate])
+}
+
+// 客户偏好/同意（按 ContactPoint + channel + 有效期）
+model MarketingConsent {
+  id             String                 @id @default(uuid())
+  companyId      String
+  leadId         String?
+  contactPointId String?
+  contactRef     String // 归一化触点值
+  channel        String // email / whatsapp / ...
+  status         MarketingConsentStatus @default(UNKNOWN)
+  source         String? // import / form / unsubscribe / manual / campaign
+  expiresAt      DateTime?
+  grantedById    String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contactPoint ContactPoint? @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+  grantedBy    User?         @relation("MarketingConsentGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, channel, contactRef])
+  @@index([companyId, channel, status])
+  @@index([companyId, leadId])
+}
+
+// 退订/抑制（Lead 级或 ContactPoint 级）
+model MarketingSuppression {
+  id             String                   @id @default(uuid())
+  companyId      String
+  scope          MarketingSuppressionScope
+  leadId         String?
+  contactPointId String?
+  contactRef     String?
+  channel        String?
+  reason         String?
+  source         String?
+  active         Boolean                  @default(true)
+  expiresAt      DateTime?
+  createdById    String?
+  createdAt      DateTime                 @default(now())
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contactPoint ContactPoint? @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+  createdBy    User?         @relation("MarketingSuppressionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, scope, contactRef, channel])
+  @@index([companyId, active, channel])
+  @@index([companyId, leadId])
+}
+
+// 合规 kill-switch（GLOBAL / CHANNEL:EMAIL / CHANNEL:WHATSAPP）
+model MarketingKillSwitch {
+  id              String                  @id @default(uuid())
+  companyId       String
+  scope           MarketingKillSwitchScope
+  channel         String?
+  reason          String?
+  active          Boolean                 @default(true)
+  activatedById   String?
+  activatedAt     DateTime                @default(now())
+  deactivatedById String?
+  deactivatedAt   DateTime?
+  createdAt       DateTime                @default(now())
+
+  company       Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  activatedBy   User?   @relation("MarketingKillSwitchActivator", fields: [activatedById], references: [id], onDelete: SetNull)
+  deactivatedBy User?   @relation("MarketingKillSwitchDeactivator", fields: [deactivatedById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, scope, channel])
+  @@index([companyId, active])
+}
+
+// 归因（活动/渠道/触点 → 转化事件）
+model MarketingAttribution {
+  id             String   @id @default(uuid())
+  companyId      String
+  campaignId     String
+  channelPlanId  String?
+  leadId         String?
+  contactPointId String?
+  contactRef     String?
+  channel        String
+  source         String? // form_submission / reply / whatsapp_inbound / link_click
+  meta           Json?
+  attributedAt   DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  campaign     MarketingCampaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channelPlan  MarketingChannelPlan? @relation(fields: [channelPlanId], references: [id], onDelete: SetNull)
+  company      Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lead         Lead?                 @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contactPoint ContactPoint?         @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, campaignId, attributedAt])
+  @@index([companyId, leadId])
+}
+
+// 投放运行（DeliveryRun 状态机：PENDING→WAITING/AWAITING_APPROVAL/READY/CLAIMED/UNKNOWN→SUCCEEDED/FAILED/BLOCKED/DEAD_LETTER）
+model MarketingDeliveryRun {
+  id               String                     @id @default(uuid())
+  companyId        String
+  campaignId       String
+  channelPlanId    String?
+  audienceMemberId String?
+  leadId           String?
+  contactPointId   String?
+  contactRef       String
+  channel          String
+  status           MarketingDeliveryRunStatus @default(PENDING)
+  attemptCount     Int                        @default(0)
+  lastError        String?
+  // R111 批次C：进度回写（执行器按成员循环发送时的批次进度；scheduledFor/claimedAt/executedAt/lastError 已覆盖排程/启动/完成/失败原因）
+  processedCount   Int                        @default(0)
+  totalCount       Int                        @default(0)
+  scheduledFor     DateTime?
+  claimedAt        DateTime?
+  executedAt       DateTime?
+  payloadJson      Json?
+  payloadHash      String?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  company        Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  campaign       MarketingCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channelPlan    MarketingChannelPlan?    @relation(fields: [channelPlanId], references: [id], onDelete: SetNull)
+  audienceMember MarketingAudienceMember? @relation(fields: [audienceMemberId], references: [id], onDelete: SetNull)
+  lead           Lead?                    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contactPoint   ContactPoint?            @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status, scheduledFor])
+  @@index([companyId, campaignId, status])
+  @@index([companyId, contactRef, channel])
+}
+
+// ========== wesley-ai-crm 批次3：sales-delivery 报价交付回执链 ==========
+
+enum SalesDeliveryRenderJobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  DEAD_LETTER
+}
+
+enum SalesDeliveryChannel {
+  EMAIL
+  WHATSAPP
+  META
+}
+
+enum SalesDeliveryOutboundStatus {
+  DISPATCHING
+  SENT
+  UNKNOWN
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum SalesDeliveryReceiptOutcome {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  REJECTED
+  DEFERRED
+  UNKNOWN
+}
+
+enum SalesDeliveryApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// 报价渲染任务：quote 内容快照哈希 → PDF 渲染（复用 quotes 模块 htmlToPdf）
+model QuoteRenderJob {
+  id             String                       @id @default(uuid())
+  companyId      String
+  quoteId        String
+  quoteVersion   Int                          @default(1)
+  quoteHash      String
+  status         SalesDeliveryRenderJobStatus @default(QUEUED)
+  attempt        Int                          @default(0)
+  maxAttempts    Int                          @default(3)
+  leaseId        String?
+  leaseExpiresAt DateTime?
+  assetPath      String?
+  assetUrl       String?
+  mimeType       String?                      @default("application/pdf")
+  error          String?
+  nextRetryAt    DateTime?
+  completedAt    DateTime?
+  createdById    String?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+
+  company          Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  quote            Quote               @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  createdBy        User?               @relation("SalesDeliveryRenderJobCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  outboundRequests OutboundRequest[]
+
+  @@unique([quoteId, quoteVersion])
+  @@index([companyId, status])
+  @@index([status, leaseExpiresAt])
+}
+
+// 外发请求：报价交付状态机 DISPATCHING → SENT/UNKNOWN → SUCCEEDED/FAILED
+model OutboundRequest {
+  id                  String                      @id @default(uuid())
+  companyId           String
+  quoteId             String
+  renderJobId         String?
+  channel             SalesDeliveryChannel
+  target              String
+  status              SalesDeliveryOutboundStatus @default(DISPATCHING)
+  subject             String?
+  body                String?
+  revision            Int                         @default(1)
+  attemptCount        Int                         @default(0)
+  maxAttempts         Int                         @default(3)
+  nextRetryAt         DateTime?
+  providerMessageId   String?
+  connectionBindingId String?
+  payloadHash         String?
+  lastError           String?
+  sentAt              DateTime?
+  succeededAt         DateTime?
+  failedAt            DateTime?
+  cancelledAt         DateTime?
+  createdById         String?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+
+  company           Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  quote             Quote                      @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  renderJob         QuoteRenderJob?            @relation(fields: [renderJobId], references: [id], onDelete: SetNull)
+  connectionBinding DeliveryConnectionBinding? @relation(fields: [connectionBindingId], references: [id], onDelete: SetNull)
+  createdBy         User?                      @relation("SalesDeliveryOutboundCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  receipts          OutboundProviderReceipt[]
+  approvals         OutboundApprovalRequest[]
+
+  @@index([companyId, status, nextRetryAt])
+  @@index([companyId, quoteId])
+  @@index([providerMessageId])
+  @@index([companyId, target, channel])
+}
+
+// 供应商回执：receiptKey 幂等，驱动 OutboundRequest 状态终结
+model OutboundProviderReceipt {
+  id                String                     @id @default(uuid())
+  companyId         String
+  outboundRequestId String?
+  provider          SalesDeliveryChannel
+  receiptKey        String
+  outcome           SalesDeliveryReceiptOutcome @default(UNKNOWN)
+  raw               Json?
+  processed         Boolean                    @default(false)
+  processedAt       DateTime?
+  createdAt         DateTime                   @default(now())
+
+  company         Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  outboundRequest OutboundRequest? @relation(fields: [outboundRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, receiptKey])
+  @@index([outboundRequestId, createdAt])
+}
+
+// 渠道连接绑定：provider → 我方连接（emailAccount / whatsapp session / meta）
+model DeliveryConnectionBinding {
+  id           String               @id @default(uuid())
+  companyId    String
+  provider     SalesDeliveryChannel
+  connectionId String
+  label        String?
+  active       Boolean              @default(true)
+  createdById  String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  company          Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy        User?               @relation("SalesDeliveryBindingCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  outboundRequests OutboundRequest[]
+
+  @@unique([companyId, provider, connectionId])
+  @@index([companyId, provider, active])
+}
+
+// 外部密钥引用：只存 env:// URI，不落明文
+model SecretRef {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  uri         String // env://SMTP_PASSWORD
+  description String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation("SalesDeliverySecretRefCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, name])
+}
+
+// Meta 模板目录快照
+model MetaTemplateSnapshot {
+  id             String   @id @default(uuid())
+  companyId      String
+  metaTemplateId String
+  name           String
+  locale         String   @default("en_US")
+  body           String?  @db.Text
+  digest         String
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, metaTemplateId, locale])
+  @@index([companyId, isActive])
+}
+
+// 交付 worker 心跳
+model SalesDeliveryWorkerHeartbeat {
+  id              String   @id @default(uuid())
+  companyId       String?
+  workerId        String
+  nodeId          String?
+  status          String   @default("alive") // alive / draining / dead
+  lastHeartbeatAt DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([workerId])
+  @@index([companyId])
+  @@index([status])
+}
+
+// 人工审批：禁止自我审批（创建者不能审批自己的）
+model OutboundApprovalRequest {
+  id                String                      @id @default(uuid())
+  companyId         String
+  outboundRequestId String?
+  quoteId           String?
+  status            SalesDeliveryApprovalStatus @default(PENDING)
+  requesterId       String
+  approverId        String?
+  decision          String? // approve / reject
+  reason            String?
+  decidedAt         DateTime?
+  expiresAt         DateTime?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  outboundRequest OutboundRequest? @relation(fields: [outboundRequestId], references: [id], onDelete: Cascade)
+  quote           Quote?           @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  requester       User             @relation("SalesDeliveryApprovalRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  approver        User?            @relation("SalesDeliveryApprovalApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status])
+  @@index([outboundRequestId])
+  @@index([quoteId])
+}
+
+// ========== R111 批次A: 客群系统（Audience Segments）==========
+// 持久化受众分段：条件快照（criteriaJson）+ 成员表。
+// 一个客户（Lead）在客群中只出现一次（@@unique([segmentId, leadId])）。
+// 增量重算约定：重算时新命中加入（matched_criteria），不再命中标记 status='skipped'
+// （不物理删除，保留记录）；手动添加的成员（addedReason='manual'）在重算中保留。
+model AudienceSegment {
+  id                       String   @id @default(cuid())
+  companyId                String
+  name                     String
+  description              String?
+  criteriaJson             Json // 筛选条件快照（见 criteria-parser.ts）
+  memberCount              Int      @default(0)
+  autoRefreshEnabled       Boolean  @default(false)
+  autoRefreshIntervalHours Int      @default(24)
+  lastRefreshedAt          DateTime?
+  status                   String   @default("active") // active | paused
+  createdById              String
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  company Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  members AudienceSegmentMember[]
+
+  @@index([companyId])
+}
+
+// 客群成员：一个 Lead 在客群中唯一（eligible | suppressed | skipped）
+model AudienceSegmentMember {
+  id          String   @id @default(cuid())
+  segmentId   String
+  leadId      String
+  status      String   @default("eligible") // eligible | suppressed | skipped
+  addedReason String   @default("matched_criteria") // matched_criteria | manual
+  createdAt   DateTime @default(now())
+
+  segment AudienceSegment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+  lead    Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([segmentId, leadId])
+  @@index([leadId])
+}
+
+// R111 批次D：每日 AI 运营诊断快照（Asia/Shanghai 工作日日期，每日幂等）
+model DailyDiagnosis {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @db.Uuid
+  diagnosisDate DateTime @db.Date // Asia/Shanghai 时区的工作日日期（YYYY-MM-DD）
+  status        String   @default("COMPLETED") // COMPLETED / FAILED / GENERATING
+  healthScore   Int?
+  summary       String?
+  highlights    Json?
+  risks         Json?
+  recommendations Json?
+  metricsSnapshot Json?
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([companyId, diagnosisDate])
+  @@unique([companyId, diagnosisDate])
 }

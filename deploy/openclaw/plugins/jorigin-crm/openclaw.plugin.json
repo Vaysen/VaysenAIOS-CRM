@@ -1,0 +1,69 @@
+{
+  "id": "vaysen-crm",
+  "name": "Vaysen CRM Tools",
+  "description": "Fail-closed, HMAC-authenticated tools for the Vaysen CRM boundary.",
+  "version": "1.3.2",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "crm_work_brief",
+      "crm_customer_search",
+      "crm_customer_get",
+      "crm_customer_add_note",
+      "crm_customer_update",
+      "crm_customer_set_stage",
+      "crm_task_create",
+      "crm_order_list",
+      "crm_order_create_draft",
+      "crm_order_update_stage",
+      "crm_quote_list",
+      "crm_quote_create_draft",
+      "crm_product_search",
+      "crm_start_background_research",
+      "crm_prepare_quote_delivery",
+      "crm_whatsapp_messages_read",
+      "crm_whatsapp_send_text",
+      "crm_whatsapp_send_quote",
+      "crm_email_messages_read",
+      "crm_email_send",
+      "crm_email_reply"
+    ],
+    "routes": [
+      "/api/v1/vaysen/health",
+      "/api/v1/vaysen/notify-owner"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "apiBaseUrl",
+      "keyId",
+      "hmacSecret"
+    ],
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "const": "http://backend:4000"
+      },
+      "keyId": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9._-]+$"
+      },
+      "hmacSecret": {
+        "type": "string",
+        "minLength": 48,
+        "maxLength": 512
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 30000
+      }
+    }
+  }
+}

@@ -6,13 +6,14 @@
  *   例: WHATSAPP_PROXY=http://127.0.0.1:7890
  *       WHATSAPP_PROXY=socks5://127.0.0.1:1080
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import type { WASocket } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { loadBaileys } from './baileys-loader';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '../../common/security/safe-logging';
 
 export interface WhatsAppConnectionState {
   status: 'pending_qr' | 'waiting_scan' | 'connected' | 'disconnected';
@@ -97,6 +98,92 @@ export class WhatsAppAdapter {
   private sockets = new Map<string, WASocket>();
   private stateEvents = new Map<string, EventEmitter>();
   private authStateDirs = new Map<string, string>();
+  private inFlightOutbound = new Map<string, Promise<unknown>>();
+
+  private logSafe(
+    level: 'log' | 'warn' | 'error' | 'debug',
+    eventCode: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    const message = safeLogEvent(eventCode, fields);
+    if (level === 'error') this.logger.error(message);
+    else if (level === 'warn') this.logger.warn(message);
+    else if (level === 'debug') this.logger.debug(message);
+    else this.logger.log(message);
+  }
+
+  private safeRef(value: unknown, domain: string) {
+    return safeDigest(value, domain);
+  }
+
+  private async withBoundedTimeout<T>(
+    operation: () => Promise<T> | T,
+    timeoutMs: number,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const providerOperation = Promise.resolve().then(operation);
+      return await Promise.race([
+        providerOperation,
+        new Promise<T>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`Provider operation timeout after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async runQuarantinedSend<T>(
+    sessionId: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (signal?.aborted) {
+      const rejected: any = new ServiceUnavailableException(
+        'WhatsApp dispatch was cancelled before provider I/O',
+      );
+      rejected.providerDeliveryOutcome = 'REJECTED';
+      rejected.providerAccepted = false;
+      throw rejected;
+    }
+    if (this.inFlightOutbound.has(sessionId)) {
+      const rejected: any = new ServiceUnavailableException(
+        'WhatsApp session has an unresolved in-flight provider operation',
+      );
+      rejected.providerDeliveryOutcome = 'REJECTED';
+      rejected.providerAccepted = false;
+      throw rejected;
+    }
+
+    const providerOperation = Promise.resolve().then(operation);
+    this.inFlightOutbound.set(sessionId, providerOperation);
+    providerOperation.finally(() => {
+      if (this.inFlightOutbound.get(sessionId) === providerOperation) {
+        this.inFlightOutbound.delete(sessionId);
+      }
+    }).catch(() => undefined);
+
+    if (!signal) return providerOperation;
+    let abortListener: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abortListener = () => {
+        const error: any = new ServiceUnavailableException(
+          'WhatsApp provider operation exceeded its bounded window',
+        );
+        error.code = 'PROVIDER_DISPATCH_ABORTED';
+        reject(error);
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    });
+    try {
+      return await Promise.race([providerOperation, aborted]);
+    } finally {
+      if (abortListener) signal.removeEventListener('abort', abortListener);
+    }
+  }
 
   /**
    * 构建代理 Agent（如果配置了 WHATSAPP_PROXY 环境变量）
@@ -106,18 +193,26 @@ export class WhatsAppAdapter {
     if (!proxyUrl) return undefined;
 
     try {
-      const endpoint = describeProxyEndpoint(proxyUrl);
       if (proxyUrl.startsWith('socks')) {
         const { SocksProxyAgent } = require('socks-proxy-agent');
-        this.logger.log(`Using SOCKS proxy: ${endpoint}`);
+        this.logSafe('log', 'whatsapp.adapter.proxy_configured', {
+          eventType: 'proxy_configured',
+          status: 'connected',
+        });
         return new SocksProxyAgent(proxyUrl);
       } else {
         const { HttpsProxyAgent } = require('https-proxy-agent');
-        this.logger.log(`Using HTTPS proxy: ${endpoint}`);
+        this.logSafe('log', 'whatsapp.adapter.proxy_configured', {
+          eventType: 'proxy_configured',
+          status: 'connected',
+        });
         return new HttpsProxyAgent(proxyUrl);
       }
     } catch (err: any) {
-      this.logger.warn(`Failed to create proxy agent for ${describeProxyEndpoint(proxyUrl)}: ${err?.message}`);
+      this.logSafe('warn', 'whatsapp.adapter.proxy_failed', {
+        eventType: 'proxy_failed',
+        errorCategory: safeErrorCategory(err),
+      });
       return undefined;
     }
   }
@@ -172,7 +267,7 @@ export class WhatsAppAdapter {
     const socketConfig: any = {
       auth: state,
       printQRInTerminal: false,
-      browser: ['Vaysen AI CRM', 'Chrome', '1.0.0'],
+      browser: ['Vaysen CRM', 'Chrome', '1.0.0'],
       connectTimeoutMs: 30_000,
       defaultQueryTimeoutMs: 60_000,
     };
@@ -182,9 +277,12 @@ export class WhatsAppAdapter {
       socketConfig.fetchAgent = proxyAgent;
     }
 
-    this.logger.log(
-      `Initializing WhatsApp session ${sessionId} (proxy: ${proxyAgent ? 'enabled' : 'none'})...`,
-    );
+    this.logSafe('log', 'whatsapp.adapter.session_initializing', {
+      eventType: 'session_initializing',
+      sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+      status: 'connecting',
+      accepted: !!proxyAgent,
+    });
 
     const sock = makeWASocket(socketConfig);
     this.sockets.set(sessionId, sock);
@@ -197,12 +295,21 @@ export class WhatsAppAdapter {
         // 生成 base64 QR 图片
         latestQr = await QRCode.toDataURL(qr, { width: 256 });
         eventEmitter.emit('qr', { qrCode: latestQr, status: 'waiting_scan' });
-        this.logger.log(`QR code generated for session ${sessionId}`);
+        this.logSafe('log', 'whatsapp.adapter.qr_generated', {
+          eventType: 'qr_generated',
+          sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+          status: 'pending',
+        });
       }
 
       if (connection === 'open') {
         const phoneNumber = sock.user?.id?.split(':')[0] || '';
-        this.logger.log(`WhatsApp connected: ${phoneNumber}`);
+        this.logSafe('log', 'whatsapp.adapter.connected', {
+          eventType: 'connected',
+          sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+          phoneRef: this.safeRef(phoneNumber, 'whatsapp-phone'),
+          status: 'connected',
+        });
         // 发出 connected 事件，所有监听器都会收到
         eventEmitter.emit('connected', { phoneNumber, status: 'connected' });
       }
@@ -212,10 +319,12 @@ export class WhatsAppAdapter {
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
         if (shouldReconnect) {
-          this.logger.warn(
-            `Connection closed, reconnecting session ${sessionId}... ` +
-            `Reason: ${statusCode} - ${(lastDisconnect?.error as any)?.message}`,
-          );
+          this.logSafe('warn', 'whatsapp.adapter.connection_reconnecting', {
+            eventType: 'connection_reconnecting',
+            sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+            status: 'reconnecting',
+            errorCategory: safeErrorCategory(lastDisconnect?.error),
+          });
           // 清理旧 socket
           this.sockets.delete(sessionId);
           // 通知前端正在重连
@@ -224,21 +333,37 @@ export class WhatsAppAdapter {
           setTimeout(() => {
             const dir = this.authStateDirs.get(sessionId) || authStateDir;
             this.initSession(sessionId, dir).catch((err) => {
-              this.logger.error(`Reconnect failed: ${err?.message}`);
+              this.logSafe('error', 'whatsapp.adapter.reconnect_failed', {
+                eventType: 'reconnect_failed',
+                sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+                errorCategory: safeErrorCategory(err),
+              });
               // 重连失败 — 发射 disconnected 事件让 service 层处理
               eventEmitter.emit('disconnected', { status: 'disconnected' });
             });
           }, 3000);
         } else {
           // 登出 — 删除旧认证文件，下次 initSession 会生成新 QR 码
-          this.logger.log(`Session ${sessionId} logged out, clearing auth state...`);
+          this.logSafe('log', 'whatsapp.adapter.session_logged_out', {
+            eventType: 'session_logged_out',
+            sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+            status: 'disconnected',
+          });
           try {
             if (fs.existsSync(authStateDir)) {
               fs.rmSync(authStateDir, { recursive: true, force: true });
-              this.logger.log(`Auth state directory deleted: ${authStateDir}`);
+              this.logSafe('log', 'whatsapp.adapter.auth_state_deleted', {
+                eventType: 'auth_state_deleted',
+                sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+                status: 'disconnected',
+              });
             }
           } catch (err: any) {
-            this.logger.error(`Failed to delete auth state: ${err?.message}`);
+            this.logSafe('error', 'whatsapp.adapter.auth_state_delete_failed', {
+              eventType: 'auth_state_delete_failed',
+              sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+              errorCategory: safeErrorCategory(err),
+            });
           }
           eventEmitter.emit('disconnected', { status: 'disconnected' });
           this.cleanup(sessionId);
@@ -310,21 +435,45 @@ export class WhatsAppAdapter {
     sessionId: string,
     jid: string,
     text: string,
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    signal?: AbortSignal,
+  ): Promise<{
+    success: boolean;
+    messageId?: string;
+    error?: string;
+    deliveryOutcome?: 'REJECTED';
+    providerAccepted?: false;
+  }> {
     const sock = this.sockets.get(sessionId);
     if (!sock) {
-      return { success: false, error: 'Session not found or not connected' };
+      return {
+        success: false,
+        error: 'Session not found or not connected',
+        deliveryOutcome: 'REJECTED',
+        providerAccepted: false,
+      };
     }
 
     try {
-      const result = await sock.sendMessage(jid, { text });
+      const result = await this.runQuarantinedSend(
+        sessionId,
+        signal,
+        () => sock.sendMessage(jid, { text }),
+      );
       return {
         success: true,
         messageId: result?.key?.id || undefined,
       };
     } catch (err: any) {
-      this.logger.error(`Send message failed: ${err?.message}`);
-      return { success: false, error: err?.message };
+      this.logSafe('error', 'whatsapp.adapter.send_text_failed', {
+        eventType: 'send_text_failed',
+        sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+        jidRef: this.safeRef(jid, 'whatsapp-jid'),
+        contentType: 'text',
+        errorCategory: safeErrorCategory(err),
+      });
+      // Once sock.sendMessage starts, timeout/reset/provider errors cannot
+      // prove non-delivery. Preserve the exception so the Outbox records UNKNOWN.
+      throw err;
     }
   }
 
@@ -343,10 +492,22 @@ export class WhatsAppAdapter {
       caption?: string;
       mimeType?: string;
     },
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    signal?: AbortSignal,
+  ): Promise<{
+    success: boolean;
+    messageId?: string;
+    error?: string;
+    deliveryOutcome?: 'REJECTED';
+    providerAccepted?: false;
+  }> {
     const sock = this.sockets.get(sessionId);
     if (!sock) {
-      return { success: false, error: 'Session not found or not connected' };
+      return {
+        success: false,
+        error: 'Session not found or not connected',
+        deliveryOutcome: 'REJECTED',
+        providerAccepted: false,
+      };
     }
 
     try {
@@ -370,14 +531,24 @@ export class WhatsAppAdapter {
           : { audio: { url: options.url }, mimetype: options.mimeType || 'audio/mpeg', ptt: false };
       }
 
-      const result = await sock.sendMessage(jid, messageContent);
+      const result = await this.runQuarantinedSend(
+        sessionId,
+        signal,
+        () => sock.sendMessage(jid, messageContent),
+      );
       return {
         success: true,
         messageId: result?.key?.id || undefined,
       };
     } catch (err: any) {
-      this.logger.error(`Send media message failed: ${err?.message}`);
-      return { success: false, error: err?.message };
+      this.logSafe('error', 'whatsapp.adapter.send_media_failed', {
+        eventType: 'send_media_failed',
+        sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+        jidRef: this.safeRef(jid, 'whatsapp-jid'),
+        contentType: options.type,
+        errorCategory: safeErrorCategory(err),
+      });
+      throw err;
     }
   }
   isConnected(sessionId: string): boolean {
@@ -399,7 +570,11 @@ export class WhatsAppAdapter {
       }
     }
     this.sockets.delete(sessionId);
-    this.logger.log(`Socket removed for session ${sessionId} (emitter preserved)`);
+    this.logSafe('log', 'whatsapp.adapter.socket_removed', {
+      eventType: 'socket_removed',
+      sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+      status: 'disconnected',
+    });
   }
 
   /**
@@ -418,13 +593,10 @@ export class WhatsAppAdapter {
 
     try {
       // Baileys profilePictureUrl 可能挂起，加 8 秒超时
-      const timeoutPromise = new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error('profilePictureUrl timeout')), 8000),
+      const url = await this.withBoundedTimeout(
+        () => sock.profilePictureUrl(jid, 'preview'),
+        8000,
       );
-      const url = await Promise.race([
-        sock.profilePictureUrl(jid, 'preview'),
-        timeoutPromise,
-      ]);
       return url || null;
     } catch {
       // 用户没头像或隐私设置不允许获取，或超时
@@ -451,14 +623,10 @@ export class WhatsAppAdapter {
 
       // Baileys downloadMediaMessage 需要传入原始消息对象
       // 它会自动识别消息类型并下载对应的媒体
-      const timeoutPromise = new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error('downloadMedia timeout')), 30000),
+      const buffer = await this.withBoundedTimeout(
+        () => downloadMediaMessage(msg, 'buffer', {}),
+        30000,
       );
-
-      const buffer = await Promise.race([
-        downloadMediaMessage(msg, 'buffer', {}),
-        timeoutPromise,
-      ]) as Buffer;
 
       if (!buffer || buffer.length === 0) {
         return null;
@@ -490,7 +658,12 @@ export class WhatsAppAdapter {
 
       return { data: buffer, mimeType, ext };
     } catch (err: any) {
-      this.logger.error(`downloadMedia failed: ${err?.message}`);
+      this.logSafe('error', 'whatsapp.adapter.media_download_failed', {
+        eventType: 'media_download_failed',
+        sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+        contentType: 'document',
+        errorCategory: safeErrorCategory(err),
+      });
       return null;
     }
   }

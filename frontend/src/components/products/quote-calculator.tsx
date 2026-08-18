@@ -102,7 +102,7 @@ export function QuoteCalculator() {
     <section className="bg-white border rounded-lg p-6 space-y-4">
       <div>
         <h2 className="text-lg font-bold flex items-center gap-2"><Calculator className="w-5 h-5" />资料库一键报价（USD）</h2>
-        <p className="text-xs text-gray-500 mt-1">直接使用示例贸易主报价表，不再使用模拟面积公式或模拟汇率。报价仅生成草稿，发送前必须人工确认。</p>
+        <p className="text-xs text-gray-500 mt-1">直接使用Vaysen主报价表，不再使用模拟面积公式或模拟汇率。报价仅生成草稿，发送前必须人工确认。</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

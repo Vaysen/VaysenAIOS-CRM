@@ -3,11 +3,16 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
 import { AddCompanyUserDto } from './dto/add-company-user.dto';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
 @Injectable()
 export class CompaniesService {
@@ -40,6 +45,7 @@ export class CompaniesService {
   }
 
   async findOne(id: string, currentUser: any) {
+    await this.ensureCompanyAccess(currentUser, id);
     const company = await this.prisma.company.findUnique({
       where: { id },
       include: {
@@ -48,12 +54,17 @@ export class CompaniesService {
     });
 
     if (!company) throw new NotFoundException('Company not found');
-    await this.ensureCompanyAccess(currentUser, id);
 
     return company;
   }
 
   async create(dto: CreateCompanyDto, currentUser: any) {
+    if (!this.isGlobalSuperAdmin(currentUser)) {
+      throw new ForbiddenException(
+        'Only a super administrator can create companies',
+      );
+    }
+
     const slug = dto.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
@@ -93,54 +104,68 @@ export class CompaniesService {
   }
 
   async update(id: string, dto: UpdateCompanyDto, currentUser: any) {
+    await this.ensureCompanyAdminAccess(currentUser, id);
     const company = await this.prisma.company.findUnique({ where: { id } });
     if (!company) throw new NotFoundException('Company not found');
+    if (dto.isActive === false && !this.isGlobalSuperAdmin(currentUser)) {
+      throw new ForbiddenException(
+        'Only a super administrator can deactivate a company',
+      );
+    }
 
-    await this.ensureCompanyAdminAccess(currentUser, id);
-
-    const updated = await this.prisma.company.update({
-      where: { id },
-      data: dto,
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        companyId: id,
-        userId: currentUser.id,
-        action: 'company:update',
-        entityType: 'Company',
-        entityId: id,
-        oldValue: { name: company.name },
-        newValue: { name: dto.name || company.name },
-      },
-    });
-
-    return updated;
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.isActive === false) {
+        await this.assertCompanyDeactivationKeepsGlobalSuperAdmin(id, tx);
+      }
+      const updated = await tx.company.update({
+        where: { id },
+        data: dto,
+      });
+      await tx.auditLog.create({
+        data: {
+          companyId: id,
+          userId: currentUser.id,
+          action: 'company:update',
+          entityType: 'Company',
+          entityId: id,
+          oldValue: { name: company.name },
+          newValue: { name: dto.name || company.name },
+        },
+      });
+      return updated;
+    }, { isolationLevel: 'Serializable' });
   }
 
   async remove(id: string, currentUser: any) {
-    const isSuperAdmin = currentUser.companies.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (!isSuperAdmin) throw new ForbiddenException('Only super admin can delete companies');
+    const activeCompany = requireActiveCompany(currentUser);
+    if (activeCompany.id !== id) {
+      throw new ForbiddenException(
+        'Select the target company before deleting it',
+      );
+    }
+    if (!this.isGlobalSuperAdmin(currentUser)) {
+      throw new ForbiddenException('Only super admin can delete companies');
+    }
 
     const company = await this.prisma.company.findUnique({ where: { id } });
     if (!company) throw new NotFoundException('Company not found');
 
-    await this.prisma.company.update({
-      where: { id },
-      data: { isActive: false },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        companyId: id,
-        userId: currentUser.id,
-        action: 'company:delete',
-        entityType: 'Company',
-        entityId: id,
-      },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      await this.assertCompanyDeactivationKeepsGlobalSuperAdmin(id, tx);
+      await tx.company.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      await tx.auditLog.create({
+        data: {
+          companyId: id,
+          userId: currentUser.id,
+          action: 'company:delete',
+          entityType: 'Company',
+          entityId: id,
+        },
+      });
+    }, { isolationLevel: 'Serializable' });
 
     return { message: 'Company deleted successfully' };
   }
@@ -170,6 +195,18 @@ export class CompaniesService {
 
   async addUser(id: string, dto: AddCompanyUserDto, currentUser: any) {
     await this.ensureCompanyAdminAccess(currentUser, id);
+
+    const requestedRole = await this.prisma.role.findUnique({
+      where: { id: dto.roleId },
+    });
+    if (!requestedRole) throw new NotFoundException('Role not found');
+    const tenantRoles = ['company_admin', 'sales_manager', 'sales_user', 'viewer'];
+    if (
+      !this.isGlobalSuperAdmin(currentUser)
+      && !tenantRoles.includes(requestedRole.name)
+    ) {
+      throw new ForbiddenException('Only a super administrator can grant global roles');
+    }
 
     const user = await this.prisma.user.findUnique({
       where: { id: dto.userId },
@@ -205,55 +242,168 @@ export class CompaniesService {
 
   async removeUser(id: string, userId: string, currentUser: any) {
     await this.ensureCompanyAdminAccess(currentUser, id);
+    if (userId === currentUser.id) {
+      throw new BadRequestException('Cannot remove your own company membership');
+    }
 
-    const relation = await this.prisma.userCompanyRelation.findUnique({
-      where: { userId_companyId: { userId, companyId: id } },
+    return this.runSerializable(async (tx) => {
+      const relation = await tx.userCompanyRelation.findUnique({
+        where: { userId_companyId: { userId, companyId: id } },
+        include: { role: true },
+      });
+      if (!relation) throw new NotFoundException('User not in this company');
+      if (
+        relation.role.name === 'super_admin'
+        && !this.isGlobalSuperAdmin(currentUser)
+      ) {
+        throw new ForbiddenException('Only a super administrator can remove this membership');
+      }
+      if (relation.role.name === 'super_admin' && relation.isActive) {
+        await this.assertActiveGlobalSuperAdmin(currentUser.id, id, tx);
+        await this.assertSuperMembershipRemovalKeepsGlobalSuperAdmin(
+          relation.id,
+          tx,
+        );
+      }
+      if (relation.role.name === 'company_admin' && relation.isActive) {
+        const adminCount = await tx.userCompanyRelation.count({
+          where: {
+            companyId: id,
+            isActive: true,
+            role: { name: 'company_admin' },
+            user: { isActive: true, deletedAt: null },
+          },
+        });
+        if (adminCount <= 1) {
+          throw new BadRequestException('Cannot remove the last active company administrator');
+        }
+      }
+
+      await tx.userCompanyRelation.delete({ where: { id: relation.id } });
+      await tx.auditLog.create({
+        data: {
+          companyId: id,
+          userId: currentUser.id,
+          action: 'company:remove_user',
+          entityType: 'Company',
+          entityId: id,
+          oldValue: { userId },
+        },
+      });
+      return { message: 'User removed from company' };
     });
-    if (!relation) throw new NotFoundException('User not in this company');
-
-    await this.prisma.userCompanyRelation.delete({
-      where: { id: relation.id },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        companyId: id,
-        userId: currentUser.id,
-        action: 'company:remove_user',
-        entityType: 'Company',
-        entityId: id,
-        oldValue: { userId },
-      },
-    });
-
-    return { message: 'User removed from company' };
   }
 
   private async ensureCompanyAccess(currentUser: any, companyId: string) {
-    const isSuperAdmin = currentUser.companies.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (isSuperAdmin) return;
-
-    const hasAccess = currentUser.companies.some((c: any) => c.id === companyId);
-    if (!hasAccess) {
+    const activeCompany = requireActiveCompany(currentUser);
+    if (activeCompany.id !== companyId) {
       throw new ForbiddenException('No access to this company');
     }
   }
 
   private async ensureCompanyAdminAccess(currentUser: any, companyId: string) {
-    const isSuperAdmin = currentUser.companies.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (isSuperAdmin) return;
-
-    const company = currentUser.companies.find(
-      (c: any) =>
-        c.id === companyId &&
-        (c.role === 'company_admin' || c.role === 'sales_manager'),
-    );
-    if (!company) {
+    if (!hasFullAccess(currentUser, companyId)) {
       throw new ForbiddenException('Only company admin can manage company settings');
+    }
+  }
+
+  private isGlobalSuperAdmin(currentUser: any) {
+    return currentUser.activeCompany?.role === 'super_admin'
+      && currentUser.activeCompany?.id === currentUser.activeCompanyId
+      && currentUser.companies?.some(
+        (company: any) => company.role === 'super_admin',
+      ) === true;
+  }
+
+  private async assertCompanyDeactivationKeepsGlobalSuperAdmin(
+    companyId: string,
+    db: any,
+  ) {
+    const hostedSuperAdmin = await db.userCompanyRelation.findFirst({
+      where: {
+        companyId,
+        isActive: true,
+        role: { name: 'super_admin' },
+        user: { isActive: true, deletedAt: null },
+      },
+      select: { id: true },
+    });
+    if (!hostedSuperAdmin) return;
+    const remainingSuperAdmin = await db.userCompanyRelation.findFirst({
+      where: {
+        companyId: { not: companyId },
+        isActive: true,
+        role: { name: 'super_admin' },
+        user: { isActive: true, deletedAt: null },
+        company: { isActive: true },
+      },
+      select: { id: true },
+    });
+    if (!remainingSuperAdmin) {
+      throw new BadRequestException(
+        'Cannot deactivate the company hosting the last global super administrator',
+      );
+    }
+  }
+
+  private async assertActiveGlobalSuperAdmin(
+    userId: string,
+    companyId: string,
+    db: any,
+  ) {
+    const actorMembership = await db.userCompanyRelation.findFirst({
+      where: {
+        userId,
+        companyId,
+        isActive: true,
+        role: { name: 'super_admin' },
+        user: { isActive: true, deletedAt: null },
+        company: { isActive: true },
+      },
+      select: { id: true },
+    });
+    if (!actorMembership) {
+      throw new ForbiddenException(
+        'Active global super administrator access is required',
+      );
+    }
+  }
+
+  private async assertSuperMembershipRemovalKeepsGlobalSuperAdmin(
+    relationId: string,
+    db: any,
+  ) {
+    const remainingUsers = await db.userCompanyRelation.findMany({
+      where: {
+        id: { not: relationId },
+        isActive: true,
+        role: { name: 'super_admin' },
+        user: { isActive: true, deletedAt: null },
+        company: { isActive: true },
+      },
+      distinct: ['userId'],
+      select: { userId: true },
+      take: 1,
+    });
+    if (remainingUsers.length === 0) {
+      throw new BadRequestException(
+        'Cannot remove the last active global super administrator membership',
+      );
+    }
+  }
+
+  private async runSerializable<T>(callback: (tx: any) => Promise<T>) {
+    try {
+      return await this.prisma.$transaction(callback, {
+        isolationLevel: 'Serializable',
+      });
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'P2034') {
+        throw new ConflictException(
+          'Concurrent administrator change detected; reload and retry',
+        );
+      }
+      throw error;
     }
   }
 }

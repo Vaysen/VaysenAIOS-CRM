@@ -5,14 +5,23 @@ import {
   Param,
   Query,
   Body,
+  Headers,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiResponse } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiHeader,
+  ApiQuery,
+  ApiResponse,
+} from '@nestjs/swagger';
 import { EmailsService } from './emails.service';
 import { SendSingleDto } from './dto/send-single.dto';
 import { SendBatchDto } from './dto/send-batch.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { normalizeIdempotencyKey } from '../../common/security/idempotency-key';
 
 @ApiTags('Email Sending')
 @ApiBearerAuth()
@@ -23,22 +32,104 @@ export class EmailsController {
 
   @Post('send-single')
   @ApiOperation({ summary: 'Send email to a single lead' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: true,
+    description: 'Canonical 8-200 character key. Replays are re-authorized against current access.',
+    schema: {
+      type: 'string',
+      minLength: 8,
+      maxLength: 200,
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{7,199}$',
+    },
+  })
   @ApiResponse({ status: 201, description: 'Email queued or skipped' })
-  sendSingle(@Body() dto: SendSingleDto, @CurrentUser() user: any) {
-    return this.emailsService.sendSingle(dto, user);
+  @ApiResponse({
+    status: 400,
+    description: 'Idempotency-Key is missing or malformed',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'A canonical Idempotency-Key is required',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Idempotency-Key payload conflict',
+    schema: {
+      example: {
+        statusCode: 409,
+        code: 'EMAIL_IDEMPOTENCY_PAYLOAD_CONFLICT',
+        message: 'Idempotency-Key was already used with a different email request',
+      },
+    },
+  })
+  sendSingle(
+    @Body() dto: SendSingleDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() user: any,
+  ) {
+    return this.emailsService.sendSingle(
+      dto,
+      user,
+      normalizeIdempotencyKey(idempotencyKey),
+    );
   }
 
   @Post('send-batch')
   @ApiOperation({ summary: 'Send email to multiple leads' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: true,
+    description: 'Canonical 8-200 character key. Replays are re-authorized against current access.',
+    schema: {
+      type: 'string',
+      minLength: 8,
+      maxLength: 200,
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{7,199}$',
+    },
+  })
   @ApiResponse({ status: 201, description: 'Batch send results' })
-  sendBatch(@Body() dto: SendBatchDto, @CurrentUser() user: any) {
-    return this.emailsService.sendBatch(dto, user);
+  @ApiResponse({
+    status: 400,
+    description: 'Idempotency-Key is missing or malformed',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'A canonical Idempotency-Key is required',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Idempotency-Key payload conflict',
+    schema: {
+      example: {
+        statusCode: 409,
+        code: 'EMAIL_IDEMPOTENCY_PAYLOAD_CONFLICT',
+        message: 'Idempotency-Key was already used with a different email request',
+      },
+    },
+  })
+  sendBatch(
+    @Body() dto: SendBatchDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() user: any,
+  ) {
+    return this.emailsService.sendBatch(
+      dto,
+      user,
+      normalizeIdempotencyKey(idempotencyKey),
+    );
   }
 
   @Get('queue-status')
   @ApiOperation({ summary: 'Get email sending queue status' })
-  async getQueueStatus() {
-    return this.emailsService.getQueueStatus();
+  async getQueueStatus(@CurrentUser() user: any) {
+    return this.emailsService.getQueueStatus(user);
   }
 
   @Get('team-stats')

@@ -1,9 +1,9 @@
-appId: ai.vaysen.crm
-productName: Vaysen AI CRM
-copyright: Copyright © 2026 Vaysen AI contributors
+appId: com.vaysen.vaysen-crm
+productName: Vaysen 外贸系统
+copyright: Copyright © 2026 Vaysen Packaging
 
 directories:
-  output: ../release
+  output: ../artifacts/windows
   buildResources: build
 
 # Windows 10 without Developer Mode cannot unpack electron-builder's mixed
@@ -45,6 +45,7 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  createDesktopShortcut: true
+  # Silent installs must still create the configured desktop shortcut.
+  createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: Vaysen AI CRM
+  shortcutName: Vaysen 外贸系统

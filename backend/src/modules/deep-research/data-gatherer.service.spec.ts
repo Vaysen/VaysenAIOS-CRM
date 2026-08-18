@@ -1,5 +1,10 @@
 import { completeAiJson } from '@/common/ai/ai-client.util';
-import { DataGathererService } from './data-gatherer.service';
+import { Logger } from '@nestjs/common';
+import {
+  DataGathererService,
+  RESEARCH_EVIDENCE_FAILURE_CODE,
+  RESEARCH_EVIDENCE_FAILURE_MESSAGE,
+} from './data-gatherer.service';
 
 jest.mock('@/common/ai/ai-client.util', () => ({
   completeAiJson: jest.fn(),
@@ -117,7 +122,8 @@ describe('DataGathererService', () => {
     const result = await service.gatherAll('No Evidence Ltd', '', 'Canada');
 
     expect(result.raw).toBe('');
-    expect(result.error).toContain('未返回可核验的公开网页证据');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
+    expect(result.errorCode).toBe('RESEARCH_EVIDENCE_COLLECTION_FAILED');
     expect(completeAiJsonMock).not.toHaveBeenCalled();
   });
 
@@ -126,9 +132,56 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Offline Ltd', 'offline.example', 'USA');
 
-    expect(result.error).toContain('SearXNG 搜索失败');
-    expect(result.error).toContain('connection refused');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
+    expect(result.errorCode).toBe('RESEARCH_SEARCH_FAILED');
     expect(completeAiJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes Error and non-Error provider failures from logs and returned errors', async () => {
+    const sentinel = 'provider-sentinel@example.com body https://provider.example/?token=secret';
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    fetchMock.mockRejectedValueOnce(Object.assign(new Error(sentinel), {
+      response: { data: sentinel, status: 502 },
+      cause: new Error(sentinel),
+    }));
+
+    const errorResult = await service.gatherAll('Provider Sentinel Ltd', '', 'USA');
+    const errorOutput = JSON.stringify(loggerError.mock.calls);
+    expect(errorResult.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
+    expect(errorResult.errorCode).toBe('RESEARCH_SEARCH_FAILED');
+    expect(errorOutput).not.toContain(sentinel);
+    expect(JSON.stringify(errorResult)).not.toContain(sentinel);
+
+    fetchMock.mockRejectedValueOnce({
+      message: sentinel,
+      response: { data: sentinel },
+      cause: sentinel,
+    });
+    const objectResult = await service.gatherAll('Provider Sentinel Ltd', '', 'USA');
+    expect(objectResult.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
+    expect(JSON.stringify(loggerError.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(objectResult)).not.toContain(sentinel);
+  });
+
+  it('sanitizes an AI provider failure without changing the failed result shape', async () => {
+    const sentinel = 'ai-provider-sentinel@example.com https://ai.example/?token=secret';
+    const loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    fetchMock.mockImplementation(async () => jsonResponse([{
+      title: 'Verified registry entry',
+      url: 'https://registry.example/provider-sentinel',
+      content: 'Public registration summary',
+    }]));
+    completeAiJsonMock.mockRejectedValueOnce(new Error(sentinel));
+
+    const result = await service.gatherAll('Provider Sentinel Ltd', '', 'USA');
+
+    expect(result).toEqual({
+      raw: '',
+      error: RESEARCH_EVIDENCE_FAILURE_MESSAGE,
+      errorCode: RESEARCH_EVIDENCE_FAILURE_CODE,
+    });
+    expect(JSON.stringify(loggerError.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(result)).not.toContain(sentinel);
   });
 
   it('filters private, non-http and duplicate URLs before passing evidence to GLM', async () => {
@@ -201,7 +254,7 @@ describe('DataGathererService', () => {
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
     expect(result.raw).toBe('');
-    expect(result.error).toContain('不在 SearXNG 证据集中的 URL');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
   });
 
   it('rejects an uncited finding even when the summary has a valid citation', async () => {
@@ -230,7 +283,7 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
-    expect(result.error).toContain('findings[0].sourceUrls 至少需要一条证据引用');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
   });
 
   it('rejects a fabricated URL on any individual finding', async () => {
@@ -259,7 +312,7 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
-    expect(result.error).toContain('findings[0].sourceUrls 包含不在 SearXNG 证据集中的 URL');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
   });
 
   it('rejects unknown fields instead of silently archiving unverified facts', async () => {
@@ -284,7 +337,7 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
-    expect(result.error).toContain('背调结果 字段必须严格为');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
   });
 
   it('rejects a model quote that has no conservative overlap with its cited SearXNG snippet', async () => {
@@ -313,7 +366,7 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
-    expect(result.error).toContain('supportingExcerpt 不是任何所引证 SearXNG 摘要的原文片段或保守语义匹配');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
     expect(completeAiJsonMock).toHaveBeenCalledTimes(2);
   });
 
@@ -374,7 +427,7 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
-    expect(result.error).toContain('没有包含可核验原文摘要的 SearXNG 证据');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
     expect(completeAiJsonMock).toHaveBeenCalledTimes(1);
   });
 
@@ -447,7 +500,7 @@ describe('DataGathererService', () => {
     });
 
     const noSummaryCitation = await service.gatherAll('Buyer Ltd', '', 'UK');
-    expect(noSummaryCitation.error).toContain('summarySources 至少需要一条证据引用');
+    expect(noSummaryCitation.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
 
     completeAiJsonMock.mockResolvedValueOnce({
       data: { summary: null, summarySources: [], findings: [] },
@@ -457,7 +510,7 @@ describe('DataGathererService', () => {
     });
 
     const empty = await service.gatherAll('Buyer Ltd', '', 'UK');
-    expect(empty.error).toContain('没有任何可引用的结论');
+    expect(empty.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
   });
 
   it('enforces finding category, text length and count bounds', async () => {
@@ -486,7 +539,7 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Buyer Ltd', '', 'UK');
 
-    expect(result.error).toContain('category 不在允许分类中');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
 
     completeAiJsonMock.mockResolvedValueOnce({
       data: {
@@ -499,7 +552,7 @@ describe('DataGathererService', () => {
       model: 'glm-4.5',
     });
     const overlong = await service.gatherAll('Buyer Ltd', '', 'UK');
-    expect(overlong.error).toContain('summary 超过 1500 字符上限');
+    expect(overlong.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
 
     completeAiJsonMock.mockResolvedValueOnce({
       data: {
@@ -517,7 +570,7 @@ describe('DataGathererService', () => {
       model: 'glm-4.5',
     });
     const tooMany = await service.gatherAll('Buyer Ltd', '', 'UK');
-    expect(tooMany.error).toContain('findings 超过 24 条上限');
+    expect(tooMany.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
   });
 
   it('fails closed on malformed SearXNG JSON', async () => {
@@ -530,7 +583,8 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Malformed Ltd', '', 'UK');
 
-    expect(result.error).toContain('响应 JSON 无法解析');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
+    expect(result.errorCode).toBe('RESEARCH_SEARCH_INVALID_RESPONSE');
     expect(completeAiJsonMock).not.toHaveBeenCalled();
   });
 
@@ -547,7 +601,8 @@ describe('DataGathererService', () => {
 
     const result = await service.gatherAll('Oversized Ltd', '', 'UK');
 
-    expect(result.error).toContain('响应超过');
+    expect(result.error).toBe(RESEARCH_EVIDENCE_FAILURE_MESSAGE);
+    expect(result.errorCode).toBe('RESEARCH_SEARCH_RESPONSE_TOO_LARGE');
     expect(completeAiJsonMock).not.toHaveBeenCalled();
   });
 });

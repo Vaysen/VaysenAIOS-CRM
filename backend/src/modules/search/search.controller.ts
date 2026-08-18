@@ -5,10 +5,17 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { SearchService } from './search.service';
 import { CreateSearchTaskDto } from './dto/create-search-task.dto';
-import { hasFullAccess } from '@/common/utils/data-isolation';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '@/common/utils/data-isolation';
 
-function isAdminRole(req: any): boolean {
-  return hasFullAccess(req.user);
+function activeCompanyId(req: any): string {
+  return requireActiveCompany(req.user).id;
+}
+
+function isAdminRole(req: any, companyId: string): boolean {
+  return hasFullAccess(req.user, companyId);
 }
 
 @ApiTags('AI 客户搜索')
@@ -20,19 +27,21 @@ export class SearchController {
 
   @Post('tasks')
   async createTask(@Body() dto: CreateSearchTaskDto, @Req() req: any) {
-    return this.searchService.createTask(dto, req.user.id, req.user.companies[0]?.id);
+    return this.searchService.createTask(dto, req.user.id, activeCompanyId(req));
   }
 
   @Get('tasks')
   listTasks(@Req() req: any) {
-    const userId = isAdminRole(req) ? undefined : req.user.id;
-    return this.searchService.listTasks(req.user.companies[0]?.id, userId);
+    const companyId = activeCompanyId(req);
+    const userId = isAdminRole(req, companyId) ? undefined : req.user.id;
+    return this.searchService.listTasks(companyId, userId);
   }
 
   @Get('queue-status')
   getQueueStatus(@Req() req: any) {
-    const userId = isAdminRole(req) ? undefined : req.user.id;
-    return this.searchService.getQueueStatus(req.user.companies[0]?.id, userId);
+    const companyId = activeCompanyId(req);
+    const userId = isAdminRole(req, companyId) ? undefined : req.user.id;
+    return this.searchService.getQueueStatus(companyId, userId);
   }
 
   @Get('rate-limit')
@@ -42,61 +51,63 @@ export class SearchController {
 
   @Get('tasks/:id')
   getTask(@Param('id') id: string, @Req() req: any) {
-    const userId = isAdminRole(req) ? undefined : req.user.id;
-    return this.searchService.getTask(id, req.user.companies[0]?.id, userId);
+    const companyId = activeCompanyId(req);
+    const userId = isAdminRole(req, companyId) ? undefined : req.user.id;
+    return this.searchService.getTask(id, companyId, userId);
   }
 
   @Get('tasks/:id/results')
   getResults(@Param('id') id: string, @Req() req: any) {
-    const userId = isAdminRole(req) ? undefined : req.user.id;
-    return this.searchService.getResults(id, req.user.companies[0]?.id, userId);
+    const companyId = activeCompanyId(req);
+    const userId = isAdminRole(req, companyId) ? undefined : req.user.id;
+    return this.searchService.getResults(id, companyId, userId);
   }
 
   @Post('tasks/:id/cancel')
   @HttpCode(200)
   cancelTask(@Param('id') id: string, @Req() req: any) {
-    return this.searchService.cancelTask(id, req.user.companies[0]?.id, req.user.id);
+    return this.searchService.cancelTask(id, activeCompanyId(req), req.user.id);
   }
 
   @Post('tasks/:id/stop')
   @HttpCode(200)
   stopTask(@Param('id') id: string, @Req() req: any) {
-    return this.searchService.stopTask(id, req.user.companies[0]?.id, req.user.id);
+    return this.searchService.stopTask(id, activeCompanyId(req), req.user.id);
   }
 
   @Post('tasks/:id/convert-all')
   convertTaskResults(@Param('id') id: string, @Req() req: any) {
     return this.searchService.convertTaskResults(
       id,
-      req.user.companies[0]?.id,
+      activeCompanyId(req),
       req.user.id,
     );
   }
 
   @Post('results/:id/verify-email')
   verifyResultEmail(@Param('id') id: string, @Req() req: any) {
-    return this.searchService.verifyResultEmail(id, req.user.companies[0]?.id);
+    return this.searchService.verifyResultEmail(id, activeCompanyId(req));
   }
 
   @Post('results/verify-review-batch')
   verifyReviewBatch(@Body() body: { taskId?: string; resultIds?: string[] }, @Req() req: any) {
     return this.searchService.verifyReviewBatch(
       body || {},
-      req.user.companies[0]?.id,
+      activeCompanyId(req),
       req.user.id,
     );
   }
 
   @Post('results/:id/deep-research')
   deepResearch(@Param('id') id: string, @Req() req: any) {
-    return this.searchService.deepResearch(id, req.user.companies[0]?.id);
+    return this.searchService.deepResearch(id, activeCompanyId(req));
   }
 
   @Post('results/:id/convert')
   convertToLead(@Param('id') id: string, @Body() body: { force?: boolean }, @Req() req: any) {
     return this.searchService.convertToLead(
       id,
-      req.user.companies[0]?.id,
+      activeCompanyId(req),
       req.user.id,
       body?.force ?? false,
     );
@@ -104,6 +115,10 @@ export class SearchController {
 
   @Post('results/:id/similar')
   findSimilarBrands(@Param('id') id: string, @Req() req: any) {
-    return this.searchService.createSimilarBrandsTask(id, req.user.companies[0]?.id, req.user.id);
+    return this.searchService.createSimilarBrandsTask(
+      id,
+      activeCompanyId(req),
+      req.user.id,
+    );
   }
 }

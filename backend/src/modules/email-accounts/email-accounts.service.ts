@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  HttpException,
 } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -12,17 +13,29 @@ import { UpdateEmailAccountStatusDto } from './dto/update-email-account-status.d
 import { encrypt, decrypt } from '../../common/utils/crypto.util';
 import { findLegacyEmailBrandReference } from '../emails/email-content.guard';
 import { assertBrevoReceivingConfig } from './brevo-email-account.policy';
+import { OutboundComplianceService } from '../outbound/outbound-compliance.service';
+import { TestEmailDto } from './dto/test-email.dto';
+import { resolveSmtpEgress } from './smtp-egress.policy';
+import {
+  assertSmtpAcceptedTarget,
+  createAbortableSmtpTransport,
+} from './smtp-delivery';
 
 @Injectable()
 export class EmailAccountsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly outbound: OutboundComplianceService,
+  ) {}
 
   async findAll(currentUser: any, query: { page?: number; limit?: number; status?: string }) {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const where: any = this.buildCompanyWhere(currentUser);
+    const company = this.getCompany(currentUser);
+    const role = await this.assertActiveMembership(currentUser, company.id);
+    const where: any = this.buildCompanyWhere(currentUser, company.id, role);
 
     if (query.status) {
       where.status = query.status;
@@ -46,25 +59,29 @@ export class EmailAccountsService {
   }
 
   async findOne(id: string, currentUser: any) {
-    const account = await this.prisma.emailAccount.findUnique({
-      where: { id },
+    const company = this.getCompany(currentUser);
+    const account = await this.prisma.emailAccount.findFirst({
+      where: { id, companyId: company.id },
       select: this.safeSelect(),
     });
     if (!account) throw new NotFoundException('Email account not found');
-    this.checkCompanyAccess(currentUser, account);
+    const role = await this.assertActiveMembership(currentUser, account.companyId);
+    this.checkCompanyAccess(currentUser, account, role);
     return this.decorateSharedPoolAccount(account);
   }
 
   async create(dto: CreateEmailAccountDto, currentUser: any) {
     this.blockSharedPoolMutation();
     const company = this.getCompany(currentUser);
-    this.checkManagerAccess(currentUser, company.id);
-    this.assertSenderBranding(dto.senderName, dto.senderEmail, dto.replyToEmail);
-    assertBrevoReceivingConfig(dto.smtpHost, dto.replyToEmail);
+    const role = await this.assertActiveMembership(currentUser, company.id);
+    this.checkAdminAccess(role);
     const assignedUserId = dto.userId || null;
     if (assignedUserId) {
       await this.ensureUserInCompany(assignedUserId, company.id);
     }
+    this.assertSenderBranding(dto.senderName, dto.senderEmail, dto.replyToEmail);
+    assertBrevoReceivingConfig(dto.smtpHost, dto.replyToEmail);
+    await resolveSmtpEgress(dto);
 
     const encryptedPassword = encrypt(dto.smtpPassword);
 
@@ -74,12 +91,21 @@ export class EmailAccountsService {
         userId: assignedUserId,
         senderName: dto.senderName,
         senderEmail: dto.senderEmail,
+        accountRole: dto.accountRole ?? 'CORE',
+        tags: dto.tags ?? [],
         smtpHost: dto.smtpHost,
         smtpPort: dto.smtpPort,
         smtpSecure: dto.smtpSecure,
         smtpUsername: dto.smtpUsername,
         smtpPasswordEncrypted: encryptedPassword,
         replyToEmail: dto.replyToEmail,
+        imapHost: dto.imapHost ?? null,
+        imapPort: dto.imapPort ?? null,
+        imapSecure: dto.imapSecure ?? null,
+        imapUsername: dto.imapUsername ?? null,
+        imapPasswordEncrypted: dto.imapPassword ? encrypt(dto.imapPassword) : null,
+        inboundEnabled: dto.inboundEnabled ?? false,
+        inboundPollIntervalSeconds: dto.inboundPollIntervalSeconds ?? 300,
         dailySendLimit: dto.dailySendLimit ?? 50,
         hourlySendLimit: dto.hourlySendLimit ?? 10,
         sendIntervalSeconds: dto.sendIntervalSeconds ?? 60,
@@ -105,10 +131,17 @@ export class EmailAccountsService {
 
   async update(id: string, dto: UpdateEmailAccountDto, currentUser: any) {
     this.blockSharedPoolMutation();
-    const existing = await this.prisma.emailAccount.findUnique({ where: { id } });
+    const company = this.getCompany(currentUser);
+    const existing = await this.prisma.emailAccount.findFirst({
+      where: { id, companyId: company.id },
+    });
     if (!existing) throw new NotFoundException('Email account not found');
-    this.checkCompanyAccess(currentUser, existing);
-    this.checkManagerAccess(currentUser, existing.companyId);
+    const role = await this.assertActiveMembership(currentUser, existing.companyId);
+    this.checkCompanyAccess(currentUser, existing, role);
+    this.checkAdminAccess(role);
+    if (dto.userId) {
+      await this.ensureUserInCompany(dto.userId, existing.companyId);
+    }
     this.assertSenderBranding(
       dto.senderName ?? existing.senderName,
       dto.senderEmail ?? existing.senderEmail,
@@ -118,6 +151,11 @@ export class EmailAccountsService {
       dto.smtpHost ?? existing.smtpHost,
       dto.replyToEmail ?? existing.replyToEmail,
     );
+    await resolveSmtpEgress({
+      smtpHost: dto.smtpHost ?? existing.smtpHost,
+      smtpPort: dto.smtpPort ?? existing.smtpPort,
+      smtpSecure: dto.smtpSecure ?? existing.smtpSecure,
+    });
 
     const data: any = {};
     if (dto.senderName !== undefined) data.senderName = dto.senderName;
@@ -130,12 +168,24 @@ export class EmailAccountsService {
     if (dto.smtpPassword !== undefined) {
       data.smtpPasswordEncrypted = encrypt(dto.smtpPassword);
     }
+    if (dto.imapHost !== undefined) data.imapHost = dto.imapHost;
+    if (dto.imapPort !== undefined) data.imapPort = dto.imapPort;
+    if (dto.imapSecure !== undefined) data.imapSecure = dto.imapSecure;
+    if (dto.imapUsername !== undefined) data.imapUsername = dto.imapUsername;
+    if (dto.imapPassword !== undefined) {
+      data.imapPasswordEncrypted = encrypt(dto.imapPassword);
+    }
+    if (dto.inboundEnabled !== undefined) data.inboundEnabled = dto.inboundEnabled;
+    if (dto.inboundPollIntervalSeconds !== undefined) {
+      data.inboundPollIntervalSeconds = dto.inboundPollIntervalSeconds;
+    }
+    if (dto.accountRole !== undefined) data.accountRole = dto.accountRole;
+    if (dto.tags !== undefined) data.tags = dto.tags;
     if (dto.dailySendLimit !== undefined) data.dailySendLimit = dto.dailySendLimit;
     if (dto.hourlySendLimit !== undefined) data.hourlySendLimit = dto.hourlySendLimit;
     if (dto.sendIntervalSeconds !== undefined) data.sendIntervalSeconds = dto.sendIntervalSeconds;
     if (dto.warmupEnabled !== undefined) data.warmupEnabled = dto.warmupEnabled;
     if (dto.userId !== undefined) {
-      if (dto.userId) await this.ensureUserInCompany(dto.userId, existing.companyId);
       data.userId = dto.userId || null;
     }
 
@@ -161,10 +211,13 @@ export class EmailAccountsService {
 
   async remove(id: string, currentUser: any) {
     this.blockSharedPoolMutation();
-    const existing = await this.prisma.emailAccount.findUnique({ where: { id } });
+    const existing = await this.prisma.emailAccount.findFirst({
+      where: { id, companyId: this.getCompany(currentUser).id },
+    });
     if (!existing) throw new NotFoundException('Email account not found');
-    this.checkCompanyAccess(currentUser, existing);
-    this.checkManagerAccess(currentUser, existing.companyId);
+    const role = await this.assertActiveMembership(currentUser, existing.companyId);
+    this.checkCompanyAccess(currentUser, existing, role);
+    this.checkAdminAccess(role);
 
     // Check if account is used by any campaigns
     const campaignCount = await this.prisma.campaign.count({
@@ -198,10 +251,13 @@ export class EmailAccountsService {
 
   async updateStatus(id: string, dto: UpdateEmailAccountStatusDto, currentUser: any) {
     this.blockSharedPoolMutation();
-    const existing = await this.prisma.emailAccount.findUnique({ where: { id } });
+    const existing = await this.prisma.emailAccount.findFirst({
+      where: { id, companyId: this.getCompany(currentUser).id },
+    });
     if (!existing) throw new NotFoundException('Email account not found');
-    this.checkCompanyAccess(currentUser, existing);
-    this.checkManagerAccess(currentUser, existing.companyId);
+    const role = await this.assertActiveMembership(currentUser, existing.companyId);
+    this.checkCompanyAccess(currentUser, existing, role);
+    this.checkAdminAccess(role);
 
     const account = await this.prisma.emailAccount.update({
       where: { id },
@@ -225,13 +281,16 @@ export class EmailAccountsService {
   }
 
   async testConnection(id: string, currentUser: any) {
-    const existing = await this.prisma.emailAccount.findUnique({ where: { id } });
+    const existing = await this.prisma.emailAccount.findFirst({
+      where: { id, companyId: this.getCompany(currentUser).id },
+    });
     if (!existing) throw new NotFoundException('Email account not found');
-    this.checkCompanyAccess(currentUser, existing);
-    this.checkManagerAccess(currentUser, existing.companyId);
+    const role = await this.assertActiveMembership(currentUser, existing.companyId);
+    this.checkCompanyAccess(currentUser, existing, role);
+    this.checkAdminAccess(role);
 
     try {
-      const transporter = this.createTransporter(existing);
+      const transporter = await this.createTransporter(existing);
       await transporter.verify();
 
       await this.prisma.emailAccount.update({
@@ -239,7 +298,7 @@ export class EmailAccountsService {
         data: { lastTestedAt: new Date(), failureCount: 0 },
       });
 
-      return { success: true, message: 'SMTP connection successful' };
+      return { success: true, code: 'SMTP_CONNECTION_OK', message: 'SMTP connection successful' };
     } catch (err: any) {
       await this.prisma.emailAccount.update({
         where: { id },
@@ -249,15 +308,19 @@ export class EmailAccountsService {
         },
       });
 
-      return { success: false, message: `SMTP connection failed: ${err.message}` };
+      return { success: false, code: 'SMTP_CONNECTION_FAILED', message: 'SMTP connection failed' };
     }
   }
 
-  async sendTest(id: string, recipientEmail: string, currentUser: any) {
-    const existing = await this.prisma.emailAccount.findUnique({ where: { id } });
+  async sendTest(id: string, dto: TestEmailDto, currentUser: any) {
+    const company = this.getCompany(currentUser);
+    const existing = await this.prisma.emailAccount.findFirst({
+      where: { id, companyId: company.id },
+    });
     if (!existing) throw new NotFoundException('Email account not found');
-    this.checkCompanyAccess(currentUser, existing);
-    this.checkWriteAccess(currentUser, existing.companyId);
+    const role = await this.assertActiveMembership(currentUser, existing.companyId);
+    this.checkCompanyAccess(currentUser, existing, role);
+    this.checkAdminAccess(role);
 
     const legacyEnvelope = findLegacyEmailBrandReference(
       existing.senderName,
@@ -273,23 +336,59 @@ export class EmailAccountsService {
       return { success: true, previewBlocked: true, message: 'Preview mode: test email blocked by safety switch' };
     }
 
+    const subject = `Test Email from Vaysen Trade OS - ${existing.senderEmail}`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2>Test Email</h2>
+        <p>This is a test email from your Vaysen Trade OS email account.</p>
+        <hr />
+        <p><strong>Account:</strong> ${existing.senderName} (${existing.senderEmail})</p>
+        <p><strong>SMTP Server:</strong> ${existing.smtpHost}:${existing.smtpPort}</p>
+      </div>
+    `;
     try {
-      const transporter = this.createTransporter(existing);
-      await transporter.sendMail({
-        from: `"${existing.senderName}" <${existing.senderEmail}>`,
-        to: recipientEmail,
-        replyTo: existing.replyToEmail || undefined,
-        subject: `Test Email from Vaysen AI CRM - ${existing.senderEmail}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Test Email</h2>
-            <p>This is a test email from your Vaysen AI CRM email account.</p>
-            <hr />
-            <p><strong>Account:</strong> ${existing.senderName} (${existing.senderEmail})</p>
-            <p><strong>SMTP Server:</strong> ${existing.smtpHost}:${existing.smtpPort}</p>
-            <p><strong>Sent at:</strong> ${new Date().toISOString()}</p>
-          </div>
-        `,
+      const action = await this.outbound.execute({
+        companyId: existing.companyId,
+        operatorUser: currentUser,
+        actorType: 'HUMAN',
+        channel: 'EMAIL',
+        actionType: 'RAW_SMTP_TEST',
+        idempotencyKey: dto.idempotencyKey || '',
+        leadId: dto.leadId,
+        targetAddress: dto.recipientEmail,
+        emailAccountId: existing.id,
+        subject,
+        body: html,
+        requireAdmin: true,
+      }, async (_outboundArtifacts, envelope) => {
+        const egress = await resolveSmtpEgress(existing);
+        const { transporter, close } = createAbortableSmtpTransport(
+          egress,
+          {
+            user: existing.smtpUsername,
+            pass: decrypt(existing.smtpPasswordEncrypted),
+          },
+          envelope.signal,
+        );
+        let info: any;
+        try {
+          info = await transporter.sendMail({
+            from: `"${existing.senderName}" <${existing.senderEmail}>`,
+            to: envelope.targetAddress,
+            replyTo: existing.replyToEmail || undefined,
+            subject: envelope.subject,
+            html: envelope.body,
+          });
+        } finally {
+          close();
+        }
+        if (!info?.messageId) throw new Error('SMTP provider did not return a message id');
+        const accepted = assertSmtpAcceptedTarget(info, envelope.targetAddress);
+        return {
+          provider: 'smtp',
+          receiptId: info.messageId,
+          metadata: { accepted },
+        };
       });
 
       await this.prisma.emailAccount.update({
@@ -297,8 +396,16 @@ export class EmailAccountsService {
         data: { lastTestedAt: new Date(), failureCount: 0 },
       });
 
-      return { success: true, message: `Test email sent to ${recipientEmail}` };
+      return {
+        success: true,
+        code: 'SMTP_TEST_ACCEPTED',
+        message: 'Test email accepted',
+        outboxId: action.outboxId,
+        deduplicated: action.deduplicated,
+        providerReceiptId: action.receipt.receiptId,
+      };
     } catch (err: any) {
+      if (err instanceof HttpException) throw err;
       await this.prisma.emailAccount.update({
         where: { id },
         data: {
@@ -307,11 +414,30 @@ export class EmailAccountsService {
         },
       });
 
-      return { success: false, message: `Failed to send test email: ${err.message}` };
+      return { success: false, code: 'SMTP_TEST_SEND_FAILED', message: 'Failed to send test email' };
     }
   }
 
   // ========== Access Control ==========
+
+  /**
+   * 营销动作强制校验（可复用）：仅允许 accountRole=MARKETING 的邮箱账号。
+   * 三处调用：send-batch（营销批量发送）、send-single(source=marketing)（营销面板单发）、
+   * 营销活动 campaign（创建/更新指定 senderAccountId 或渠道账号就绪检查）。
+   * 非 MARKETING 账号抛 BadRequestException，带明确中文原因。
+   */
+  assertMarketingRole(
+    account: { senderEmail?: string | null; accountRole?: string | null } | null | undefined,
+    actionLabel = '该营销操作',
+  ) {
+    const role = account?.accountRole || 'CORE';
+    if (role !== 'MARKETING') {
+      const senderEmail = account?.senderEmail || '<unknown>';
+      throw new BadRequestException(
+        `${actionLabel}仅允许使用营销邮箱（accountRole=MARKETING），当前账号 ${senderEmail} 角色为 ${role}`,
+      );
+    }
+  }
 
   private isSharedMailboxPool() {
     return process.env.EMAIL_ACCOUNT_SHARED_POOL === 'true';
@@ -340,38 +466,28 @@ export class EmailAccountsService {
   }
 
   private getCompany(currentUser: any) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company associated');
-    return currentUser.companies[0];
+    const companyId = String(currentUser?.activeCompanyId || '').trim();
+    if (!companyId) throw new ForbiddenException('An authenticated active company is required');
+    if (currentUser?.activeCompany?.id && currentUser.activeCompany.id !== companyId) {
+      throw new ForbiddenException('Authenticated active company claims are inconsistent');
+    }
+    return { id: companyId };
   }
 
-  private buildCompanyWhere(currentUser: any): any {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-
-    if (isFullAccess) {
-      return companyIds.length ? { companyId: { in: companyIds } } : {};
+  private buildCompanyWhere(currentUser: any, companyId: string, databaseRole: string): any {
+    if (['super_admin', 'company_admin'].includes(databaseRole)) {
+      return { companyId };
     }
 
     // Isolated users see their own + unassigned accounts
     return {
-      companyId: { in: companyIds },
+      companyId,
       OR: [{ userId: currentUser.id }, { userId: null }],
     };
   }
 
-  private checkCompanyAccess(currentUser: any, account: any) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
-
-    const userCompanyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!userCompanyIds.includes(account.companyId)) {
-      throw new ForbiddenException('Cannot access email accounts from another company');
-    }
+  private checkCompanyAccess(currentUser: any, account: any, databaseRole: string) {
+    if (['super_admin', 'company_admin'].includes(databaseRole)) return;
 
     // Isolated users can only access assigned accounts
     if (account.userId && account.userId !== currentUser.id) {
@@ -379,51 +495,63 @@ export class EmailAccountsService {
     }
   }
 
-  private checkWriteAccess(currentUser: any, companyId: string) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
-
-    const company = currentUser.companies?.find((c: any) => c.id === companyId);
-    if (!company) throw new ForbiddenException('Not a member of this company');
-
-    if (company.role === 'viewer') {
-      throw new ForbiddenException('Viewer cannot modify email accounts');
+  private checkAdminAccess(databaseRole: string) {
+    if (!['super_admin', 'company_admin'].includes(databaseRole)) {
+      throw new ForbiddenException('Company administrator role is required for sender account deletion or status changes');
     }
   }
 
-  private checkManagerAccess(currentUser: any, companyId: string) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
-
-    const company = currentUser.companies?.find((c: any) => c.id === companyId);
-    if (!company) throw new ForbiddenException('Not a member of this company');
-
-    if (company.role !== 'sales_manager') {
-      throw new ForbiddenException('Only admin or manager can manage sender accounts');
+  private async assertActiveMembership(currentUser: any, companyId: string) {
+    const activeCompanyId = String(currentUser?.activeCompanyId || '').trim();
+    if (
+      !activeCompanyId
+      || activeCompanyId !== companyId
+      || (currentUser?.activeCompany?.id && currentUser.activeCompany.id !== activeCompanyId)
+    ) {
+      throw new ForbiddenException('Target company is not the authenticated active company');
     }
+    const relation = currentUser.id
+      ? await this.prisma.userCompanyRelation.findFirst({
+          where: {
+            userId: currentUser.id,
+            companyId,
+            isActive: true,
+            user: { is: { isActive: true, deletedAt: null } },
+            company: { is: { isActive: true } },
+          },
+          include: { role: { select: { name: true } } },
+        })
+      : null;
+    const databaseRole = String(relation?.role?.name || '').trim();
+    if (!databaseRole) {
+      throw new ForbiddenException('Tenant membership or role is no longer active');
+    }
+    return databaseRole;
   }
 
   private async ensureUserInCompany(userId: string, companyId: string) {
     const relation = await this.prisma.userCompanyRelation.findFirst({
-      where: { userId, companyId, isActive: true },
+      where: {
+        userId,
+        companyId,
+        isActive: true,
+        user: { is: { isActive: true, deletedAt: null } },
+        company: { is: { isActive: true } },
+      },
+      select: { id: true },
     });
     if (!relation) throw new BadRequestException('Assigned user is not an active company member');
   }
 
-  private createTransporter(account: any) {
+  private async createTransporter(account: any) {
+    const egress = await resolveSmtpEgress(account);
     return nodemailer.createTransport({
-      host: account.smtpHost,
-      port: account.smtpPort,
-      secure: account.smtpSecure,
+      ...egress,
       auth: {
         user: account.smtpUsername,
         pass: decrypt(account.smtpPasswordEncrypted),
       },
-    });
+    } as any);
   }
 
   private safeSelect() {
@@ -433,6 +561,8 @@ export class EmailAccountsService {
       userId: true,
       senderName: true,
       senderEmail: true,
+      accountRole: true,
+      tags: true,
       smtpHost: true,
       smtpPort: true,
       smtpSecure: true,
@@ -457,13 +587,4 @@ export class EmailAccountsService {
     };
   }
 
-  // Used internally (e.g., by campaign sender) to get decrypted password
-  async getDecryptedPassword(id: string): Promise<string> {
-    const account = await this.prisma.emailAccount.findUnique({
-      where: { id },
-      select: { smtpPasswordEncrypted: true },
-    });
-    if (!account) throw new NotFoundException('Email account not found');
-    return decrypt(account.smtpPasswordEncrypted);
-  }
 }

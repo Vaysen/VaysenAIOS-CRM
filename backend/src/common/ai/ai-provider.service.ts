@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { completeAiText, AiPurpose, AiRouteTask } from './ai-client.util';
+import { safeLogEvent } from '../security/safe-logging';
 
 export interface AiCallOptions {
   task: string;           // e.g. 'translation', 'summary', 'reply_suggestion', 'quote_extraction'
@@ -47,14 +48,14 @@ export class AiProviderService {
   async chat(systemPrompt: string, userMessage: string, opts: AiCallOptions = { task: 'general' }): Promise<AiResult> {
     // Safety gate: external calls disabled
     if (!this.isEnabled()) {
-      this.logger.warn(`AI_EXTERNAL_CALLS_ENABLED=false — returning mock for task: ${opts.task}`);
+      this.logger.warn(safeLogEvent('ai.provider.disabled', { task: opts.task }));
       return this.mockResult(opts.task);
     }
 
     // Key check
     const apiKey = process.env.ZHIPU_API_KEY || '';
     if (!apiKey || apiKey.includes('your-') || apiKey.includes('<')) {
-      this.logger.warn(`ZHIPU_API_KEY not configured - returning mock for task: ${opts.task}`);
+      this.logger.warn(safeLogEvent('ai.provider.key_missing', { task: opts.task }));
       return this.mockResult(opts.task);
     }
 
@@ -74,12 +75,12 @@ export class AiProviderService {
       });
       return { success: true, content: result.text, model: result.model, reason: 'success' };
     } catch (err: any) {
-      this.logger.error(`Zhipu GLM API error (${opts.task}): ${err.message}`);
+      this.logger.error(safeLogEvent('ai.provider.call_failed', { task: opts.task, error: err }));
       return {
         success: false,
-        content: `[AI ${opts.task} error: ${err.message}]`,
+        content: '[AI] 服务暂时不可用，请稍后重试。',
         model: this.getModel(),
-        error: err.message,
+        error: 'AI_PROVIDER_ERROR',
         reason: 'api_error',
       };
     }

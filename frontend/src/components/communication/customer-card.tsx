@@ -6,7 +6,8 @@ import {
   MapPin, Mail, Phone, Building2, Sparkles, ArrowRight, Bot, Tag, Clock, Search, Loader2,
   Star, Globe, ChevronDown, FileText, Calculator, Calendar, Package, TrendingUp, AlertCircle,
   BarChart3, CheckCircle2, XCircle, ExternalLink, RefreshCw, Lightbulb, Target, Activity,
-  Zap, Users, Briefcase, DollarSign, Link2, Info, History, StickyNote, Edit3, Check, X
+  Zap, Users, Briefcase, DollarSign, Link2, Info, History, StickyNote, Edit3, Check, X,
+  ListChecks, MessageSquare, Gauge
 } from 'lucide-react';
 import api from '@/lib/api';
 import type { ConversationDetail } from './types';
@@ -18,9 +19,14 @@ const STAGE_LABELS: Record<string, string> = {
 
 const STAGE_ORDER = ['new', 'contacted', 'sampling', 'quoting', 'negotiating', 'won'];
 
-interface Props { conversation: ConversationDetail; onOpenQuoteForm?: (type: 'quote' | 'pi' | 'sample') => void; }
+interface Props {
+  conversation: ConversationDetail;
+  onOpenQuoteForm?: (type: 'quote' | 'pi' | 'sample') => void;
+  electronApi?: any;
+  currentChat?: { accountId?: string; name?: string; phone?: string; selectionProof?: string } | null;
+}
 
-export function CustomerCard({ conversation, onOpenQuoteForm }: Props) {
+export function CustomerCard({ conversation, onOpenQuoteForm, electronApi, currentChat }: Props) {
   const lead = conversation.lead;
   const [analysis, setAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -45,6 +51,17 @@ export function CustomerCard({ conversation, onOpenQuoteForm }: Props) {
     api.get(`/leads/${lead.id}/timeline`, { params: { limit: 8 } })
       .then(r => setTimeline(r.data?.data || []))
       .catch(() => setTimeline([]));
+  }, [lead?.id]);
+
+  useEffect(() => {
+    if (!lead?.id) return;
+    let cancelled = false;
+    setAnalysisLoading(true);
+    api.post(`/ai-communications/customer-analysis/${lead.id}`)
+      .then(r => { if (!cancelled) setAnalysis(r.data?.analysis || r.data); })
+      .catch(() => { if (!cancelled) setAnalysis(null); })
+      .finally(() => { if (!cancelled) setAnalysisLoading(false); });
+    return () => { cancelled = true; };
   }, [lead?.id]);
 
   // 同步 lead.notes 到编辑框
@@ -135,402 +152,286 @@ export function CustomerCard({ conversation, onOpenQuoteForm }: Props) {
 
   return (
     <aside className="w-full border-l bg-white overflow-y-auto overflow-x-hidden">
-      {/* ======== 1. Customer Profile ======== */}
-      <div className="p-3 border-b">
-        <div className="flex items-center gap-1.5 mb-2">
-          <Building2 className="w-3.5 h-3.5 text-gray-400" />
-          <h3 className="text-xs font-semibold text-gray-700">客户资料</h3>
-        </div>
-        {/* 公司名称 — 可编辑 */}
-        <div className="flex items-center gap-1 group">
-          {companyNameEditing ? (
-            <div className="flex items-center gap-1 flex-1">
-              <input
-                value={companyNameText}
-                onChange={(e) => setCompanyNameText(e.target.value)}
-                className="text-sm font-bold text-gray-900 border-b border-blue-400 outline-none flex-1 bg-transparent"
-                autoFocus
-                placeholder="公司名称"
-              />
-              <button onClick={saveCompanyName} disabled={nameSaving} className="text-green-600 hover:text-green-700">
-                {nameSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-              </button>
-              <button onClick={() => { setCompanyNameEditing(false); setCompanyNameText(lead?.companyName || ''); }} className="text-gray-400 hover:text-red-500">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          ) : (
-            <>
-              <p className="text-sm font-bold text-gray-900 flex-1">{lead.companyName || '（未填写）'}</p>
-              {lead?.id && (
-                <button onClick={() => setCompanyNameEditing(true)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-opacity">
-                  <Edit3 className="w-3 h-3" />
-                </button>
-              )}
-            </>
+      {/* 1. 联系人卡 */}
+      <div className="p-3 border-b bg-gray-50/50">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[15px] font-bold text-gray-900">{lead.contactName || lead.companyName || 'Chris'}</span>
+          {lead.leadGrade && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${lead.leadGrade === 'A' ? 'bg-red-100 text-red-700' : lead.leadGrade === 'B' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+              {lead.leadGrade} 级
+            </span>
           )}
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-50 text-green-700 font-medium">{lead.status === 'new' ? '新客户' : '已联系'}</span>
         </div>
-        {/* 联系人名称 — 可编辑 */}
-        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap group">
-          {contactNameEditing ? (
-            <div className="flex items-center gap-1">
-              <input
-                value={contactNameText}
-                onChange={(e) => setContactNameText(e.target.value)}
-                className="text-[11px] text-gray-500 border-b border-blue-400 outline-none bg-transparent"
-                autoFocus
-                placeholder="联系人名"
-              />
-              <button onClick={saveContactName} disabled={nameSaving} className="text-green-600 hover:text-green-700">
-                {nameSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-              </button>
-              <button onClick={() => { setContactNameEditing(false); setContactNameText(lead?.contactName || ''); }} className="text-gray-400 hover:text-red-500">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          ) : (
-            <>
-              <span className="text-[11px] text-gray-500">{lead.contactName || ''}</span>
-              {lead?.id && (
-                <button onClick={() => setContactNameEditing(true)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-opacity">
-                  <Edit3 className="w-2.5 h-2.5" />
-                </button>
-              )}
-              {lead.leadGrade && (
-                <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${lead.leadGrade === 'A' ? 'bg-green-100 text-green-700' : lead.leadGrade === 'B' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {lead.leadGrade}级
-                </span>
-              )}
-              {lead.language && (
-                <LanguageBadge language={lead.language} size="sm" />
-              )}
-            </>
-          )}
-        </div>
-        <div className="mt-1.5 space-y-0.5 text-[10px]">
-          {lead.country && <div className="flex items-center gap-1 text-gray-500"><MapPin className="w-3 h-3" />{lead.country}</div>}
-          <div className="flex items-center gap-1 text-gray-500"><Mail className="w-3 h-3" />{conversation.contactPoint?.normalizedValue || lead.contactEmail || '—'}</div>
-          {lead.contactPhone && <div className="flex items-center gap-1 text-gray-500"><Phone className="w-3 h-3" />{lead.contactPhone}</div>}
-          {lead.website && <div className="flex items-center gap-1 text-blue-500"><Globe className="w-3 h-3" /><a href={lead.website} target="_blank" className="truncate">{lead.website}</a></div>}
-        </div>
-        <div className="mt-2">
-          <select value={lead.status || 'new'} onChange={e => changeStage(e.target.value)} className="text-[10px] border rounded px-1.5 py-1 w-full bg-white">
-            {Object.entries(STAGE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-        </div>
-        <div className="flex flex-wrap gap-1 mt-1.5">
-          {(lead.tags || []).slice(0, 4).map((t: any) => (
-            <span key={t.id || t.tagId} className="text-[9px] px-1.5 py-0.5 rounded-full border bg-gray-50 text-gray-500 flex items-center gap-0.5">
-              <Tag className="w-2 h-2" />{t.tag?.displayName || t.tag?.name || '标签'}
+        {lead.contactPhone && <div className="text-[12px] text-gray-600 mt-0.5">{lead.contactPhone}</div>}
+        {lead.companyName && <div className="text-[11px] text-gray-500">{lead.companyName}</div>}
+        {lead.id && (
+          <a href={`/customers/${lead.id}`} className="text-[11px] text-blue-600 hover:underline mt-0.5 inline-block">查看完整客户详情 →</a>
+        )}
+        <div className="flex gap-1 mt-2">
+          {STAGE_ORDER.map(stage => (
+            <span key={stage} onClick={() => changeStage(stage)}
+              className={`flex-1 text-center text-[9px] py-1 rounded cursor-pointer ${(lead.status || 'new') === stage ? 'bg-amber-100 text-amber-700 border border-amber-300 font-semibold' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>
+              {STAGE_LABELS[stage]}
             </span>
           ))}
         </div>
-        {lead.id ? (
-          <Link href={`/customers/${lead.id}`} className="text-[10px] text-blue-600 hover:underline mt-1.5 inline-block">
-            查看完整客户详情 →
-          </Link>
-        ) : (
-          <span className="text-[10px] text-gray-400 mt-1.5 inline-block">客户资料不完整</span>
-        )}
       </div>
 
-      {/* ======== 1.5 客户备注 ======== */}
-      <div className="p-3 border-b bg-yellow-50/20">
+      {/* 2. 客户备注 */}
+      <div className="p-3 border-b bg-yellow-50/30">
         <div className="flex items-center justify-between mb-1.5">
-          <div className="flex items-center gap-1.5">
-            <StickyNote className="w-3.5 h-3.5 text-amber-500" />
-            <h3 className="text-xs font-semibold text-gray-700">客户备注</h3>
-          </div>
+          <h3 className="text-[12px] font-semibold text-gray-700">📝 客户备注</h3>
           {!noteEditing ? (
-            <button onClick={() => setNoteEditing(true)} className="text-[10px] text-gray-400 hover:text-blue-600 flex items-center gap-0.5">
-              <Edit3 className="w-2.5 h-2.5" />编辑
-            </button>
+            <button onClick={() => setNoteEditing(true)} className="text-[10px] text-gray-400 hover:text-blue-600">编辑</button>
           ) : (
             <div className="flex items-center gap-1">
-              <button onClick={saveNote} disabled={noteSaving} className="text-[10px] text-green-600 hover:text-green-700 flex items-center gap-0.5 disabled:opacity-40">
-                {noteSaving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Check className="w-2.5 h-2.5" />}保存
-              </button>
-              <button onClick={() => { setNoteEditing(false); setNoteText((lead as any)?.notes || ''); }} className="text-[10px] text-gray-400 hover:text-red-500 flex items-center gap-0.5">
-                <X className="w-2.5 h-2.5" />取消
-              </button>
+              <button onClick={saveNote} disabled={noteSaving} className="text-[10px] text-green-600 hover:text-green-700">{noteSaving ? '保存中…' : '保存'}</button>
+              <button onClick={() => { setNoteEditing(false); setNoteText((lead as any)?.notes || ''); }} className="text-[10px] text-gray-400">取消</button>
             </div>
           )}
         </div>
         {noteEditing ? (
-          <textarea
-            value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
-            placeholder="输入客户备注信息...（如：客户偏好、特殊需求、沟通要点等）"
-            rows={3}
-            autoFocus
-            className="w-full text-[11px] rounded border border-amber-200 px-2 py-1.5 outline-none focus:border-amber-400 resize-none bg-white"
-          />
+          <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={3} autoFocus
+            className="w-full text-[11px] rounded border border-amber-200 px-2 py-1.5 outline-none focus:border-amber-400 bg-white" />
         ) : (
-          <p className="text-[11px] text-gray-600 whitespace-pre-wrap min-h-[20px]">
-            {noteText || <span className="text-gray-400 italic">暂无备注，点击编辑添加</span>}
-          </p>
+          <p className="text-[11px] text-gray-600 whitespace-pre-wrap min-h-[20px]">{noteText || <span className="text-gray-400 italic">暂无备注，点击编辑添加</span>}</p>
         )}
       </div>
 
-      {/* ======== 2. AI Follow-up Analysis (DEEPENED) ======== */}
-      <div className="p-3 border-b bg-amber-50/30">
-        <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-          <Activity className="w-3 h-3 text-amber-500" />AI 跟进分析
-        </h3>
+      {/* 3. 分析头部（评分环） */}
+      <div className="p-3 border-b flex items-center gap-3">
+        <div className="relative w-[52px] h-[52px] shrink-0 rounded-full flex items-center justify-center"
+          style={{ background: `conic-gradient(#ff6a00 ${Math.max(0, Math.min(100, Number(analysis?.probability || 0))) * 3.6}deg, #edf1f5 0)` }}>
+          <div className="absolute inset-[5px] rounded-full bg-white"></div>
+          <div className="relative text-center">
+            <div className="text-[13px] font-extrabold text-orange-600 leading-none">{analysis?.probability ?? '—'}%</div>
+            <div className="text-[8px] text-gray-400">成交概率</div>
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-bold text-gray-900">{lead.contactName || '客户'}</div>
+          <div className="text-[11px] text-gray-600">{analysis?.intent ? `客户意图：${analysis.intent}` : '客户意图：待分析'}</div>
+          <div className="flex gap-1 mt-1">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-bold">{analysis?.matchScore === '高' ? '高优先级' : '中优先级'}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 font-bold">低风险</span>
+          </div>
+        </div>
+      </div>
 
-        {/* Follow-up Status Cards */}
+      {/* 4. 当前卡点 */}
+      {analysis?.recommendation && (
+        <div className="p-3 border-b bg-orange-50/30">
+          <div className="text-[11.5px] text-amber-800"><strong className="text-orange-600">当前卡点：</strong>{analysis.recommendation}</div>
+        </div>
+      )}
+
+      {/* 5. AI 标签（自动） */}
+      {Array.isArray(analysis?.tags) && analysis.tags.length > 0 && (
+        <div className="p-3 border-b">
+          <div className="flex flex-wrap gap-1">
+            {analysis.tags.slice(0, 8).map((t: string, i: number) => (
+              <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-orange-50 text-orange-700">{t}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 6. AI 跟进分析 */}
+      <div className="p-3 border-b">
+        <h3 className="text-[12px] font-semibold text-gray-700 mb-2">⚡ AI 跟进分析</h3>
         <div className="flex gap-1 mb-2">
           {STAGE_ORDER.map(stage => (
-            <div
-              key={stage}
-              className={`flex-1 text-center py-1 rounded text-[8px] font-medium transition-colors ${
-                (lead.status || 'new') === stage
-                  ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                  : 'bg-gray-50 text-gray-400 border border-gray-100'
-              }`}
-            >
-              {STAGE_LABELS[stage]}
-            </div>
+            <span key={stage} className={`flex-1 text-center text-[8px] py-1 rounded ${(lead.status || 'new') === stage ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-gray-50 text-gray-400 border border-gray-100'}`}>{STAGE_LABELS[stage]}</span>
           ))}
         </div>
-
-        {/* Priority + Overdue */}
-        <div className="space-y-1.5 text-[10px]">
-          <div className="flex justify-between">
-            <span className="text-gray-500">优先级</span>
-            <span className={`font-medium flex items-center gap-1 ${lead.leadGrade === 'A' ? 'text-red-600' : lead.leadGrade === 'B' ? 'text-amber-600' : 'text-gray-500'}`}>
-              {lead.leadGrade === 'A' ? <AlertCircle className="w-2.5 h-2.5" /> : <Info className="w-2.5 h-2.5" />}
-              {lead.leadGrade === 'A' ? '高优先级' : lead.leadGrade === 'B' ? '中优先级' : '普通'}
-            </span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-gray-500">待跟进事项</span>
-            <span className={overdueDays && overdueDays > 0 ? 'text-red-600 font-medium' : 'text-gray-600'}>
-              {overdueDays && overdueDays > 0 ? `已逾期 ${overdueDays} 天` : overdueDays === 0 ? '今日跟进' : '暂无'}
-            </span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-gray-500">会话消息</span>
-            <span className="text-gray-600">{conversation.messages?.length || 0} 条</span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-gray-500">最近联系</span>
-            <span className="text-gray-600">
-              {lead.lastContactedAt
-                ? new Date(lead.lastContactedAt).toLocaleDateString('zh-CN')
-                : '—'}
-            </span>
-          </div>
-
-          <div className="flex justify-between">
-            <span className="text-gray-500">下一次跟进</span>
-            <span className={overdueDays && overdueDays > 0 ? 'text-red-600' : 'text-gray-600'}>
-              {lead.nextFollowUpAt
-                ? new Date(lead.nextFollowUpAt).toLocaleDateString('zh-CN')
-                : '未安排'}
-            </span>
-          </div>
+        <div className="space-y-1 text-[10px]">
+          <div className="flex justify-between"><span className="text-gray-500">优先级</span><span className={lead.leadGrade === 'A' ? 'text-red-600' : 'text-gray-600'}>{lead.leadGrade === 'A' ? '高' : lead.leadGrade === 'B' ? '中' : '普通'}</span></div>
+          <div className="flex justify-between"><span className="text-gray-500">待跟进事项</span><span className={overdueDays && overdueDays > 0 ? 'text-red-600' : 'text-gray-600'}>{overdueDays && overdueDays > 0 ? `已逾期 ${overdueDays} 天` : '暂无'}</span></div>
+          <div className="flex justify-between"><span className="text-gray-500">会话消息</span><span className="text-gray-600">{conversation.messages?.length || 0} 条</span></div>
+          <div className="flex justify-between"><span className="text-gray-500">最近联系</span><span className="text-gray-600">{lead.lastContactedAt ? new Date(lead.lastContactedAt).toLocaleDateString('zh-CN') : '—'}</span></div>
+          <div className="flex justify-between"><span className="text-gray-500">下一次跟进</span><span className={overdueDays && overdueDays > 0 ? 'text-red-600' : 'text-gray-600'}>{lead.nextFollowUpAt ? new Date(lead.nextFollowUpAt).toLocaleDateString('zh-CN') : '未安排'}</span></div>
         </div>
-
-        {/* Generate Follow-up Button */}
-        <button
-          onClick={generateFollowup}
-          disabled={followupLoading}
-          className="w-full mt-2 py-1.5 text-[10px] rounded border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 disabled:opacity-40 flex items-center justify-center gap-1 transition-colors"
-        >
-          {followupLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
-          {followupLoading ? '生成中...' : '生成跟进记录'}
+        <button onClick={generateFollowup} disabled={followupLoading} className="w-full mt-2 py-1.5 text-[10px] rounded border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 disabled:opacity-40">
+          {followupLoading ? '生成中…' : '生成跟进记录'}
         </button>
-
         {followupDraft && (
           <div className="mt-2 p-2 bg-white border border-amber-200 rounded text-[10px] text-gray-700">
-            <p className="text-[9px] text-amber-600 font-medium mb-1 flex items-center gap-1">
-              <Info className="w-2.5 h-2.5" />AI 跟进草稿（待确认后写入）：
-            </p>
+            <p className="text-[9px] text-amber-600 font-medium mb-1">AI 跟进草稿（待确认后写入）</p>
             <p className="line-clamp-4">{followupDraft}</p>
-            <div className="flex gap-1 mt-1.5">
-              <button className="text-[9px] px-2 py-0.5 bg-green-50 text-green-700 rounded border border-green-200 hover:bg-green-100">确认写入</button>
-              <button onClick={() => setFollowupDraft(null)} className="text-[9px] px-2 py-0.5 bg-gray-50 text-gray-500 rounded border hover:bg-gray-100">放弃</button>
-            </div>
           </div>
         )}
       </div>
 
-      {/* ======== 3. AI Customer Research (DEEPENED) ======== */}
-      <div className="p-3 border-b">
-        <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-          <Search className="w-3 h-3 text-purple-500" />AI 客户背调
-        </h3>
-
-        {analysis ? (
-          <div className="space-y-1.5 text-[10px]">
-            {analysis.isDemo && (
-              <div className="flex items-center gap-1 text-[9px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded mb-1.5">
-                <Info className="w-2.5 h-2.5" />预览数据（AI 服务未连接）
-              </div>
-            )}
-
-            {/* Business Match Rate */}
-            {analysis.matchScore && (
-              <div className="flex justify-between items-center">
-                <span className="text-gray-500">业务匹配度</span>
-                <span className="font-bold text-purple-700">{analysis.matchScore}</span>
-              </div>
-            )}
-
-            {/* Enterprise Judgment */}
-            {analysis.enterpriseType && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">该企业为</span>
-                <span className="font-medium text-gray-700">{analysis.enterpriseType}</span>
-              </div>
-            )}
-
-            {/* Summary */}
-            {analysis.summary && (
-              <div className="mt-1.5 p-2 bg-purple-50/50 border border-purple-100 rounded">
-                <p className="text-[9px] text-purple-600 font-medium mb-0.5 flex items-center gap-1">
-                  <Lightbulb className="w-2.5 h-2.5" />背调概要
-                </p>
-                <p className="text-gray-700 leading-relaxed">{analysis.summary}</p>
-              </div>
-            )}
-
-            {/* Contact Info */}
-            {analysis.contactName && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">联系人</span>
-                <span className="text-gray-700">{analysis.contactName}{analysis.contactTitle ? ` · ${analysis.contactTitle}` : ''}</span>
-              </div>
-            )}
-
-            {/* Company + Website */}
-            {analysis.companyName && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">公司</span>
-                <span className="text-gray-700 truncate max-w-[180px]">{analysis.companyName}</span>
-              </div>
-            )}
-
-            {analysis.website && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">官网</span>
-                <a href={analysis.website} target="_blank" className="text-blue-600 hover:underline truncate max-w-[180px] flex items-center gap-0.5">
-                  <Link2 className="w-2.5 h-2.5 shrink-0" />{analysis.website}
-                </a>
-              </div>
-            )}
-
-            {/* Main Products */}
-            {analysis.mainProducts && (
-              <div>
-                <span className="text-gray-500 block mb-0.5">主营产品</span>
-                <div className="flex flex-wrap gap-1">
-                  {analysis.mainProducts.split(/[,;，；]/).map((p: string, i: number) => (
-                    <span key={i} className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-100">
-                      {p.trim()}
-                    </span>
-                  ))}
+      {/* 7. 下一步行动（stepper） */}
+      {Array.isArray(analysis?.nextSteps) && analysis.nextSteps.length > 0 && (
+        <div className="p-3 border-b">
+          <h3 className="text-[13px] font-semibold text-gray-800 mb-2">下一步行动</h3>
+          <div className="grid grid-cols-3 gap-1">
+            {analysis.nextSteps.slice(0, 3).map((s: any, i: number) => {
+              const title = typeof s === 'string' ? s : s?.title || '';
+              const desc = typeof s === 'string' ? '' : s?.description || '';
+              return (
+                <div key={i} className="flex flex-col items-center gap-1 text-center">
+                  <span className={`w-5 h-5 rounded-full text-[9px] font-bold flex items-center justify-center ${i === 0 ? 'bg-sky-500 text-white shadow ring-4 ring-sky-100' : 'bg-gray-100 text-gray-400'}`}>{i + 1}</span>
+                  <span className="text-[9px] text-gray-700 leading-snug font-medium">{title}</span>
+                  {desc && <span className="text-[8px] text-gray-400 leading-snug">{desc}</span>}
                 </div>
-              </div>
-            )}
-
-            {/* Social Media */}
-            {analysis.socialMedia && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">社媒主页</span>
-                <span className="text-blue-600 flex items-center gap-0.5">
-                  <Link2 className="w-2.5 h-2.5" />{analysis.socialMedia}
-                </span>
-              </div>
-            )}
-
-            {/* Annual Revenue */}
-            {analysis.annualRevenue && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">年销售额</span>
-                <span className="text-gray-700 flex items-center gap-0.5">
-                  <DollarSign className="w-2.5 h-2.5" />{analysis.annualRevenue}
-                </span>
-              </div>
-            )}
-
-            {/* Transaction Overview */}
-            {analysis.transactionOverview && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">交易概况</span>
-                <span className="text-gray-700">{analysis.transactionOverview}</span>
-              </div>
-            )}
-
-            {/* Confidence */}
-            {analysis.confidence && (
-              <p className="text-[9px] text-gray-400 mt-0.5">可信度: {analysis.confidence}{analysis.isDemo ? ' (预览)' : ''}</p>
-            )}
-
-            <button onClick={runAnalysis} className="text-[9px] text-blue-500 hover:underline">刷新分析</button>
+              );
+            })}
           </div>
-        ) : (
-          <button onClick={runAnalysis} disabled={analysisLoading} className="w-full py-1.5 text-[10px] rounded border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 disabled:opacity-40 flex items-center justify-center gap-1">
-            {analysisLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
-            {analysisLoading ? '分析中...' : 'AI 客户背调'}
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
+      {/* 8. AI 推荐回复（4 tab） */}
+      {analysis?.replyVariants && (
+        <div className="p-3 border-b">
+          <h3 className="text-[13px] font-semibold text-gray-800 mb-1">💬 AI 推荐回复</h3>
+          <ReplyVariants
+            variants={analysis.replyVariants}
+            onInject={(text) => {
+              navigator.clipboard.writeText(text).catch(() => {});
+              const wa = electronApi?.whatsapp;
+              if (wa?.fillDraft && currentChat?.phone) {
+                wa.fillDraft({
+                  text,
+                  targetPhone: currentChat.phone,
+                  targetName: currentChat.name || '客户',
+                  targetAccountId: currentChat.accountId,
+                  selectionProof: currentChat.selectionProof || '',
+                }).catch(() => {});
+              }
+            }}
+          />
+        </div>
+      )}
 
-      {/* ======== 4. AI辅助订单 ======== */}
-      <div className="p-3">
-        <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-          <Sparkles className="w-3 h-3 text-blue-500" />AI辅助订单
-        </h3>
-        <div className="space-y-1">
-          <button onClick={() => onOpenQuoteForm?.('quote')} className="block w-full text-left text-[10px] px-2 py-1.5 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors">
-            <FileText className="w-3 h-3 inline mr-1" />一键生成报价
-          </button>
-          <button onClick={() => onOpenQuoteForm?.('pi')} className="block w-full text-left text-[10px] px-2 py-1.5 rounded border border-gray-200 hover:bg-gray-50 text-gray-700 transition-colors">
-            <FileText className="w-3 h-3 inline mr-1" />生成 PI
-          </button>
-          <button onClick={() => onOpenQuoteForm?.('sample')} className="block w-full text-left text-[10px] px-2 py-1.5 rounded border border-gray-200 hover:bg-gray-50 text-gray-700 transition-colors">
-            <Package className="w-3 h-3 inline mr-1" />创建样品单
+      {/* 9. AI 客户背调 */}
+      {!analysis && (
+        <div className="p-3 border-b">
+          <button onClick={runAnalysis} disabled={analysisLoading} className="w-full py-1.5 text-[10px] rounded border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 disabled:opacity-40">
+            {analysisLoading ? '分析中…' : 'AI 客户背调'}
           </button>
         </div>
-        <p className="text-[9px] text-gray-400 mt-2 text-center">
-          AI 分析对话辅助报价 · 可编辑确认后生成 · 不自动发送
-        </p>
-      </div>
+      )}
+      {analysis && (analysis.summary || analysis.matchScore || analysis.mainProducts) && (
+        <div className="p-3 border-b">
+          <h3 className="text-[12px] font-semibold text-gray-700 mb-2">🔍 AI 客户背调</h3>
+          {analysis.summary && <div className="mt-1 p-2 bg-purple-50/50 border border-purple-100 rounded"><p className="text-[11px] text-gray-700 leading-relaxed">{analysis.summary}</p></div>}
+          {analysis.matchScore && <div className="flex justify-between text-[11px] mt-1"><span className="text-gray-500">业务匹配度</span><span className="font-bold text-purple-700">{analysis.matchScore}</span></div>}
+          {analysis.mainProducts && <div className="flex flex-wrap gap-1 mt-1">{String(analysis.mainProducts).split(/[,;，；]/).map((p: string, i: number) => <span key={i} className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-100">{p.trim()}</span>)}</div>}
+          <button onClick={runAnalysis} disabled={analysisLoading} className="text-[9px] text-blue-500 hover:underline mt-1">{analysisLoading ? '分析中…' : '刷新分析'}</button>
+        </div>
+      )}
 
-      {/* ======== 5. Activity Timeline ======== */}
+      {/* 10. 回复质检 */}
+      {analysis?.replyQuality && (
+        <div className="p-3 border-b">
+          <details className="rounded-xl border border-gray-200 bg-white p-2.5" open>
+            <summary className="flex items-center justify-between cursor-pointer list-none">
+              <h3 className="text-[13px] font-semibold text-gray-800">业务员回复质检</h3>
+              <span className="flex items-center gap-2"><span className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-600">{typeof analysis.replyQuality.score === 'number' && analysis.replyQuality.score >= 80 ? '良好' : '待优化'}</span><span className="font-bold text-teal-700">{analysis.replyQuality.score ?? '—'}/100</span></span>
+            </summary>
+            <QualityDetail quality={analysis.replyQuality} />
+          </details>
+        </div>
+      )}
+
+      {/* 11. 最近活动 */}
       <div className="p-3 border-t">
-        <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-          <History className="w-3 h-3 text-gray-400" />最近活动
-        </h3>
+        <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5"><History className="w-3 h-3 text-gray-400" />最近活动</h3>
         {timeline.length > 0 ? (
           <div className="space-y-1.5">
             {timeline.slice(0, 8).map((a: any) => (
               <div key={a.id} className="flex gap-2 text-[10px]">
-                <div className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${
-                  a.activityType?.includes('email') ? 'bg-blue-400' :
-                  a.activityType?.includes('ai') ? 'bg-purple-400' :
-                  a.activityType?.includes('quote') ? 'bg-amber-400' :
-                  'bg-gray-300'
-                }`} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-gray-700 truncate">{a.title}</p>
-                  <p className="text-[9px] text-gray-400">
-                    {new Date(a.occurredAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
-                  </p>
-                </div>
+                <div className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${a.activityType?.includes('email') ? 'bg-blue-400' : a.activityType?.includes('ai') ? 'bg-purple-400' : a.activityType?.includes('quote') ? 'bg-amber-400' : 'bg-gray-300'}`} />
+                <div className="flex-1 min-w-0"><p className="text-gray-700 truncate">{a.title}</p><p className="text-[9px] text-gray-400">{new Date(a.occurredAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</p></div>
               </div>
             ))}
           </div>
-        ) : (
-          <p className="text-[10px] text-gray-400 text-center py-2">暂无活动记录</p>
-        )}
+        ) : (<p className="text-[10px] text-gray-400 text-center py-2">暂无活动记录</p>)}
       </div>
     </aside>
+  );
+}
+
+function ReplyVariants({ variants, onInject }: { variants: any; onInject: (text: string) => void }) {
+  const [tab, setTab] = useState<'standard' | 'brief' | 'detailed'>('standard');
+  const labels = { standard: '标准', brief: '简短', detailed: '详细' } as const;
+  const reply = variants[tab] || variants.standard || '';
+  const translation = variants.chinese || '';
+  return (
+    <div>
+      <div className="grid grid-cols-3 border-b border-gray-100">
+        {(Object.keys(labels) as Array<keyof typeof labels>).map(k => (
+          <button key={k} onClick={() => setTab(k)} className={`text-[11px] py-2 border-b-2 ${tab === k ? 'border-sky-500 text-sky-600 font-bold' : 'border-transparent text-gray-400'}`}>{labels[k]}</button>
+        ))}
+      </div>
+      <div className="text-[13px] text-gray-700 leading-relaxed mt-2 p-2.5 border border-gray-100 rounded bg-gray-50/50 min-h-[60px]">{reply}</div>
+      {translation && (
+        <div className="mt-1.5 pt-1.5 border-t border-gray-100">
+          <strong className="text-[11px] text-sky-700 block mb-0.5">中文对照</strong>
+          <div className="text-[12px] text-sky-800/80 leading-relaxed">{translation}</div>
+        </div>
+      )}
+      <div className="flex gap-1 mt-2">
+        <button className="text-[10px] px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50" onClick={() => navigator.clipboard.writeText(reply).catch(() => {})}>复制</button>
+        <button className="text-[10px] px-2 py-1 rounded border border-sky-500 bg-gradient-to-r from-sky-400 to-blue-600 text-white font-bold" onClick={() => onInject(reply)}>一键填入发送</button>
+      </div>
+    </div>
+  );
+}
+
+function QualityDetail({ quality }: { quality: any }) {
+  const dims = quality.dimensions || {};
+  const dimLabels = {
+    responseSpeed: '响应速度', needRecognition: '需求识别', professionalism: '专业度',
+    conversionAction: '转化动作', riskControl: '风险控制',
+  } as const;
+  const dimKeys = ['responseSpeed', 'needRecognition', 'professionalism', 'conversionAction', 'riskControl'] as const;
+  const hasDims = dimKeys.some(k => typeof dims[k] === 'number');
+  const currentAction = quality.currentAction || quality.nextAction;
+  const strengths = Array.isArray(quality.strengths) ? quality.strengths.slice(0, 3) : [];
+  const improvements = Array.isArray(quality.improvements) ? quality.improvements.slice(0, 3) : [];
+
+  return (
+    <div className="mt-2 space-y-2">
+      {(currentAction || quality.summary) && (
+        <div className="p-1.5 border border-gray-100 rounded bg-gray-50 text-[11px]">
+          {currentAction && <p><span>当前待处理：</span><strong className="text-gray-800">{currentAction}</strong></p>}
+          {quality.summary && <p className="text-gray-500 mt-0.5">{quality.summary}</p>}
+        </div>
+      )}
+      {hasDims && (
+        <div className="space-y-1">
+          {dimKeys.map(k => (
+            typeof dims[k] === 'number' ? (
+              <div key={k} className="flex items-center gap-2 text-[10.5px]">
+                <span className="w-16 shrink-0 text-gray-500">{dimLabels[k]}</span>
+                <div className="flex-1 h-1.5 rounded bg-gray-100 overflow-hidden">
+                  <div className="h-full rounded bg-gradient-to-r from-sky-400 to-teal-500" style={{ width: `${Math.max(0, Math.min(100, Number(dims[k]) || 0))}%` }}></div>
+                </div>
+                <span className="w-6 text-right font-bold text-gray-700">{dims[k]}</span>
+              </div>
+            ) : null
+          ))}
+        </div>
+      )}
+      {strengths.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-green-700 mb-0.5">做得好的</p>
+          <ul className="text-[10.5px] text-gray-600 space-y-0.5 pl-3 list-disc">{strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
+        </div>
+      )}
+      {improvements.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 mb-0.5">需改进</p>
+          <ul className="text-[10.5px] text-gray-600 space-y-0.5 pl-3 list-disc">{improvements.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
+        </div>
+      )}
+      {quality.recommendation && (
+        <div className="p-1.5 border border-teal-100 rounded bg-teal-50/40 text-[10.5px] text-gray-700"><strong className="text-teal-700">改进建议：</strong>{quality.recommendation}</div>
+      )}
+    </div>
   );
 }

@@ -25,6 +25,8 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { requireActiveCompany } from '../../common/utils/data-isolation';
+import type { CurrentUser } from '../../common/utils/data-isolation';
 import type {
   MergeCustomerCommand,
   MergePreview,
@@ -179,6 +181,12 @@ interface MergeBeforeState {
   targetContactIds: string[];
   sourceContactPointIds: string[];
   sourceConversationIds: string[];
+  /** Optional for backwards compatibility with audits written before full rollback support. */
+  sourceActivityIds?: string[];
+  sourceEmailMessageIds?: string[];
+  sourceQuoteIds?: string[];
+  sourceOrderIds?: string[];
+  sourceReminderIds?: string[];
   contactPrimaryMap: Record<string, boolean>;
 }
 
@@ -251,24 +259,29 @@ interface MinimalContact {
 export class CustomerMergeService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async mergeAuthorized(
-    command: Omit<MergeCustomerCommand, 'actorId'>,
-    user: { id: string; companies?: Array<{ id: string; role: string }> },
-  ): Promise<{ auditId: string; targetLeadId: string }> {
-    const membership = user?.companies?.find((company) => company.id === command.companyId);
+  private async assertAuthorizedCandidate(
+    companyId: string,
+    candidateId: string,
+    user: CurrentUser,
+  ) {
+    const activeCompany = requireActiveCompany(user);
+    if (activeCompany.id !== companyId) {
+      throw new ForbiddenException('No access to this company');
+    }
+    const membership = user?.companies?.find((company) => company.id === activeCompany.id);
     if (!user?.id || !membership) throw new ForbiddenException('No access to this company');
     const candidate = await this.prisma.identityMatchCandidate.findUnique({
-      where: { id: command.candidateId },
+      where: { id: candidateId, companyId },
       include: {
-        sourceLead: { select: { companyId: true, ownerUserId: true } },
-        targetLead: { select: { companyId: true, ownerUserId: true } },
+        sourceLead: true,
+        targetLead: true,
       },
     });
     if (
       !candidate
-      || candidate.companyId !== command.companyId
-      || candidate.sourceLead.companyId !== command.companyId
-      || candidate.targetLead.companyId !== command.companyId
+      || candidate.companyId !== companyId
+      || candidate.sourceLead.companyId !== companyId
+      || candidate.targetLead.companyId !== companyId
     ) {
       throw new NotFoundException('identity match candidate not found');
     }
@@ -279,7 +292,55 @@ export class CustomerMergeService {
     ) {
       throw new ForbiddenException('Both customers must belong to the current operator');
     }
+    return candidate;
+  }
+
+  async mergeAuthorized(
+    command: Omit<MergeCustomerCommand, 'actorId'>,
+    user: CurrentUser,
+  ): Promise<{ auditId: string; targetLeadId: string }> {
+    await this.assertAuthorizedCandidate(command.companyId, command.candidateId, user);
     return this.merge({ ...command, actorId: user.id });
+  }
+
+  async previewAuthorized(companyId: string, candidateId: string, user: CurrentUser): Promise<MergePreview> {
+    await this.assertAuthorizedCandidate(companyId, candidateId, user);
+    return this.previewMerge({ companyId, candidateId });
+  }
+
+  async rejectAuthorized(command: RejectCandidateCommand, user: CurrentUser): Promise<void> {
+    await this.assertAuthorizedCandidate(command.companyId, command.candidateId, user);
+    return this.rejectCandidate({ ...command, actorId: user.id });
+  }
+
+  private async assertAuthorizedAudit(command: UndoMergeCommand, user: CurrentUser) {
+    const activeCompany = requireActiveCompany(user);
+    if (activeCompany.id !== command.companyId) {
+      throw new ForbiddenException('No access to this company');
+    }
+    const membership = user?.companies?.find((company) => company.id === activeCompany.id);
+    if (!user?.id || !membership) throw new ForbiddenException('No access to this company');
+    const audit = await this.prisma.customerMergeAudit.findUnique({
+      where: { id: command.auditId, companyId: command.companyId },
+    });
+    if (!audit || audit.companyId !== command.companyId) {
+      throw new NotFoundException('merge audit not found');
+    }
+    const [sourceLead, targetLead] = await Promise.all([
+      this.prisma.lead.findUnique({ where: { id: audit.sourceLeadId, companyId: command.companyId } }),
+      this.prisma.lead.findUnique({ where: { id: audit.targetLeadId, companyId: command.companyId } }),
+    ]);
+    if (!sourceLead || !targetLead) throw new NotFoundException('merge audit leads not found');
+    const isAdmin = ['company_admin', 'super_admin'].includes(membership.role);
+    if (!isAdmin && (sourceLead.ownerUserId !== user.id || targetLead.ownerUserId !== user.id)) {
+      throw new ForbiddenException('Both customers must belong to the current operator');
+    }
+    return audit;
+  }
+
+  async undoAuthorized(command: UndoMergeCommand, user: CurrentUser): Promise<void> {
+    await this.assertAuthorizedAudit(command, user);
+    return this.undoMerge({ ...command, actorId: user.id });
   }
 
   /**
@@ -290,7 +351,7 @@ export class CustomerMergeService {
     candidateId: string;
   }): Promise<MergePreview> {
     const candidate = await this.prisma.identityMatchCandidate.findUnique({
-      where: { id: command.candidateId },
+      where: { id: command.candidateId, companyId: command.companyId },
       include: { sourceLead: true, targetLead: true },
     });
     if (!candidate || candidate.companyId !== command.companyId) {
@@ -332,6 +393,7 @@ export class CustomerMergeService {
     ]);
 
     return {
+      targetUpdatedAt: target.updatedAt.toISOString(),
       fieldDiffs,
       contactCount: { source: contactCount[0], target: contactCount[1] },
       contactPointCount: { source: contactPointCount[0], target: contactPointCount[1] },
@@ -347,7 +409,7 @@ export class CustomerMergeService {
   ): Promise<{ auditId: string; targetLeadId: string }> {
     // 1. 加载候选 + source/target Lead (事务外, 用于乐观锁校验)
     const candidate = await this.prisma.identityMatchCandidate.findUnique({
-      where: { id: command.candidateId },
+      where: { id: command.candidateId, companyId: command.companyId },
       include: { sourceLead: true, targetLead: true },
     });
     if (!candidate || candidate.companyId !== command.companyId) {
@@ -381,13 +443,45 @@ export class CustomerMergeService {
 
     // 3. 单一事务
     return this.prisma.$transaction(async (tx) => {
+      // Claim both the pending candidate and the previewed target version in
+      // the same transaction. A second concurrent request observes count=0.
+      const claimedCandidate = await tx.identityMatchCandidate.updateMany({
+        where: { id: candidate.id, companyId, status: 'pending' },
+        data: { status: 'merging' },
+      });
+      if (claimedCandidate.count !== 1) {
+        throw new ConflictException('candidate not actionable: it was consumed concurrently');
+      }
+      const claimedTarget = await tx.lead.updateMany({
+        where: { id: targetLeadId, companyId, updatedAt: targetLead.updatedAt },
+        data: { updatedAt: new Date() },
+      });
+      if (claimedTarget.count !== 1) {
+        throw new ConflictException('optimistic_lock_conflict: target changed during merge');
+      }
+
       // a. 快照 (事务内读取, 保证一致性)
-      const [sourceContacts, targetContacts, sourceContactPoints, sourceConversations] =
+      const [
+        sourceContacts,
+        targetContacts,
+        sourceContactPoints,
+        sourceConversations,
+        sourceActivities,
+        sourceEmailMessages,
+        sourceQuotes,
+        sourceOrders,
+        sourceReminders,
+      ] =
         await Promise.all([
           tx.contact.findMany({ where: { companyId, leadId: sourceLeadId } }),
           tx.contact.findMany({ where: { companyId, leadId: targetLeadId } }),
-          tx.contactPoint.findMany({ where: { leadId: sourceLeadId } }),
-          tx.conversation.findMany({ where: { leadId: sourceLeadId } }),
+          tx.contactPoint.findMany({ where: { companyId, leadId: sourceLeadId } }),
+          tx.conversation.findMany({ where: { companyId, leadId: sourceLeadId } }),
+          tx.leadActivity.findMany({ where: { companyId, leadId: sourceLeadId }, select: { id: true } }),
+          tx.emailMessage.findMany({ where: { companyId, leadId: sourceLeadId }, select: { id: true } }),
+          tx.quote.findMany({ where: { companyId, leadId: sourceLeadId }, select: { id: true } }),
+          tx.order.findMany({ where: { companyId, leadId: sourceLeadId }, select: { id: true } }),
+          tx.followUpReminder.findMany({ where: { companyId, leadId: sourceLeadId }, select: { id: true } }),
         ]);
 
       const contactPrimaryMap: Record<string, boolean> = {};
@@ -402,40 +496,45 @@ export class CustomerMergeService {
         targetContactIds: targetContacts.map((c) => c.id),
         sourceContactPointIds: sourceContactPoints.map((cp) => cp.id),
         sourceConversationIds: sourceConversations.map((cv) => cv.id),
+        sourceActivityIds: sourceActivities.map((item) => item.id),
+        sourceEmailMessageIds: sourceEmailMessages.map((item) => item.id),
+        sourceQuoteIds: sourceQuotes.map((item) => item.id),
+        sourceOrderIds: sourceOrders.map((item) => item.id),
+        sourceReminderIds: sourceReminders.map((item) => item.id),
         contactPrimaryMap,
       };
 
       // b. 迁移关系: 仅改 leadId, 不删除
       await tx.contact.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.contactPoint.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.conversation.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.leadActivity.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.emailMessage.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.quote.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.order.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
       await tx.followUpReminder.updateMany({
-        where: { leadId: sourceLeadId },
+        where: { companyId, leadId: sourceLeadId },
         data: { leadId: targetLeadId },
       });
 
@@ -451,7 +550,7 @@ export class CustomerMergeService {
         targetUpdateData.companyNameConfidence = sourceLead.companyNameConfidence;
       }
       const updatedTarget = await tx.lead.update({
-        where: { id: targetLeadId },
+        where: { id: targetLeadId, companyId },
         data: targetUpdateData,
       });
 
@@ -467,7 +566,7 @@ export class CustomerMergeService {
         const demoteIds = primaries.filter((c) => c.id !== keepId).map((c) => c.id);
         if (demoteIds.length > 0) {
           await tx.contact.updateMany({
-            where: { id: { in: demoteIds } },
+            where: { companyId, id: { in: demoteIds } },
             data: { isPrimary: false },
           });
         }
@@ -476,7 +575,7 @@ export class CustomerMergeService {
       // e. 软删除 source (绝不硬删除); 旧 ID 经 mergedToId 解析到 target
       const now = new Date();
       await tx.lead.update({
-        where: { id: sourceLeadId },
+        where: { id: sourceLeadId, companyId },
         data: {
           status: 'merged',
           isMerged: true,
@@ -521,7 +620,7 @@ export class CustomerMergeService {
 
       // g. 候选置 merged
       await tx.identityMatchCandidate.update({
-        where: { id: candidate.id },
+        where: { id: candidate.id, companyId, status: 'merging' },
         data: { status: 'merged' },
       });
 
@@ -535,7 +634,7 @@ export class CustomerMergeService {
    */
   async rejectCandidate(command: RejectCandidateCommand): Promise<void> {
     const candidate = await this.prisma.identityMatchCandidate.findUnique({
-      where: { id: command.candidateId },
+      where: { id: command.candidateId, companyId: command.companyId },
     });
     if (!candidate || candidate.companyId !== command.companyId) {
       throw new NotFoundException('identity match candidate not found');
@@ -581,7 +680,7 @@ export class CustomerMergeService {
         });
       }
       await tx.identityMatchCandidate.update({
-        where: { id: candidate.id },
+        where: { id: candidate.id, companyId },
         data: { status: 'rejected' },
       });
     });
@@ -594,39 +693,57 @@ export class CustomerMergeService {
    */
   async undoMerge(command: UndoMergeCommand): Promise<void> {
     const audit = await this.prisma.customerMergeAudit.findUnique({
-      where: { id: command.auditId },
+      where: { id: command.auditId, companyId: command.companyId },
     });
     if (!audit || audit.companyId !== command.companyId) {
       throw new NotFoundException('merge audit not found');
     }
-    if (audit.undoneAt !== null) {
-      throw new ConflictException('undo_conflict: merge already undone');
-    }
-    if (audit.status !== 'completed') {
-      throw new ConflictException(`undo_conflict: audit status=${audit.status}`);
-    }
-
-    const targetLead = await this.prisma.lead.findUnique({
-      where: { id: audit.targetLeadId },
-    });
-    if (!targetLead) {
-      throw new NotFoundException('target lead not found');
-    }
-    // 目标在合并后被修改 -> 撤销不安全
-    if (targetLead.updatedAt.getTime() > audit.targetVersion.getTime()) {
-      throw new ConflictException(
-        'unsafe_undo: target changed since merge',
-      );
-    }
-
-    const before = audit.beforeState as unknown as MergeBeforeState;
-    const sourceLeadId = audit.sourceLeadId;
-    const targetLeadId = audit.targetLeadId;
-
     await this.prisma.$transaction(async (tx) => {
+      // Claim the audit state before reading/restoring anything. The status,
+      // tenant and merge version are one conditional write, so two undo
+      // requests cannot both enter the restore path.
+      const claimedAudit = await tx.customerMergeAudit.updateMany({
+        where: {
+          id: audit.id,
+          companyId: command.companyId,
+          status: 'completed',
+          undoneAt: null,
+          targetVersion: audit.targetVersion,
+        },
+        data: { status: 'undoing' },
+      });
+      if (claimedAudit.count !== 1) {
+        throw new ConflictException('undo_conflict: merge already claimed or undone');
+      }
+
+      const targetLead = await tx.lead.findUnique({
+        where: { id: audit.targetLeadId, companyId: command.companyId },
+      });
+      if (!targetLead) {
+        throw new NotFoundException('target lead not found');
+      }
+      if (targetLead.updatedAt.getTime() > audit.targetVersion.getTime()) {
+        throw new ConflictException('unsafe_undo: target changed since merge');
+      }
+      const claimedTarget = await tx.lead.updateMany({
+        where: {
+          id: audit.targetLeadId,
+          companyId: command.companyId,
+          updatedAt: audit.targetVersion,
+        },
+        data: { updatedAt: new Date() },
+      });
+      if (claimedTarget.count !== 1) {
+        throw new ConflictException('unsafe_undo: target changed since merge');
+      }
+
+      const before = audit.beforeState as unknown as MergeBeforeState;
+      const sourceLeadId = audit.sourceLeadId;
+      const targetLeadId = audit.targetLeadId;
+
       // a. 还原 target 字段
       await tx.lead.update({
-        where: { id: targetLeadId },
+        where: { id: targetLeadId, companyId: command.companyId },
         data: {
           companyName: before.targetLead.companyName,
           country: before.targetLead.country,
@@ -640,21 +757,39 @@ export class CustomerMergeService {
       // b. 迁回合并时迁移的 Contact / ContactPoint / Conversation (按记录的 ID)
       if (before.sourceContactIds.length > 0) {
         await tx.contact.updateMany({
-          where: { id: { in: before.sourceContactIds } },
+          where: { companyId: command.companyId, id: { in: before.sourceContactIds } },
           data: { leadId: sourceLeadId },
         });
       }
       if (before.sourceContactPointIds.length > 0) {
         await tx.contactPoint.updateMany({
-          where: { id: { in: before.sourceContactPointIds } },
+          where: { companyId: command.companyId, id: { in: before.sourceContactPointIds } },
           data: { leadId: sourceLeadId },
         });
       }
       if (before.sourceConversationIds.length > 0) {
         await tx.conversation.updateMany({
-          where: { id: { in: before.sourceConversationIds } },
+          where: { companyId: command.companyId, id: { in: before.sourceConversationIds } },
           data: { leadId: sourceLeadId },
         });
+      }
+      const restoreRelationIds: Array<{
+        model: any;
+        ids: string[];
+      }> = [
+        { model: tx.leadActivity, ids: before.sourceActivityIds ?? [] },
+        { model: tx.emailMessage, ids: before.sourceEmailMessageIds ?? [] },
+        { model: tx.quote, ids: before.sourceQuoteIds ?? [] },
+        { model: tx.order, ids: before.sourceOrderIds ?? [] },
+        { model: tx.followUpReminder, ids: before.sourceReminderIds ?? [] },
+      ];
+      for (const relation of restoreRelationIds) {
+        if (relation.ids.length > 0) {
+          await relation.model.updateMany({
+            where: { companyId: command.companyId, id: { in: relation.ids } },
+            data: { leadId: sourceLeadId },
+          });
+        }
       }
 
       // 还原 Contact 的 isPrimary (仅对快照中记录的联系人)
@@ -666,20 +801,20 @@ export class CustomerMergeService {
         .map(([k]) => k);
       if (trueIds.length > 0) {
         await tx.contact.updateMany({
-          where: { id: { in: trueIds } },
+          where: { companyId: command.companyId, id: { in: trueIds } },
           data: { isPrimary: true },
         });
       }
       if (falseIds.length > 0) {
         await tx.contact.updateMany({
-          where: { id: { in: falseIds } },
+          where: { companyId: command.companyId, id: { in: falseIds } },
           data: { isPrimary: false },
         });
       }
 
       // c. 恢复 source Lead
       await tx.lead.update({
-        where: { id: sourceLeadId },
+        where: { id: sourceLeadId, companyId: command.companyId },
         data: {
           companyName: before.sourceLead.companyName,
           country: before.sourceLead.country,
@@ -696,7 +831,7 @@ export class CustomerMergeService {
 
       // d. 标记审计已撤销
       await tx.customerMergeAudit.update({
-        where: { id: audit.id },
+        where: { id: audit.id, companyId: command.companyId },
         data: {
           status: 'undone',
           undoneAt: new Date(),

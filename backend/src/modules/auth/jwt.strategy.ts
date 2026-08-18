@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -19,7 +23,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       where: { id: payload.sub },
       include: {
         companies: {
-          where: { isActive: true },
+          where: { isActive: true, company: { isActive: true } },
           include: { company: true, role: true },
         },
       },
@@ -37,23 +41,76 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       isDefault: r.isDefault,
     }));
 
-    const requestedCompanyId =
-      (req?.headers?.['x-company-id'] as string | undefined) ||
-      (req?.headers?.['X-Company-Id'] as string | undefined);
-    const selectedIndex = requestedCompanyId
-      ? companies.findIndex((company) => company.id === requestedCompanyId)
-      : -1;
-    const orderedCompanies =
-      selectedIndex > 0
-        ? [companies[selectedIndex], ...companies.filter((_, index) => index !== selectedIndex)]
-        : companies;
+    const requestedCompanyId = String(
+      req?.headers?.['x-company-id'] || '',
+    ).trim() || null;
+    const isSuperAdmin = companies.some(
+      (company) => company.role === 'super_admin',
+    );
+    const superAdminRoleId = companies.find(
+      (company) => company.role === 'super_admin',
+    )?.roleId;
+
+    const defaultCompanies = companies.filter((company) => company.isDefault);
+    let activeCompany = requestedCompanyId
+      ? companies.find((company) => company.id === requestedCompanyId) || null
+      : defaultCompanies.length === 1
+        ? defaultCompanies[0]
+        : null;
+
+    if (requestedCompanyId && activeCompany && isSuperAdmin) {
+      activeCompany = {
+        ...activeCompany,
+        role: 'super_admin',
+        roleId: superAdminRoleId!,
+      };
+    }
+
+    if (requestedCompanyId && !activeCompany) {
+      if (!isSuperAdmin) {
+        throw new ForbiddenException('No access to requested company');
+      }
+      const targetCompany = await this.prisma.company.findFirst({
+        where: { id: requestedCompanyId, isActive: true },
+        select: { id: true, name: true },
+      });
+      if (!targetCompany) {
+        throw new ForbiddenException('Requested company is unavailable');
+      }
+      activeCompany = {
+        ...targetCompany,
+        role: 'super_admin',
+        roleId: superAdminRoleId!,
+        isDefault: false,
+      };
+    }
+
+    if (!activeCompany && companies.length === 1) {
+      activeCompany = companies[0];
+    }
+
+    if (!activeCompany) {
+      throw new ForbiddenException(
+        'Active company is ambiguous; select one with X-Company-Id',
+      );
+    }
+
+    if (
+      activeCompany
+      && !isSuperAdmin
+      && !companies.some((company) => company.id === activeCompany!.id)
+    ) {
+      throw new ForbiddenException('No access to active company');
+    }
 
     return {
       id: user.id,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
-      companies: orderedCompanies,
+      companies,
+      activeCompanyId: activeCompany?.id || null,
+      activeCompany,
     };
   }
 }

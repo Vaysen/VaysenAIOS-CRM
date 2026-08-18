@@ -25,6 +25,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { validateCustomizerUpload } from './customizer-upload-security';
 import { Request, Response } from 'express';
+import { requireActiveCompany } from '../../common/utils/data-isolation';
 
 // TASK-014: Python image-processor microservice URL
 const IMAGE_PROCESSOR_URL =
@@ -182,10 +183,7 @@ export class CustomizerService implements OnModuleInit {
   // ===========================================================================
 
   async createTemplate(dto: CreateTemplateDto, user: any) {
-    const companyId = user?.companies?.[0]?.id;
-    if (!companyId) {
-      throw new ForbiddenException('No company access');
-    }
+    const companyId = requireActiveCompany(user).id;
 
     // Check slug uniqueness
     const existing = await this.prisma.customizerTemplate.findUnique({
@@ -1001,16 +999,13 @@ export class CustomizerService implements OnModuleInit {
   }
 
   async getInquiries(query: QueryInquiriesDto, user: any) {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) {
-      return { items: [], total: 0, page: query.page, pageSize: query.pageSize, totalPages: 0 };
-    }
+    const companyId = requireActiveCompany(user).id;
 
     const { page = 1, pageSize = 20, status, designId } = query;
     const skip = (page - 1) * pageSize;
 
     const where: any = {
-      design: { companyId: { in: companyIds } },
+      design: { companyId },
     };
     if (status) where.status = status;
     if (designId) where.designId = designId;
@@ -1481,30 +1476,22 @@ export class CustomizerService implements OnModuleInit {
     inquiryCount: number;
     pendingInquiryCount: number;
   }> {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) {
-      return {
-        templateCount: 0,
-        designCount: 0,
-        inquiryCount: 0,
-        pendingInquiryCount: 0,
-      };
-    }
+    const companyId = requireActiveCompany(user).id;
 
     const [templateCount, designCount, inquiryCount, pendingInquiryCount] =
       await Promise.all([
         this.prisma.customizerTemplate.count({
-          where: { companyId: { in: companyIds } },
+          where: { companyId },
         }),
         this.prisma.customizerDesign.count({
-          where: { companyId: { in: companyIds } },
+          where: { companyId },
         }),
         this.prisma.customizerInquiry.count({
-          where: { design: { companyId: { in: companyIds } } },
+          where: { design: { companyId } },
         }),
         this.prisma.customizerInquiry.count({
           where: {
-            design: { companyId: { in: companyIds } },
+            design: { companyId },
             status: 'new',
           },
         }),
@@ -1519,13 +1506,10 @@ export class CustomizerService implements OnModuleInit {
   }
 
   async getRecentInquiries(limit: number, user: any): Promise<any[]> {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) {
-      return [];
-    }
+    const companyId = requireActiveCompany(user).id;
 
     const inquiries = await this.prisma.customizerInquiry.findMany({
-      where: { design: { companyId: { in: companyIds } } },
+      where: { design: { companyId } },
       include: {
         design: {
           select: {
@@ -1556,13 +1540,10 @@ export class CustomizerService implements OnModuleInit {
   }
 
   async getRecentDesigns(limit: number, user: any): Promise<any[]> {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) {
-      return [];
-    }
+    const companyId = requireActiveCompany(user).id;
 
     const designs = await this.prisma.customizerDesign.findMany({
-      where: { companyId: { in: companyIds } },
+      where: { companyId },
       include: {
         template: {
           select: {
@@ -1602,23 +1583,14 @@ export class CustomizerService implements OnModuleInit {
     pageSize: number;
     totalPages: number;
   }> {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) {
-      return {
-        items: [],
-        total: 0,
-        page: query.page,
-        pageSize: query.pageSize,
-        totalPages: 0,
-      };
-    }
+    const companyId = requireActiveCompany(user).id;
 
     const { page = 1, pageSize = 20, search, status } = query;
     const skip = (page - 1) * pageSize;
 
     // Do NOT filter by isPublished — admin sees all templates
     const where: any = {
-      companyId: { in: companyIds },
+      companyId,
     };
     if (search) {
       where.name = { contains: search, mode: 'insensitive' };
@@ -1763,22 +1735,13 @@ export class CustomizerService implements OnModuleInit {
     pageSize: number;
     totalPages: number;
   }> {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) {
-      return {
-        items: [],
-        total: 0,
-        page: query.page,
-        pageSize: query.pageSize,
-        totalPages: 0,
-      };
-    }
+    const companyId = requireActiveCompany(user).id;
 
     const { page = 1, pageSize = 20, status, search, templateId } = query;
     const skip = (page - 1) * pageSize;
 
     const where: any = {
-      companyId: { in: companyIds },
+      companyId,
     };
     if (status) {
       where.status = status;
@@ -1982,8 +1945,7 @@ export class CustomizerService implements OnModuleInit {
   // ===========================================================================
 
   private ensureCompanyAccess(user: any, companyId: string) {
-    const companyIds = user?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0 || !companyIds.includes(companyId)) {
+    if (requireActiveCompany(user).id !== companyId) {
       throw new ForbiddenException('Access denied to this company resource');
     }
   }

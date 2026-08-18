@@ -1,34 +1,31 @@
 # OpenClaw 生产候选边界
 
-> 状态（2026-07-15）：本目录是 `v1.4.20` 本地发布候选实物。腾讯官方微信插件 `2.4.6` 的 `group_id → direct` 缺陷已有确定性、代码锚定的 Vaysen AI CRM 补丁；脱敏群聊/非 owner 拒绝证据与精确 peer 符号链接审计已实现，本地自动门禁通过。候选**尚未部署到目标 Linux、尚未在目标 Docker 安装/审计、尚未负责人微信扫码和真实 owner/非 owner/群聊/重连验收、尚未完成 Windows 1.4.20 安装包验收**。
+> 状态（2026-07-15）：本目录是 `v1.4.20` 本地发布候选实物。腾讯官方微信插件 `2.4.6` 的 `group_id → direct` 缺陷已有确定性、代码锚定的 Vaysen 补丁；脱敏群聊/非 owner 拒绝证据与精确 peer 符号链接审计已实现，本地自动门禁通过。候选**尚未部署到目标 Linux、尚未在目标 Docker 安装/审计、尚未负责人微信扫码和真实 owner/非 owner/群聊/重连验收、尚未完成 Windows 1.4.20 安装包验收**。
 
 ## 固定版本
 
 - OpenClaw `2026.7.1`：`ghcr.io/openclaw/openclaw@sha256:6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c`
 - 腾讯微信插件：`@tencent-weixin/openclaw-weixin@2.4.6`
-- 私有 CRM 插件：`@vaysen/openclaw-crm-tools@1.2.1`
+- 私有 CRM 插件：`@vaysen/openclaw-crm-tools@1.3.2`
 
 Gateway 不发布宿主端口，只加入专用 `openclaw` bridge；只有 backend 同时加入 `vaysen-crm` 与 `openclaw`。OpenClaw 不获得 PostgreSQL、Redis、JWT、Docker、SSH 或备份凭据，不挂载可写源码，也不把 Gateway token/HMAC secret 暴露给浏览器。模型使用自定义 OpenAI-compatible `zhipu-cn` provider、现有 `open.bigmodel.cn` 端点和发布环境固定的 `ZHIPU_MODEL`。
 
-## 四个受限工具
+## 二十一个受限 CRM 工具
 
-私有插件只暴露四个无外发副作用的只读/内部草稿工具：
+私有插件固定暴露 21 个 `vaysen-crm` 工具，覆盖工作简报、客户查询与受限更新、任务、订单草稿、报价草稿、产品查询、背调、邮件/WhatsApp 历史读取，以及受控的邮件、WhatsApp 文本和报价发送。生产 `alsoAllow` 除这 21 个工具外只包含 heartbeat 与 TTS；通用 browser/browser-automation、message、exec、process、gateway、nodes 均在 deny 边界。
 
-- `crm_work_brief`：读取真实工作简报；
-- `crm_customer_search`：在当前 tenant/operator 范围内搜索客户和可信会话；
-- `crm_start_background_research`：对已由搜索确认的客户创建内部背调任务；
-- `crm_prepare_quote_delivery`：准备 `PREPARED_NOT_SENT` 报价草案。
+客户外发工具不是模型的直接 provider 能力。`crm_email_send`、`crm_email_reply`、`crm_whatsapp_send_text` 和 `crm_whatsapp_send_quote` 只能通过私有 broker 进入确定性的 `OutboundComplianceService` 与 durable `ExternalActionOutbox`。后端从已认证 session、一次性 selection token 和数据库关系推导 company/operator/customer/account/session/target；高风险发送还必须满足人工审批或短期授权，报价发送必须在同一事务原子消费 quote + message 两项 capability。租户、角色、owner/assigned、退订/suppression、可信目标、频控、附件摘要、幂等与 provider receipt 均由服务端判定，模型文字不能把动作标记为已发送。
 
 插件从 OpenClaw 运行时上下文取得微信 owner 身份，或从 backend 预注册的 CRM 管理员 session 取得操作者；模型不能自报 `companyId`、`userId`、sender、owner、session 或 tool-call 身份。每次 broker 请求对 timestamp、nonce、精确 `/api/internal/openclaw/tools/*` pathname 和原始 JSON body 做 HMAC-SHA256。后端持久化 nonce 防重放，并继续执行 owner/RBAC、租户、资源范围、租约、速率、幂等与审计。
 
-成功证据是 CRM 中持久化的 requestId、`AgentRun` 和 receipt，不是模型文字。报价 receipt 只有明确返回 `PREPARED_NOT_SENT` 时才可显示“已准备”，并必须提示业务员回到 CRM 人工核对、手动交付；本候选**绝不自动发送 WhatsApp、微信或邮件**。
+成功证据是 CRM 中持久化的 requestId、`AgentRun`、`ExternalActionOutbox` 和真实 provider receipt，不是模型文字。草稿/准备工具只有明确返回 `PREPARED_NOT_SENT` 时才可显示“已准备”；真实客户发送只有 Guard 授权、Outbox 执行并持久化 provider receipt 后才可显示成功。负责人微信提醒继续走固定 `/api/v1/vaysen/notify-owner` 与独立 `OwnerNotificationOutbox`，不与客户外发事实源混用。
 
 ## 隔离边界
 
 - OpenClaw 容器非 root、只读根文件系统、`cap_drop: ALL`、`no-new-privileges`、PID 限制；
 - state 是唯一持久化写入面；配置、workspace、私有插件只读挂载；`skipBootstrap: true` 禁止 OpenClaw 首次对话改写 workspace，但不影响加载已审计的业务规则；会话记录只写 state；临时目录为限额 tmpfs；
 - 不加入主业务网络，不直连 DB/Redis；不挂 Docker socket、SSH、宿主项目或备份；
-- 通用 `exec`、`process`、filesystem、browser、message、gateway、automation、session spawn/send 工具拒绝；
+- 通用 `exec`、`process`、filesystem、`browser`/`browser-automation`、message、gateway、automation、session spawn/send 工具在生产 deny 边界显式拒绝；客户邮件和 WhatsApp 外发只能调用 CRM tools 并进入统一 Guard/Outbox；
 - Gateway 在启动 Node 前固定 `umask 077`；OpenClaw state 目录/子目录 `0700`，文件和供应链报告 `0600`，运行时 smoke 会在真实模型回合后再次核验；Docker 日志限为 `2 × 5 MiB`；
 - 腾讯插件受保护 state、管理员日志或扫码终端仍可能含原始微信标识，均属于敏感管理员表面；原始标识不得进入浏览器、CRM 客户字段、发布报告或工作记录。
 
@@ -41,7 +38,7 @@ Gateway 不发布宿主端口，只加入专用 `openclaw` bridge；只有 backe
 1. 对精确版本 `@tencent-weixin/openclaw-weixin@2.4.6` 运行 `npm pack --ignore-scripts --json`；
 2. 只接受一个预期文件名的官方 `.tgz`，校验包名、版本、npm pack metadata、固定 SHA-512 integrity `sha512-qw9k3PLTiMWGNjjsknHgcTManH1w4j+Ji1ArWIaYLKCq3aFRsVwcqnPi127bvOoVMJGW4dbyJ8NECEMgoO+iRw==` 与实际 SHA-1；
 3. 将官方 tgz 原子保存到 `$OPENCLAW_STATE_DIR/supply-chain/artifacts`（目录 `0700`、文件 `0600`）；
-4. 用 `weixin-v2.4.6.patch.json` 和 `weixin-patch-supply-chain.mjs` 应用固定、可复现的 Vaysen AI CRM group fail-closed、网页扫码、脱敏 owner digest 与已配对负责人身份传播补丁，并把 Zod 收紧为精确版本；工具严格校验预期命中次数与补丁文件前后摘要，补丁 manifest SHA-256 固定为 `8ab539fd6cc0a3ae1587a6f0a994ad163b511c6d563423772d780c935c8c43f1`；
+4. 用 `weixin-v2.4.6.patch.json` 和 `weixin-patch-supply-chain.mjs` 应用固定、可复现的 Vaysen group fail-closed、网页扫码、脱敏 owner digest 与已配对负责人身份传播补丁，并把 Zod 收紧为精确版本；工具严格校验预期命中次数与补丁文件前后摘要，补丁 manifest SHA-256 固定为 `59f180806b5687aa53f4804ec6c496f2ab406817dfaa4d6974f192c362a610e2`；
 5. 补丁 tgz 固定 SHA-256 `15cde2b9926263ab5cfba21f2b935c710bc01dd983611e3dee673a052fa203d6`、integrity `sha512-WarnJ65LzlqhSluRnY4c/SvnnKnZTNhIEMXZEih+iQRDe4iZsVznsp3EySB+ADBdsa6XSH4MfhyijFLgiTPyhQ==`、tree SHA-256 `7f2d15c5e1d665ee7b3e7b1fc9885b915854e960d7f82ac97a512939eb2664b1`；先核验固定 OpenClaw 镜像的依赖与 workspace override 均为 `typebox@1.3.3`，再将微信、`qrcode-terminal@0.12.0`、`zod@4.3.6` 与 `typebox@1.3.3` 逐包校验并缓存，以最小精确依赖项目在线生成/核验 lock、在全新目录离线安装重放；私有包只复制 6 个允许发布文件并统一为目录 `0755`、文件 `0644` 后双打包，消除宿主 umask 对 tgz 字节的影响；最后两个插件安装阶段强制 `npm offline`，不从 registry 二次下载；瞬时网络失败最多重试一次，缓存会在受管状态审计前删除；
 6. 自动负例证明带 `group_id` 的普通/斜杠消息在 slash/auth/route/dispatch/tool 之前拒绝，非 owner 在鉴权后、route/dispatch/tool 前拒绝，并只写脱敏 marker evidence；
 7. 从 OpenClaw `2026.7.1` 的 `state/openclaw.sqlite` / `installed_plugin_index` 读取安装记录，核对 source/spec/sourcePath/installPath/version/artifact/摘要以及补丁后的安装路径；

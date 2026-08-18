@@ -1,9 +1,16 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../../common/ai/ai-provider.service';
-import { ensureCompanyAccess } from '../../common/utils/data-isolation';
+import { ensureCompanyAccess, hasFullAccess, requireActiveCompany } from '../../common/utils/data-isolation';
 import { LanguageService, LANGUAGE_NAMES } from '../../common/services/language.service';
 import { normalizeLanguage, DEFAULT_FALLBACK_LANGUAGE } from '../../common/utils/language.util';
+
+/** 批量操作动作白名单（R111 批次B：Foxmail 式邮件中心） */
+export const MAIL_WORKBENCH_BATCH_ACTIONS = ['mark_read', 'mark_unread', 'star', 'unstar', 'archive', 'delete'] as const;
+export type MailWorkbenchBatchAction = (typeof MAIL_WORKBENCH_BATCH_ACTIONS)[number];
+
+/** 伪账号：sourceAccountId 为空（无 IMAP 账号归属）的收件消息归入「未分类」 */
+export const UNCATEGORIZED_ACCOUNT_ID = 'uncategorized';
 
 @Injectable()
 export class MailWorkbenchService {
@@ -13,49 +20,125 @@ export class MailWorkbenchService {
     private languageService: LanguageService,
   ) {}
 
-  /** Get mail folder tree with counts */
-  async getTree(currentUser: any) {
-    const companyIds = (currentUser as any)?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) return [];
-    const [inbox, sent, drafts] = await Promise.all([
-      this.prisma.communicationMessage.count({
-        where: {
-          direction: 'inbound',
-          conversation: { companyId: { in: companyIds }, channel: 'business_email' },
-        },
+  /**
+   * Get mail folder tree with counts.
+   *
+   * - 不传 accountId：聚合全部账号（兼容现状），并返回 IMAP 已配置账号的分组文件夹树
+   *   `{ folders, accounts, uncategorized }`
+   * - 传 accountId：返回该账号（或 `uncategorized` 未分类）的独立文件夹树
+   *   `{ account, folders }`
+   */
+  async getTree(currentUser: any, accountId?: string) {
+    const companyId = requireActiveCompany(currentUser).id;
+    const messageOwnerWhere = this.messageOwnerWhere(currentUser, companyId);
+    const conversationOwnerWhere = this.conversationOwnerWhere(currentUser, companyId);
+
+    const inboundBase = (extra: Record<string, unknown> = {}) => ({
+      direction: 'inbound',
+      isArchived: false,
+      deletedAt: null,
+      conversation: {
+        companyId,
+        channel: 'business_email',
+        ...conversationOwnerWhere,
+      },
+      ...extra,
+    });
+    const folderCounts = async (messageWhere: Record<string, unknown>, emailWhere: Record<string, unknown>) => {
+      const [inbox, starred, sent, drafts] = await Promise.all([
+        this.prisma.communicationMessage.count({ where: inboundBase(messageWhere) }),
+        this.prisma.communicationMessage.count({ where: inboundBase({ ...messageWhere, isStarred: true }) }),
+        this.prisma.emailMessage.count({
+          where: { companyId, status: { in: ['sent', 'Sent'] }, ...messageOwnerWhere, ...emailWhere },
+        }),
+        this.prisma.emailMessage.count({
+          where: { companyId, status: { in: ['draft', 'Draft'] }, ...messageOwnerWhere, ...emailWhere },
+        }),
+      ]);
+      return [
+        { id: 'inbox', label: '收件箱', count: inbox },
+        { id: 'sent', label: '已发送', count: sent },
+        { id: 'drafts', label: '草稿', count: drafts },
+        { id: 'starred', label: '星标', count: starred },
+      ];
+    };
+
+    // 单账号（或未分类）独立文件夹树
+    if (accountId) {
+      if (accountId === UNCATEGORIZED_ACCOUNT_ID) {
+        // 未分类仅指 sourceAccountId 为空的收件消息；已发送/草稿（EmailMessage）必有账号归属，计数为 0
+        const folders = await folderCounts({ sourceAccountId: null }, { emailAccountId: UNCATEGORIZED_ACCOUNT_ID });
+        return {
+          account: { id: UNCATEGORIZED_ACCOUNT_ID, address: null, enabled: false, label: '未分类' },
+          folders,
+        };
+      }
+      const account = await this.prisma.emailAccount.findFirst({
+        where: { id: accountId, companyId },
+        select: { id: true, senderEmail: true, inboundEnabled: true },
+      });
+      if (!account) throw new NotFoundException('Email account not found in current company');
+      const folders = await folderCounts({ sourceAccountId: accountId }, { emailAccountId: accountId });
+      return {
+        account: { id: account.id, address: account.senderEmail, enabled: account.inboundEnabled },
+        folders,
+      };
+    }
+
+    // 聚合视图：全部账号文件夹（现状兼容）+ 按邮箱账号分组（仅含 IMAP 已配置账号）+ 未分类
+    const [folders, accounts, uncategorized] = await Promise.all([
+      folderCounts({}, {}),
+      this.prisma.emailAccount.findMany({
+        where: { companyId, status: 'active', imapHost: { not: null }, imapUsername: { not: null } },
+        select: { id: true, senderEmail: true, inboundEnabled: true },
+        orderBy: { createdAt: 'asc' },
       }),
-      this.prisma.emailMessage.count({
-        where: { companyId: { in: companyIds }, status: { in: ['sent', 'Sent'] } },
-      }),
-      this.prisma.emailMessage.count({
-        where: { companyId: { in: companyIds }, status: { in: ['draft', 'Draft'] } },
-      }),
+      this.prisma.communicationMessage.count({ where: inboundBase({ sourceAccountId: null }) }),
     ]);
-    return [
-      { id: 'inbox', label: '收件箱', count: inbox },
-      { id: 'sent', label: '已发送', count: sent },
-      { id: 'drafts', label: '草稿', count: drafts },
-      { id: 'starred', label: '星标', count: 0 },
-    ];
+    const accountGroups = await Promise.all(
+      accounts.map(async (a) => ({
+        id: a.id,
+        address: a.senderEmail,
+        enabled: a.inboundEnabled,
+        folders: await folderCounts({ sourceAccountId: a.id }, { emailAccountId: a.id }),
+      })),
+    );
+    return {
+      folders,
+      accounts: accountGroups,
+      uncategorized: { id: UNCATEGORIZED_ACCOUNT_ID, label: '未分类', count: uncategorized },
+    };
   }
 
   /** List messages with grouping and filters */
   async getMessages(currentUser: any, query: {
     page?: number; limit?: number; folder?: string; search?: string;
     customerId?: string; ownerUserId?: string; source?: string; status?: string; q?: string;
+    accountId?: string;
   }) {
-    const companyIds = (currentUser as any)?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) return { data: [], meta: { total: 0 } };
+    const companyId = requireActiveCompany(currentUser).id;
+    const messageOwnerWhere = this.messageOwnerWhere(currentUser, companyId);
+    const conversationOwnerWhere = this.conversationOwnerWhere(currentUser, companyId);
     const page = query.page || 1; const limit = query.limit || 20; const skip = (page - 1) * limit;
 
-    if (!query.folder || query.folder === 'inbox') {
+    // 收件箱/星标：CommunicationMessage 多账号聚合（Foxmail 时间线，按 receivedAt 倒序）
+    const isInboundFolder = !query.folder || query.folder === 'inbox' || query.folder === 'starred';
+    if (isInboundFolder) {
       const inboundWhere: any = {
         direction: 'inbound',
+        isArchived: false,
+        deletedAt: null,
         conversation: {
-          companyId: { in: companyIds },
+          companyId,
           channel: 'business_email',
+          ...conversationOwnerWhere,
         },
       };
+      if (query.accountId) {
+        await this.assertAccountInCompany(companyId, query.accountId);
+        inboundWhere.sourceAccountId = query.accountId === UNCATEGORIZED_ACCOUNT_ID ? null : query.accountId;
+      }
+      if (query.folder === 'starred') inboundWhere.isStarred = true;
       const search = query.search || query.q;
       if (search) {
         inboundWhere.OR = [
@@ -106,15 +189,23 @@ export class MailWorkbenchService {
           leadId: message.conversation.leadId,
           lead: message.conversation.lead,
           attachmentsMeta: message.attachmentsMeta,
+          accountId: message.sourceAccountId ?? null,
+          isStarred: Boolean(message.isStarred),
+          isArchived: Boolean(message.isArchived),
         })),
         meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
       };
     }
 
-    const where: any = { companyId: { in: companyIds } };
+    // 已发送/草稿：EmailMessage（营销已发记录）
+    const where: any = { companyId, ...messageOwnerWhere };
     if (query.folder === 'sent') where.status = { in: ['sent', 'Sent'] };
     else if (query.folder === 'drafts') where.status = { in: ['draft', 'Draft'] };
-    else if (query.folder === 'starred') return { data: [], meta: { page, limit, total: 0, totalPages: 0 } };
+    else return { data: [], meta: { page, limit, total: 0, totalPages: 0 } };
+    if (query.accountId) {
+      await this.assertAccountInCompany(companyId, query.accountId);
+      where.emailAccountId = query.accountId;
+    }
     if (query.search) where.subject = { contains: query.search, mode: 'insensitive' };
     if (query.status) where.status = query.status;
     if (query.customerId) where.leadId = query.customerId;
@@ -135,12 +226,87 @@ export class MailWorkbenchService {
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
+  /**
+   * 批量操作（R111 批次B）：mark_read / mark_unread / star / unstar / archive / delete。
+   * - 仅限当前公司（且在本用户可见范围）的 inbound 消息，跨租户/越权 ids 整体拒绝（403）
+   * - 事务批量更新，幂等：重复执行同一动作 updated 不重复计数
+   * - 空 ids / 非法 action 拒绝（400）
+   */
+  async batchUpdate(currentUser: any, dto: { ids: string[]; action: string }) {
+    const companyId = requireActiveCompany(currentUser).id;
+    const rawIds = Array.isArray(dto?.ids) ? dto.ids.map((id: any) => String(id).trim()).filter(Boolean) : [];
+    const action = String(dto?.action || '');
+    if (rawIds.length === 0) throw new BadRequestException('ids must be a non-empty array');
+    if (!(MAIL_WORKBENCH_BATCH_ACTIONS as readonly string[]).includes(action)) {
+      throw new BadRequestException(`action must be one of: ${MAIL_WORKBENCH_BATCH_ACTIONS.join(', ')}`);
+    }
+    const ids = [...new Set(rawIds)];
+
+    // 越权防护：ids 必须全部属于当前公司（且在本用户可见范围），缺一即整体拒绝
+    const found = await this.prisma.communicationMessage.findMany({
+      where: {
+        id: { in: ids },
+        direction: 'inbound',
+        conversation: {
+          companyId,
+          channel: 'business_email',
+          ...this.conversationOwnerWhere(currentUser, companyId),
+        },
+      },
+      select: { id: true, conversationId: true },
+    });
+    if (found.length !== ids.length) {
+      throw new ForbiddenException('Some messages are outside the current company scope');
+    }
+    const foundIds = found.map((m) => m.id);
+
+    const actionWhere: Record<string, Record<string, unknown>> = {
+      mark_read: { readAt: null },
+      mark_unread: { readAt: { not: null } },
+      star: { isStarred: false },
+      unstar: { isStarred: true },
+      archive: { isArchived: false },
+      delete: { deletedAt: null },
+    };
+    const actionData: Record<string, Record<string, unknown>> = {
+      mark_read: { readAt: new Date() },
+      mark_unread: { readAt: null },
+      star: { isStarred: true },
+      unstar: { isStarred: false },
+      archive: { isArchived: true },
+      delete: { deletedAt: new Date() },
+    };
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.communicationMessage.updateMany({
+        where: { id: { in: foundIds }, ...actionWhere[action] },
+        data: actionData[action],
+      });
+      if (action === 'mark_read') {
+        // 同步会话未读数，避免会话列表徽标漂移
+        const conversationIds = [...new Set(found.map((m) => m.conversationId))];
+        for (const conversationId of conversationIds) {
+          const unread = await tx.communicationMessage.count({
+            where: { conversationId, direction: 'inbound', readAt: null, deletedAt: null },
+          });
+          await tx.conversation.update({ where: { id: conversationId }, data: { unreadCount: unread } });
+        }
+      }
+      return result.count;
+    });
+    return { updated };
+  }
+
   /** Get single message with lead info */
   async getMessage(id: string, currentUser: any) {
+    const companyId = requireActiveCompany(currentUser).id;
     if (id.startsWith('inbound:')) {
       const messageId = id.slice('inbound:'.length);
-      const inbound = await this.prisma.communicationMessage.findUnique({
-        where: { id: messageId },
+      const inbound = await this.prisma.communicationMessage.findFirst({
+        where: {
+          id: messageId,
+          conversation: { companyId, ...this.conversationOwnerWhere(currentUser, companyId) },
+        },
         include: {
           conversation: {
             include: {
@@ -160,10 +326,6 @@ export class MailWorkbenchService {
         },
       });
       if (!inbound) throw new NotFoundException('Message not found');
-      const companyIds = (currentUser as any)?.companies?.map((c: any) => c.id) || [];
-      if (!companyIds.includes(inbound.conversation.companyId)) {
-        throw new ForbiddenException('Access denied');
-      }
       return {
         id,
         companyId: inbound.conversation.companyId,
@@ -176,13 +338,17 @@ export class MailWorkbenchService {
         createdAt: inbound.receivedAt || inbound.createdAt,
         attachmentsMeta: inbound.attachmentsMeta,
         lead: inbound.conversation.lead,
+        accountId: inbound.sourceAccountId ?? null,
+        isStarred: Boolean(inbound.isStarred),
+        isArchived: Boolean(inbound.isArchived),
       };
     }
 
-    const msg = await this.prisma.emailMessage.findUnique({ where: { id }, include: { lead: { select: { id: true, companyName: true, contactName: true, country: true, language: true } } } });
+    const msg = await this.prisma.emailMessage.findFirst({
+      where: { id, companyId, ...this.messageOwnerWhere(currentUser, companyId) },
+      include: { lead: { select: { id: true, companyName: true, contactName: true, country: true, language: true } } },
+    });
     if (!msg) throw new NotFoundException('Message not found');
-    const companyIds = (currentUser as any)?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0 || !companyIds.includes(msg.companyId)) throw new ForbiddenException('Access denied');
     return msg;
   }
 
@@ -253,21 +419,41 @@ export class MailWorkbenchService {
 
   /** Get summary counts for all folders */
   async getSummary(currentUser: any) {
-    const companyIds = (currentUser as any)?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) return {};
-    const where = { companyId: { in: companyIds } };
-    const [inbox, sent, drafts, total] = await Promise.all([
+    const companyId = requireActiveCompany(currentUser).id;
+    const messageOwnerWhere = this.messageOwnerWhere(currentUser, companyId);
+    const conversationOwnerWhere = this.conversationOwnerWhere(currentUser, companyId);
+    const where = { companyId, ...messageOwnerWhere };
+    const [inbox, sent, drafts, total, unread] = await Promise.all([
       this.prisma.communicationMessage.count({
         where: {
           direction: 'inbound',
-          conversation: { companyId: { in: companyIds }, channel: 'business_email' },
+          isArchived: false,
+          deletedAt: null,
+          conversation: {
+            companyId,
+            channel: 'business_email',
+            ...conversationOwnerWhere,
+          },
         },
       }),
       this.prisma.emailMessage.count({ where: { ...where, status: { in: ['sent', 'Sent'] } } }),
       this.prisma.emailMessage.count({ where: { ...where, status: { in: ['draft', 'Draft'] } } }),
       this.prisma.emailMessage.count({ where }),
+      this.prisma.communicationMessage.count({
+        where: {
+          direction: 'inbound',
+          isArchived: false,
+          deletedAt: null,
+          readAt: null,
+          conversation: {
+            companyId,
+            channel: 'business_email',
+            ...conversationOwnerWhere,
+          },
+        },
+      }),
     ]);
-    return { inbox, sent, drafts, total, unread: 0 };
+    return { inbox, sent, drafts, total, unread };
   }
 
   /** Generate scenario-based reply draft for specific business context */
@@ -389,5 +575,32 @@ export class MailWorkbenchService {
   private getMessageContent(message: any, maxLength: number) {
     const body = message.bodyText || String(message.bodyHtml || '').replace(/<[^>]*>/g, '');
     return `${message.subject || ''}\n${body}`.substring(0, maxLength);
+  }
+
+  private messageOwnerWhere(currentUser: any, companyId: string) {
+    return hasFullAccess(currentUser, companyId)
+      ? {}
+      : { senderUserId: currentUser.id };
+  }
+
+  private conversationOwnerWhere(currentUser: any, companyId: string) {
+    return hasFullAccess(currentUser, companyId)
+      ? {}
+      : {
+          OR: [
+            { assignedUserId: currentUser.id },
+            { lead: { ownerUserId: currentUser.id } },
+          ],
+        };
+  }
+
+  /** accountId 过滤必须属于当前公司；`uncategorized` 为内置伪账号（sourceAccountId 为空） */
+  private async assertAccountInCompany(companyId: string, accountId: string) {
+    if (accountId === UNCATEGORIZED_ACCOUNT_ID) return;
+    const account = await this.prisma.emailAccount.findFirst({
+      where: { id: accountId, companyId },
+      select: { id: true },
+    });
+    if (!account) throw new NotFoundException('Email account not found in current company');
   }
 }

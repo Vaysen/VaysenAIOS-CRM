@@ -98,7 +98,7 @@ function createHarness() {
         email: 'owner@example.com',
         companies: [{
           companyId: COMPANY_ID,
-          company: { id: COMPANY_ID, slug: 'demo-company' },
+          company: { id: COMPANY_ID, slug: 'vaysen-crm' },
           role: { name: 'company_admin' },
         }],
       }),
@@ -340,7 +340,7 @@ function createHarness() {
 describe('OpenClawToolBrokerService', () => {
   beforeEach(() => {
     process.env.OPENCLAW_OWNER_EMAIL = 'owner@example.com';
-    process.env.OPENCLAW_OWNER_COMPANY_SLUG = 'demo-company';
+    process.env.OPENCLAW_OWNER_COMPANY_SLUG = 'vaysen-crm';
     process.env.OPENCLAW_WECHAT_OWNER_PEER_SHA256 = createHash('sha256')
       .update(OWNER_SENDER)
       .digest('hex');
@@ -1392,6 +1392,12 @@ describe('OpenClawToolBrokerService', () => {
         buffer: expect.any(Buffer),
       }),
       expect.objectContaining({ id: 'owner-user' }),
+      expect.objectContaining({
+        actorType: 'AGENT',
+        actionType: 'OPENCLAW_WHATSAPP_QUOTE',
+        leadId: LEAD_ID,
+        conversationId: CONVERSATION_ID,
+      }),
     );
     expect(result).toEqual(expect.objectContaining({
       status: 'COMPLETED',
@@ -1407,7 +1413,7 @@ describe('OpenClawToolBrokerService', () => {
     expect(JSON.stringify(result)).not.toContain('8613800000000');
   });
 
-  it('uses the unique connected server Baileys session when the trusted conversation came from Electron', async () => {
+  it('blocks Electron-to-server Baileys fallback without a trusted session migration', async () => {
     const { service, prisma, whatsapp } = createHarness();
     prisma.whatsAppSession.findFirst.mockResolvedValue({
       id: 'electron-session-1',
@@ -1418,33 +1424,16 @@ describe('OpenClawToolBrokerService', () => {
       authStatePath: '/var/lib/vaysen-crm/whatsapp/server-session-1',
     }]);
 
-    const result: any = await service.execute('whatsapp-send-text', {
+    await expect(service.execute('whatsapp-send-text', {
       actor: wechatActor({ toolCallId: 'electron-origin-send-1', messageId: 'owner-send-1' }),
       input: {
         selectionToken: ALL_SELECTION_TOKENS['whatsapp-send-text'],
         text: 'Internal acceptance message',
       },
-    }, verified);
+    }, verified)).rejects.toThrow(/cannot fall back/i);
 
-    expect(prisma.whatsAppSession.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { companyId: COMPANY_ID, status: 'connected' },
-    }));
-    expect(whatsapp.sendMessage).toHaveBeenCalledWith(
-      'server-baileys-session-1',
-      {
-        to: '8613800000000@s.whatsapp.net',
-        text: 'Internal acceptance message',
-      },
-      expect.objectContaining({ id: 'owner-user' }),
-    );
-    expect(result).toEqual(expect.objectContaining({
-      status: 'COMPLETED',
-      businessStatus: 'SUCCEEDED',
-      result: expect.objectContaining({
-        status: 'SUCCEEDED',
-        delivered: true,
-      }),
-    }));
+    expect(prisma.whatsAppSession.findMany).not.toHaveBeenCalled();
+    expect(whatsapp.sendMessage).not.toHaveBeenCalled();
   });
 
   it('blocks quote PDF delivery unless both quote and message send capabilities allow it', async () => {

@@ -175,15 +175,19 @@ if (Array.isArray(manifestMigrations)) {
 
 const releaseTag = manifest?.source?.releaseTag;
 const releaseTagMatch = typeof releaseTag === 'string'
-  ? releaseTag.match(/^vaysen-crm-lan(?:-source)?-v(\d+\.\d+\.\d+)-r(\d+)$/)
+  ? releaseTag.match(/^vaysen-crm-lan(?:-(source|pilot))?-v(\d+\.\d+\.\d+)-r(\d+)$/)
   : null;
 if (!releaseTagMatch) {
-  errors.push('$.source.releaseTag: must use vaysen-crm-lan[-source]-v<version>-r<revision>');
+  errors.push('$.source.releaseTag: must use vaysen-crm-lan[-source|-pilot]-v<version>-r<revision>');
 } else {
-  const [, version, revision] = releaseTagMatch;
+  const [, tagFlavor, version, revision] = releaseTagMatch;
   const expectedTaskSuffix = `v${version}-R${revision}`;
-  const expectedSourceTag = `vaysen-crm-lan-source-v${version}-r${revision}`;
-  const expectedLinuxTag = `vaysen-crm-lan-v${version}-r${revision}`;
+  const expectedSourceTag = tagFlavor === 'pilot'
+    ? `vaysen-crm-lan-pilot-v${version}-r${revision}`
+    : `vaysen-crm-lan-source-v${version}-r${revision}`;
+  const expectedLinuxTag = tagFlavor === 'pilot'
+    ? `vaysen-crm-lan-pilot-v${version}-r${revision}`
+    : `vaysen-crm-lan-v${version}-r${revision}`;
   const buildExample = manifest?.dockerImages?.buildExample;
   const releaseTagAssignments = typeof buildExample === 'string'
     ? [...buildExample.matchAll(/(?:^|\s)RELEASE_TAG=([^\s]+)/g)].map((match) => match[1])
@@ -205,7 +209,7 @@ if (!releaseTagMatch) {
   if (!hasExactToken(releaseTagNote, expectedLinuxTag)) {
     errors.push(`$.source.releaseTagNote: must name the matching Linux tag ${expectedLinuxTag}`);
   }
-  if (releaseTag === expectedSourceTag && !hasExactToken(releaseTagNote, expectedSourceTag)) {
+  if ((tagFlavor === 'source' || tagFlavor === 'pilot') && !hasExactToken(releaseTagNote, expectedSourceTag)) {
     errors.push(`$.source.releaseTagNote: source manifest must name its exact source tag ${expectedSourceTag}`);
   }
 
@@ -265,7 +269,7 @@ if (!releaseTagMatch) {
       errors.push(`${relativePath}: current-release block must name ${expectedSourceTag}`);
     }
     const sameVersionTag = new RegExp(
-      `vaysen-crm-lan(?:-source)?-v${escapeRegExp(version)}-r(\\d+)`,
+      `vaysen-crm-lan(?:-(?:source|pilot))?-v${escapeRegExp(version)}-r(\\d+)`,
       'g',
     );
     for (const match of currentBlock.matchAll(sameVersionTag)) {

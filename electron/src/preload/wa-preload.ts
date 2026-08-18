@@ -22,7 +22,6 @@ import {
   firstTrustedWhatsAppDisplayName,
   normalizePhoneLikeWhatsAppTitle,
   findTrustedWhatsAppJidInObject,
-  findPhoneJidForWhatsAppIdentity,
   isUnavailableAiTranslation,
   createInFlightSendGate,
   pickSendButton,
@@ -181,7 +180,7 @@ function getTrustedJidFromElement(element: HTMLElement): string | null {
   const candidates = [element, ...Array.from(element.querySelectorAll('[data-id]'))];
   for (const candidate of candidates) {
     const dataId = candidate.getAttribute('data-id') || '';
-    const match = dataId.match(/(\d{7,15}@(?:c\.us|s\.whatsapp\.net)|\d+@lid|\d{10,}@g\.us)/);
+    const match = dataId.match(/(\d{7,15}@(?:c\.us|s\.whatsapp\.net)|\d+@lid|\d{10,}@(?:g\.us|broadcast))/);
     if (match) return match[1];
   }
 
@@ -201,12 +200,8 @@ function getTrustedJidFromElement(element: HTMLElement): string | null {
     if (jid?.endsWith('@c.us') || jid?.endsWith('@s.whatsapp.net')) return jid;
     if (jid && !selectedIdentity) selectedIdentity = jid;
   }
-  if (selectedIdentity?.endsWith('@lid')) {
-    for (const root of reactRoots) {
-      const phoneJid = findPhoneJidForWhatsAppIdentity(root, selectedIdentity);
-      if (phoneJid) return phoneJid;
-    }
-  }
+  // Preserve a LID as the channel identity. A numeric LID prefix is not a
+  // phone number; any phone-JID mapping is reserved for explicit send flows.
   return selectedIdentity;
 }
 
@@ -218,10 +213,11 @@ function getTrustedJidFromElement(element: HTMLElement): string | null {
 // 当前会话信息提取 — 多种策略,最可靠的组合
 // ════════════════════════════════════════════════════════════
 
-function getCurrentChatInfo(): { name: string; phone: string; isGroup: boolean } | null {
+function getCurrentChatInfo(): { name: string; phone: string; isGroup: boolean; externalId: string } | null {
   let name = '';
   let phone = '';
   let isGroup = false;
+  let externalId = '';
 
   // ── 策略 0 (最高优先): 从活跃聊天列表项的 data-id 提取 JID ──
   // 这是最可靠的电话号码来源，即使联系人有备注名也能正确提取
@@ -230,12 +226,14 @@ function getCurrentChatInfo(): { name: string; phone: string; isGroup: boolean }
       const el = document.querySelector(sel) as HTMLElement | null;
       if (el) {
         const dataId = getTrustedJidFromElement(el) || el.getAttribute('data-id') || '';
+        const trustedJid = dataId.match(/(\d{7,15}@(?:c\.us|s\.whatsapp\.net|lid)|\d{10,}@(?:g\.us|broadcast))/)?.[1] || '';
+        if (trustedJid) externalId = trustedJid;
         // JID 格式: 8613800138000@c.us 或 false_8613800138000@c.us_3EB...
         const jidMatch = dataId.match(/(\d{8,})@(?:c\.us|s\.whatsapp\.net|l\.us)/);
         if (jidMatch) {
           phone = jidMatch[1];
         }
-        if (dataId.includes('@g.us')) {
+        if (dataId.includes('@g.us') || dataId.includes('@broadcast')) {
           isGroup = true;
         }
         // 同时尝试从列表项提取名称（备注名）
@@ -344,9 +342,11 @@ function getCurrentChatInfo(): { name: string; phone: string; isGroup: boolean }
     } catch {}
   }
 
-  if (name || phone) {
+  if (externalId && /@(?:g\.us|broadcast)$/i.test(externalId)) isGroup = true;
+
+  if (name || phone || externalId) {
     console.log(`[WA] getCurrentChatInfo 结果: name="${name}", phone="${phone}", isGroup=${isGroup}`);
-    return { name, phone, isGroup };
+    return { name, phone, isGroup, externalId };
   }
   // 调试：如果没找到任何信息，输出当前 DOM 状态帮助诊断
   console.log('[WA] getCurrentChatInfo 未找到聊天信息, #main=', !!document.querySelector('#main'), '#pane-side=', !!document.querySelector('#pane-side'), 'header=', !!document.querySelector('#main header'), 'url=', location.href);
@@ -547,15 +547,20 @@ function checkLoginStatus(): string {
 
 namespace AIPanel {
   let root: HTMLDivElement | null = null;
-  let ball: HTMLButtonElement | null = null;
   let panel: HTMLDivElement | null = null;
   let isOpen = false;
-  let activeTab: 'suggest' | 'translate' = 'suggest';
+  let activeTab: 'suggest' | 'translate' | 'analysis' | 'kb' | 'draft' = 'suggest';
   let suggestions: string[] = [];
   let zhInput = '';
   let enOutput = '';
   let isLoadingSuggest = false;
   let isTranslating = false;
+  let analysisResult: any = null;
+  let isLoadingAnalysis = false;
+  let kbContext: any = null;
+  let isLoadingKb = false;
+  let draftResult: any = null;
+  let isLoadingDraft = false;
 
   // ── 专业 SVG 图标（Lucide 风格，无 emoji）──
   const ICONS = {
@@ -577,6 +582,12 @@ namespace AIPanel {
     send: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>',
     // 生成 — 闪光
     spark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z"/></svg>',
+    // 客户分析 — 用户
+    user: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    // 知识库 — 书本
+    book: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+    // 接待草稿 — 收件箱
+    inbox: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
   };
 
   // 注入 spinner 动画 keyframes
@@ -610,61 +621,36 @@ namespace AIPanel {
     }
 
     // 容器 — 使用 all:initial 隔离 WhatsApp 样式
+    // 右侧停靠侧栏（常驻，非悬浮球）：top/right/bottom 全高，宽度 420px
     root = createEl('div', 'tl-ai-root') as HTMLDivElement;
     Object.assign(root.style, {
       all: 'initial',
       position: 'fixed',
-      bottom: '90px',
-      right: '16px',
+      top: '0',
+      right: '0',
+      bottom: '0',
+      width: '420px',
+      height: '100vh',
+      display: 'flex',
+      flexDirection: 'column',
       zIndex: '2147483647',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+      boxShadow: '-2px 0 12px rgba(0,0,0,0.12)',
+      background: '#ffffff',
+      borderLeft: '1px solid #e5e7eb',
     } as any);
 
-    // ── 悬浮球 ──
-    ball = createEl('button', 'tl-ai-ball') as HTMLButtonElement;
-    Object.assign(ball.style, {
-      all: 'initial',
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: '6px',
-      padding: '8px 16px',
-      borderRadius: '8px',
-      background: '#374151',
-      color: '#ffffff !important',
-      fontSize: '13px',
-      fontWeight: '500',
-      cursor: 'pointer',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-      border: '1px solid #1f2937',
-      outline: 'none',
-      fontFamily: 'inherit',
-      transition: 'transform 0.15s, background 0.15s',
-      position: 'relative',
-      zIndex: '2147483647',
-      pointerEvents: 'auto',
-      userSelect: 'none',
-      WebkitUserSelect: 'none',
-    } as any);
-    ball.innerHTML = ICONS.ai + '<span style="color:#d1d5db;">AI 助手</span>';
-    ball.addEventListener('mouseenter', () => { if (ball) ball.style.background = '#4b5563'; });
-    ball.addEventListener('mouseleave', () => { if (ball) ball.style.background = '#374151'; });
-    ball.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
-
-    // ── 展开面板 ──
+    // ── 面板（占满整个侧栏）──
     panel = createEl('div', 'tl-ai-panel') as HTMLDivElement;
     Object.assign(panel.style, {
       all: 'initial',
-      position: 'absolute',
-      bottom: '60px',
-      right: '0',
-      width: '440px',
-      maxWidth: 'calc(100vw - 40px)',
-      borderRadius: '10px',
+      position: 'static',
+      flex: '1',
+      display: 'flex',
+      flexDirection: 'column',
+      width: '100%',
       background: '#ffffff',
-      border: '1px solid #e5e7eb',
-      boxShadow: '0 4px 24px rgba(0,0,0,0.12)',
       overflow: 'hidden',
-      display: 'none',
       fontFamily: 'inherit',
       fontSize: '13px',
       color: '#374151',
@@ -675,7 +661,6 @@ namespace AIPanel {
     renderPanel();
 
     root.appendChild(panel);
-    root.appendChild(ball);
 
     if (document.body) {
       document.body.appendChild(root);
@@ -690,12 +675,8 @@ namespace AIPanel {
       });
     }
 
-    // 点击面板外部关闭
-    document.addEventListener('mousedown', (e) => {
-      if (isOpen && root && !root.contains(e.target as Node)) {
-        close();
-      }
-    }, true);
+    // 停靠侧栏常驻：默认展开；不因点击外部而关闭（保留显式折叠按钮）
+    open();
 
     // 保护：如果 root 被移除则重新添加
     const protectObserver = new MutationObserver(() => {
@@ -716,6 +697,7 @@ namespace AIPanel {
     Object.assign(header.style, {
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '10px 14px', borderBottom: '1px solid rgba(0,0,0,0.06)',
+      flexShrink: '0',
     });
     const tabs = createEl('div', 'tl-ai-tabs');
     Object.assign(tabs.style, { display: 'flex', gap: '4px' });
@@ -740,8 +722,41 @@ namespace AIPanel {
     tabTranslate.innerHTML = ICONS.globe + ' 翻译';
     tabTranslate.addEventListener('click', () => { activeTab = 'translate'; renderPanel(); });
 
+    const tabAnalysis = createEl('button', 'tl-ai-tab') as HTMLButtonElement;
+    Object.assign(tabAnalysis.style, {
+      all: 'initial', padding: '6px 12px', fontSize: '12px', fontWeight: 500,
+      borderRadius: '6px', cursor: 'pointer', fontFamily: 'inherit',
+      background: activeTab === 'analysis' ? '#f3f4f6' : 'transparent',
+      color: activeTab === 'analysis' ? '#374151' : '#9ca3af',
+    });
+    tabAnalysis.innerHTML = ICONS.user + ' 客户分析';
+    tabAnalysis.addEventListener('click', () => { activeTab = 'analysis'; renderPanel(); });
+
+    const tabKb = createEl('button', 'tl-ai-tab') as HTMLButtonElement;
+    Object.assign(tabKb.style, {
+      all: 'initial', padding: '6px 12px', fontSize: '12px', fontWeight: 500,
+      borderRadius: '6px', cursor: 'pointer', fontFamily: 'inherit',
+      background: activeTab === 'kb' ? '#f3f4f6' : 'transparent',
+      color: activeTab === 'kb' ? '#374151' : '#9ca3af',
+    });
+    tabKb.innerHTML = ICONS.book + ' 知识库';
+    tabKb.addEventListener('click', () => { activeTab = 'kb'; renderPanel(); });
+
+    const tabDraft = createEl('button', 'tl-ai-tab') as HTMLButtonElement;
+    Object.assign(tabDraft.style, {
+      all: 'initial', padding: '6px 12px', fontSize: '12px', fontWeight: 500,
+      borderRadius: '6px', cursor: 'pointer', fontFamily: 'inherit',
+      background: activeTab === 'draft' ? '#f3f4f6' : 'transparent',
+      color: activeTab === 'draft' ? '#374151' : '#9ca3af',
+    });
+    tabDraft.innerHTML = ICONS.inbox + ' 接待草稿';
+    tabDraft.addEventListener('click', () => { activeTab = 'draft'; renderPanel(); });
+
     tabs.appendChild(tabSuggest);
     tabs.appendChild(tabTranslate);
+    tabs.appendChild(tabAnalysis);
+    tabs.appendChild(tabKb);
+    tabs.appendChild(tabDraft);
 
     const closeBtn = createEl('button', 'tl-ai-close') as HTMLButtonElement;
     Object.assign(closeBtn.style, {
@@ -749,18 +764,24 @@ namespace AIPanel {
       padding: '4px', lineHeight: 1,
     });
     closeBtn.innerHTML = ICONS.close;
-    closeBtn.addEventListener('click', close);
+    closeBtn.addEventListener('click', () => { collapse(); });
 
     header.appendChild(tabs);
     header.appendChild(closeBtn);
     panel.appendChild(header);
 
-    // 内容区
+    // 内容区 — 撑满侧栏剩余空间
     const body = createEl('div', 'tl-ai-body');
-    Object.assign(body.style, { padding: '14px', maxHeight: '320px', overflowY: 'auto' });
+    Object.assign(body.style, { padding: '14px', flex: '1', overflowY: 'auto' });
 
     if (activeTab === 'suggest') {
       renderSuggestTab(body);
+    } else if (activeTab === 'analysis') {
+      renderAnalysisTab(body);
+    } else if (activeTab === 'kb') {
+      renderKbTab(body);
+    } else if (activeTab === 'draft') {
+      renderDraftTab(body);
     } else {
       renderTranslateTab(body);
     }
@@ -858,6 +879,446 @@ namespace AIPanel {
       empty.textContent = '点击"生成建议"，AI 将根据聊天内容生成英文回复';
       container.appendChild(empty);
     }
+  }
+
+  // ── 客户分析面板：按当前 WhatsApp 手机号解析 lead → 调用后端 AI 分析 ──
+  function renderAnalysisTab(container: HTMLElement) {
+    const info = getCurrentChatInfo();
+    const phone = info?.phone || '';
+    const contactName = info?.name || phone;
+    if (!phone) {
+      const empty = createEl('div');
+      Object.assign(empty.style, { textAlign: 'center', padding: '20px 0', fontSize: '12px', color: '#9ca3af' });
+      empty.textContent = '未能识别当前联系人的手机号，请先打开一个 WhatsApp 聊天';
+      container.appendChild(empty);
+      return;
+    }
+
+    const phoneRow = createEl('div');
+    Object.assign(phoneRow.style, { fontSize: '11px', color: '#6b7280', marginBottom: '8px', wordBreak: 'break-all' });
+    phoneRow.textContent = `联系人: ${contactName}  ·  ${phone}`;
+    container.appendChild(phoneRow);
+
+    const genBtn = createEl('button') as HTMLButtonElement;
+    Object.assign(genBtn.style, {
+      all: 'initial', display: 'inline-flex', alignItems: 'center', gap: '6px',
+      padding: '7px 14px', borderRadius: '6px', background: '#374151', color: '#ffffff',
+      fontSize: '12px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit', marginBottom: '10px',
+    });
+    genBtn.innerHTML = ICONS.spark + ' 生成客户分析';
+    genBtn.addEventListener('click', () => {
+      if (isLoadingAnalysis) return;
+      isLoadingAnalysis = true;
+      analysisResult = null;
+      renderAnalysisTab(container);
+      runAnalysis(container, phone);
+    });
+    container.appendChild(genBtn);
+
+    if (isLoadingAnalysis) {
+      const load = createEl('div');
+      Object.assign(load.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0', fontSize: '12px', color: '#6b7280' });
+      load.innerHTML = ICONS.loader + ' 正在分析客户…';
+      container.appendChild(load);
+      return;
+    }
+
+    if (!analysisResult) {
+      const hint = createEl('div');
+      Object.assign(hint.style, { fontSize: '11px', color: '#9ca3af', lineHeight: '1.6' });
+      hint.textContent = '基于当前客户与 CRM 中的沟通记录，AI 生成客户背景分析、匹配度与下一步建议。';
+      container.appendChild(hint);
+      return;
+    }
+
+    const a = analysisResult.analysis || analysisResult;
+
+    // ── AI 自动标签（无需手动添加）──
+    if (Array.isArray(a.tags) && a.tags.length > 0) {
+      const tagRow = createEl('div');
+      Object.assign(tagRow.style, { display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' });
+      a.tags.slice(0, 8).forEach((t: string) => {
+        const tag = createEl('span');
+        Object.assign(tag.style, { fontSize: '10px', padding: '3px 6px', borderRadius: '6px', background: '#fff7ed', color: '#e26710' });
+        tag.textContent = String(t);
+        tagRow.appendChild(tag);
+      });
+      container.appendChild(tagRow);
+    }
+
+    // ── 成交概率 + 意图（评分环风格）──
+    if (typeof a.probability === 'number') {
+      const probRow = createEl('div');
+      Object.assign(probRow.style, { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: '#fff', border: '1px solid #edf0f4', borderRadius: '11px', marginBottom: '8px' });
+      const ring = createEl('div');
+      const angle = Math.max(0, Math.min(100, Number(a.probability))) * 3.6;
+      Object.assign(ring.style, { position: 'relative', width: '52px', height: '52px', flex: '0 0 52px', borderRadius: '50%', background: `conic-gradient(#ff6a00 ${angle}deg, #edf1f5 0)`, display: 'flex', alignItems: 'center', justifyContent: 'center', isolation: 'isolate' });
+      const ringInner = createEl('div');
+      Object.assign(ringInner.style, { position: 'absolute', inset: '5px', zIndex: '-1', borderRadius: '50%', background: '#fff' });
+      ring.appendChild(ringInner);
+      const num = createEl('div');
+      Object.assign(num.style, { position: 'relative', fontSize: '13px', fontWeight: 800, color: '#ff6a00', lineHeight: '1' });
+      num.textContent = `${a.probability}%`;
+      ring.appendChild(num);
+      probRow.appendChild(ring);
+      const info = createEl('div');
+      Object.assign(info.style, { flex: '1', minWidth: '0' });
+      const intent = createEl('div');
+      Object.assign(intent.style, { fontSize: '12px', color: '#111827', fontWeight: 600 });
+      intent.textContent = a.intent || '成交概率';
+      const intentSub = createEl('div');
+      Object.assign(intentSub.style, { fontSize: '11px', color: '#6b7280', marginTop: '2px' });
+      intentSub.textContent = `客户意图：${a.intent || '待确认'}`;
+      info.appendChild(intent);
+      info.appendChild(intentSub);
+      probRow.appendChild(info);
+      container.appendChild(probRow);
+    }
+
+    // ── 客户背调基础字段 ──
+    const rows: Array<[string, string]> = [];
+    if (a.matchScore) rows.push(['业务匹配度', a.matchScore]);
+    if (a.estimatedScale) rows.push(['规模', a.estimatedScale]);
+    if (a.contactInfo) rows.push(['联系人', a.contactInfo]);
+    if (a.businessMatch) rows.push(['业务匹配', a.businessMatch]);
+    if (a.recommendation) rows.push(['建议', a.recommendation]);
+    if (a.confidence) rows.push(['可信度', a.confidence]);
+    if (a.summary) rows.push(['判断', a.summary]);
+
+    if (rows.length > 0) {
+      const card = createEl('div');
+      Object.assign(card.style, { padding: '10px 12px', background: '#fff', border: '1px solid #edf0f4', borderRadius: '11px', marginBottom: '8px' });
+      for (const [label, value] of rows) {
+        const row = createEl('div');
+        Object.assign(row.style, { display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#6b7280', padding: '3px 0' });
+        const lbl = createEl('span');
+        lbl.textContent = label;
+        const val = createEl('span');
+        Object.assign(val.style, { color: '#2c3e50', textAlign: 'right', maxWidth: '200px' });
+        val.textContent = String(value);
+        row.appendChild(lbl);
+        row.appendChild(val);
+        card.appendChild(row);
+      }
+      container.appendChild(card);
+    }
+
+    // ── 下一步行动（stepper 风格）──
+    if (Array.isArray(a.nextSteps) && a.nextSteps.length > 0) {
+      const nextTitle = createEl('div');
+      Object.assign(nextTitle.style, { fontSize: '13px', fontWeight: 600, color: '#172033', marginBottom: '6px' });
+      nextTitle.textContent = '下一步行动';
+      container.appendChild(nextTitle);
+      const stepper = createEl('div');
+      Object.assign(stepper.style, { display: 'grid', gridTemplateColumns: `repeat(${Math.min(a.nextSteps.length, 3)}, minmax(0,1fr))`, gap: '4px', marginBottom: '8px' });
+      a.nextSteps.slice(0, 3).forEach((s: any, i: number) => {
+        const step = createEl('div');
+        Object.assign(step.style, { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', textAlign: 'center' });
+        const n = createEl('span');
+        Object.assign(n.style, { width: '20px', height: '20px', borderRadius: '50%', background: i === 0 ? '#0ea5e9' : '#f1f3f6', color: i === 0 ? '#fff' : '#aeb6c1', fontSize: '9px', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' });
+        n.textContent = String(i + 1);
+        const title = typeof s === 'string' ? s : s?.title || '';
+        const desc = typeof s === 'string' ? '' : s?.description || '';
+        const t = createEl('div');
+        Object.assign(t.style, { fontSize: '9px', color: '#334155', lineHeight: '1.45', fontWeight: 600 });
+        t.textContent = title;
+        step.appendChild(n);
+        step.appendChild(t);
+        if (desc) {
+          const d = createEl('div');
+          Object.assign(d.style, { fontSize: '8px', color: '#8b96a5', lineHeight: '1.4' });
+          d.textContent = desc;
+          step.appendChild(d);
+        }
+        stepper.appendChild(step);
+      });
+      container.appendChild(stepper);
+    }
+
+    // ── AI 推荐回复（4 tab + 中文对照 + 一键填入）──
+    if (a.replyVariants && typeof a.replyVariants === 'object') {
+      const replyTitle = createEl('div');
+      Object.assign(replyTitle.style, { fontSize: '13px', fontWeight: 600, color: '#172033', marginBottom: '6px' });
+      replyTitle.textContent = 'AI 推荐回复';
+      container.appendChild(replyTitle);
+
+      const tabs = createEl('div');
+      Object.assign(tabs.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', borderBottom: '1px solid #eef1f4' });
+      const variants: Array<[string, string]> = [
+        ['standard', '标准'], ['brief', '简短'], ['detailed', '详细'], ['chinese', '中文对照'],
+      ];
+      let currentReply = '';
+      let currentTranslation = '';
+
+      const replyBody = createEl('div');
+      Object.assign(replyBody.style, { minHeight: '70px', marginTop: '8px', padding: '11px', border: '1px solid #e8ebef', borderRadius: '8px', background: '#fcfcfd', color: '#27364a', fontSize: '13px', lineHeight: '1.7' });
+
+      const translationBlock = createEl('div');
+      Object.assign(translationBlock.style, { display: 'none', marginTop: '8px', paddingTop: '10px', borderTop: '1px solid #eef1f4', color: '#334256', fontSize: '13px', lineHeight: '1.8' });
+      const transLabel = createEl('div');
+      Object.assign(transLabel.style, { marginBottom: '6px', color: '#0369a1', fontSize: '13px', fontWeight: 600 });
+      transLabel.textContent = '中文对照';
+      const transText = createEl('div');
+      translationBlock.appendChild(transLabel);
+      translationBlock.appendChild(transText);
+
+      const setReply = (key: string) => {
+        tabs.querySelectorAll('button').forEach((b) => {
+          b.classList.toggle('tl-ai-tab-active', (b as HTMLElement).dataset.key === key);
+        });
+        const variant = a.replyVariants[key] || a.replyVariants.standard || '';
+        currentReply = String(variant);
+        currentTranslation = key === 'chinese' ? String(a.replyVariants.standard || '') : String(a.replyVariants.chinese || '');
+        replyBody.textContent = currentReply;
+        transText.textContent = currentTranslation;
+        translationBlock.style.display = key === 'chinese' ? 'block' : 'none';
+      };
+
+      variants.forEach(([key, label]) => {
+        const btn = createEl('button') as HTMLButtonElement;
+        Object.assign(btn.style, { padding: '8px 3px', border: '0', borderBottom: '2px solid transparent', background: 'transparent', color: '#788596', fontSize: '11px', cursor: 'pointer', fontFamily: 'inherit' });
+        btn.dataset.key = key;
+        btn.textContent = label;
+        btn.addEventListener('click', () => setReply(key));
+        tabs.appendChild(btn);
+      });
+      container.appendChild(tabs);
+      container.appendChild(replyBody);
+      container.appendChild(translationBlock);
+
+      const replyActions = createEl('div');
+      Object.assign(replyActions.style, { display: 'flex', gap: '6px', marginTop: '8px', marginBottom: '8px' });
+      const copyBtn = createEl('button') as HTMLButtonElement;
+      Object.assign(copyBtn.style, { fontSize: '11px', padding: '7px 12px', borderRadius: '6px', border: '1px solid #e3e8ef', background: '#fff', color: '#4b5563', cursor: 'pointer' });
+      copyBtn.textContent = '复制';
+      copyBtn.addEventListener('click', () => { if (currentReply) navigator.clipboard.writeText(currentReply).catch(() => {}); });
+      const fillBtn = createEl('button') as HTMLButtonElement;
+      Object.assign(fillBtn.style, { fontSize: '11px', padding: '7px 12px', borderRadius: '6px', border: '1px solid #0ea5e9', background: 'linear-gradient(135deg,#38bdf8,#2563eb)', color: '#fff', fontWeight: 700, cursor: 'pointer' });
+      fillBtn.textContent = '一键填入发送';
+      fillBtn.addEventListener('click', () => { if (currentReply && injectText(currentReply)) close(); });
+      replyActions.appendChild(copyBtn);
+      replyActions.appendChild(fillBtn);
+      container.appendChild(replyActions);
+
+      setReply('standard');
+    }
+
+    // ── 回复质检（插件风格）──
+    if (a.replyQuality && typeof a.replyQuality === 'object') {
+      const q = a.replyQuality;
+      const qTitle = createEl('div');
+      Object.assign(qTitle.style, { fontSize: '13px', fontWeight: 600, color: '#172033', marginBottom: '6px' });
+      qTitle.textContent = '业务员回复质检';
+      container.appendChild(qTitle);
+      const qCard = createEl('div');
+      Object.assign(qCard.style, { padding: '11px', background: '#fff', border: '1px solid #edf0f4', borderRadius: '11px' });
+
+      if (typeof q.score === 'number') {
+        const lead = createEl('div');
+        Object.assign(lead.style, { display: 'flex', alignItems: 'baseline', gap: '6px' });
+        const score = createEl('span');
+        Object.assign(score.style, { color: '#ff6a00', fontSize: '17px', fontWeight: 700 });
+        score.textContent = String(q.score);
+        const suffix = createEl('span');
+        Object.assign(suffix.style, { color: '#46576c', fontSize: '12px' });
+        suffix.textContent = '/100';
+        lead.appendChild(score);
+        lead.appendChild(suffix);
+        qCard.appendChild(lead);
+      }
+      const dims: Array<[string, string | number]> = [
+        ['响应时效', q.timeliness], ['需求识别', q.clarity], ['专业度', q.tone], ['信息完整', q.completeness],
+      ];
+      dims.forEach(([label, v]) => {
+        if (!v) return;
+        const row = createEl('div');
+        Object.assign(row.style, { display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#6b7280', padding: '2px 0' });
+        const l = createEl('span'); l.textContent = label;
+        const val = createEl('span'); Object.assign(val.style, { color: '#374151' }); val.textContent = String(v);
+        row.appendChild(l); row.appendChild(val);
+        qCard.appendChild(row);
+      });
+      container.appendChild(qCard);
+    }
+  }
+
+  async function runAnalysis(container: HTMLElement, phone: string) {
+    try {
+      const resolved = await apiRequest({ method: 'GET', url: `/ai-communications/whatsapp-lead/${encodeURIComponent(phone)}` });
+      const leadId = resolved?.data?.leadId || resolved?.leadId;
+      if (!leadId) {
+        analysisResult = { analysis: { summary: 'CRM 中未找到该号码对应的客户。可先在前台创建/关联该客户后重试。', confidence: '未匹配到 Lead' } };
+        isLoadingAnalysis = false;
+        renderAnalysisTab(container);
+        return;
+      }
+      const res = await apiRequest({ method: 'POST', url: `/ai-communications/customer-analysis/${leadId}` });
+      const analysis = res?.data?.analysis || res?.analysis;
+      analysisResult = { analysis: analysis || { summary: '分析完成，但未返回结构化结果。', confidence: '未知' } };
+    } catch (e) {
+      analysisResult = { analysis: { summary: `分析失败: ${String(e)}`, confidence: '错误' } };
+    }
+    isLoadingAnalysis = false;
+    renderAnalysisTab(container);
+  }
+
+  // ── 知识库面板：显示公司品牌与主营产品上下文 ──
+  function renderKbTab(container: HTMLElement) {
+    if (isLoadingKb) {
+      const load = createEl('div');
+      Object.assign(load.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0', fontSize: '12px', color: '#6b7280' });
+      load.innerHTML = ICONS.loader + ' 正在加载知识库…';
+      container.appendChild(load);
+      return;
+    }
+
+    const loadBtn = createEl('button') as HTMLButtonElement;
+    Object.assign(loadBtn.style, {
+      all: 'initial', display: 'inline-flex', alignItems: 'center', gap: '6px',
+      padding: '7px 14px', borderRadius: '6px', background: '#374151', color: '#ffffff',
+      fontSize: '12px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit', marginBottom: '10px',
+    });
+    loadBtn.innerHTML = ICONS.book + (kbContext ? ' 刷新知识库' : ' 加载知识库');
+    loadBtn.addEventListener('click', async () => {
+      isLoadingKb = true;
+      renderKbTab(container);
+      const res = await apiRequest({ method: 'GET', url: '/ai-communications/knowledge-context' });
+      kbContext = res?.data || res;
+      isLoadingKb = false;
+      renderKbTab(container);
+    });
+    container.appendChild(loadBtn);
+
+    if (!kbContext) {
+      const hint = createEl('div');
+      Object.assign(hint.style, { fontSize: '11px', color: '#9ca3af', lineHeight: '1.6' });
+      hint.textContent = '加载后展示公司品牌信息与主营产品，供 AI 回复和接待草稿引用。';
+      container.appendChild(hint);
+      return;
+    }
+
+    const name = kbContext.companyName || '—';
+    const block = (label: string, value: string) => {
+      if (!value) return;
+      const row = createEl('div');
+      Object.assign(row.style, { padding: '6px 0', borderBottom: '1px solid #f3f4f6' });
+      const lbl = createEl('div');
+      Object.assign(lbl.style, { fontSize: '11px', color: '#9ca3af', fontWeight: 500 });
+      lbl.textContent = label;
+      const val = createEl('div');
+      Object.assign(val.style, { fontSize: '12px', color: '#374151', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' });
+      val.textContent = value;
+      row.appendChild(lbl);
+      row.appendChild(val);
+      container.appendChild(row);
+    };
+
+    block('公司', name);
+    block('行业', kbContext.industry);
+    block('国家', kbContext.country);
+    block('网站', kbContext.website);
+    block('简介', kbContext.description);
+
+    const products = (kbContext.products || []).slice(0, 10);
+    if (products.length > 0) {
+      const prodTitle = createEl('div');
+      Object.assign(prodTitle.style, { fontSize: '12px', fontWeight: 600, color: '#374151', padding: '8px 0 4px' });
+      prodTitle.textContent = `主营产品 (${products.length})`;
+      container.appendChild(prodTitle);
+      for (const p of products) {
+        const item = createEl('div');
+        Object.assign(item.style, { fontSize: '12px', color: '#4b5563', padding: '4px 0', lineHeight: '1.4' });
+        item.textContent = `${p.name}${p.sku ? ` · ${p.sku}` : ''}${p.description ? ` — ${p.description}` : ''}`;
+        container.appendChild(item);
+      }
+    }
+  }
+
+  // ── 接待草稿面板：基于知识库 + 客户消息生成回复草稿 ──
+  function renderDraftTab(container: HTMLElement) {
+    const info = getCurrentChatInfo();
+    const phone = info?.phone || '';
+    const messages = getRecentMessages(8);
+    const customerText = messages.filter(m => !m.isOutgoing).map(m => m.text).join('\n').slice(0, 800);
+
+    const hint = createEl('div');
+    Object.assign(hint.style, { fontSize: '11px', color: '#9ca3af', marginBottom: '8px', lineHeight: '1.5' });
+    hint.textContent = customerText
+      ? '基于知识库与最近客户消息生成接待草稿（英文）。'
+      : '打开一个 WhatsApp 聊天后，可基于该对话生成接待草稿。';
+    container.appendChild(hint);
+
+    const genBtn = createEl('button') as HTMLButtonElement;
+    Object.assign(genBtn.style, {
+      all: 'initial', display: 'inline-flex', alignItems: 'center', gap: '6px',
+      padding: '7px 14px', borderRadius: '6px', background: '#374151', color: '#ffffff',
+      fontSize: '12px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit', marginBottom: '10px',
+    });
+    genBtn.innerHTML = ICONS.spark + ' 生成接待草稿';
+    genBtn.addEventListener('click', async () => {
+      if (isLoadingDraft) return;
+      isLoadingDraft = true;
+      draftResult = null;
+      renderDraftTab(container);
+      const res = await apiRequest({
+        method: 'POST',
+        url: '/ai-communications/reception-draft',
+        data: { customerMessage: customerText || phone, targetLanguage: 'en' },
+      });
+      draftResult = res?.data || res;
+      isLoadingDraft = false;
+      renderDraftTab(container);
+    });
+    container.appendChild(genBtn);
+
+    if (isLoadingDraft) {
+      const load = createEl('div');
+      Object.assign(load.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0', fontSize: '12px', color: '#6b7280' });
+      load.innerHTML = ICONS.loader + ' 正在生成接待草稿…';
+      container.appendChild(load);
+      return;
+    }
+
+    if (!draftResult) return;
+
+    const draft = draftResult.draft || '';
+    if (draft) {
+      const box = createEl('div');
+      Object.assign(box.style, {
+        padding: '10px 12px', borderRadius: '8px', background: '#f9fafb',
+        border: '1px solid #e5e7eb', fontSize: '12px', color: '#374151',
+        lineHeight: '1.6', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: '8px',
+      });
+      box.textContent = draft;
+      container.appendChild(box);
+
+      const actions = createEl('div');
+      Object.assign(actions.style, { display: 'flex', gap: '6px' });
+      const copyBtn = createEl('button') as HTMLButtonElement;
+      Object.assign(copyBtn.style, {
+        all: 'initial', padding: '4px 10px', borderRadius: '6px', background: '#f3f4f6',
+        color: '#4b5563', fontSize: '11px', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500,
+      });
+      copyBtn.innerHTML = ICONS.copy + ' 复制';
+      copyBtn.addEventListener('click', () => { navigator.clipboard.writeText(draft).catch(() => {}); });
+      const fillBtn = createEl('button') as HTMLButtonElement;
+      Object.assign(fillBtn.style, {
+        all: 'initial', padding: '4px 10px', borderRadius: '6px', background: '#e5e7eb',
+        color: '#374151', fontSize: '11px', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500,
+      });
+      fillBtn.textContent = '填入草稿';
+      fillBtn.addEventListener('click', () => { if (injectText(draft)) close(); });
+      actions.appendChild(copyBtn);
+      actions.appendChild(fillBtn);
+      container.appendChild(actions);
+    }
+
+    const meta = createEl('div');
+    Object.assign(meta.style, { fontSize: '11px', color: '#9ca3af', marginTop: '6px' });
+    const conf = draftResult.confidence ? `置信度: ${draftResult.confidence} · ` : '';
+    const needsHuman = draftResult.needsHuman ? '建议人工确认' : '可发送';
+    meta.textContent = `${conf}${needsHuman}`;
+    container.appendChild(meta);
   }
 
   function renderTranslateTab(container: HTMLElement) {
@@ -985,18 +1446,34 @@ namespace AIPanel {
 
   function open() {
     isOpen = true;
-    if (panel) panel.style.display = 'block';
-    if (ball) ball.innerHTML = ICONS.chevronDown + '<span style="color:#d1d5db;">收起</span>';
+    if (root) root.style.display = 'flex';
+    applyDockOffset();
   }
 
   function close() {
     isOpen = false;
-    if (panel) panel.style.display = 'none';
-    if (ball) ball.innerHTML = ICONS.ai + '<span style="color:#d1d5db;">AI 助手</span>';
+    if (root) root.style.display = 'none';
+    applyDockOffset();
+  }
+
+  function collapse() {
+    isOpen = false;
+    if (root) root.style.display = 'none';
+    applyDockOffset();
   }
 
   function toggle() {
     if (isOpen) close(); else open();
+  }
+
+  // WhatsApp 内容让位：侧栏显示时把 #app 左移 420px，避免遮挡消息区
+  function applyDockOffset() {
+    try {
+      const offset = isOpen ? '420px' : '0px';
+      document.documentElement.style.setProperty('--tl-ai-dock-offset', offset);
+    } catch (e) {
+      // 忽略样式设置失败
+    }
   }
 
   function escapeHtml(s: string): string {
@@ -1297,6 +1774,16 @@ function injectCSS() {
     .tl-ai-root button:hover {
       filter: brightness(0.95);
     }
+    .tl-ai-tab-active {
+      color: #0ea5e9 !important;
+      font-weight: 700;
+      border-bottom-color: #0ea5e9 !important;
+    }
+    /* WhatsApp 内容让位：侧栏显示时 #app 右移，避免遮挡消息区 */
+    html:root { --tl-ai-dock-offset: 0px; }
+    #app { margin-right: var(--tl-ai-dock-offset, 0px) !important; transition: margin-right 0.15s ease; }
+    /* 侧栏自身滚动与层级 */
+    .tl-ai-body { scrollbar-width: thin; scrollbar-color: #d1d5db transparent; }
   `;
   const inject = () => {
     if (document.head) { document.head.appendChild(style); }
@@ -1402,7 +1889,8 @@ function initMessageObserver(): void {
               chatPhone: snapshot?.phoneCandidate || chat?.phone || '',
               isGroup: snapshot?.isGroup || chat?.isGroup || false,
               // 可信 JID/LID 信息,供后端 IdentityResolutionService 关联 contactPointId
-              externalId: snapshot?.externalId || '',
+              // snapshot 识别失败时回退到 getCurrentChatInfo 的 externalId(多策略兜底)
+              externalId: snapshot?.externalId || chat?.externalId || '',
               externalIdKind: snapshot?.externalIdKind || 'unknown',
               phoneCandidate: snapshot?.phoneCandidate || null,
               displayNameCandidate: snapshot?.displayNameCandidate || null,
@@ -1422,8 +1910,9 @@ function initMessageObserver(): void {
 
 function init() {
   injectCSS();
-  // 旧 AIPanel 会与主渲染器的全局业务助理形成双入口并遮挡客户栏。
-  // 保留命名空间仅供旧代码审计，生产初始化统一由 BusinessAssistantOrb 负责。
+  // v1.4.35: 已禁用 AIPanel 5-tab 侧栏（AI回复/翻译/客户分析/知识库/接待草稿）。
+  // 用户确认该侧栏为多余，CRM 客户分析统一走前端 CustomerCard（phone-frame 结构）。
+  // AIPanel.init();
   MessageTranslator.init();
 
   // ── 消息监听 ──

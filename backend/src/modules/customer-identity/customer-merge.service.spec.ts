@@ -50,10 +50,13 @@ interface MockPrismaService {
   identityMatchCandidate: {
     findUnique: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
   };
   lead: {
     findUnique: jest.Mock;
+    findMany: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
   };
   contact: {
     findMany: jest.Mock;
@@ -70,14 +73,15 @@ interface MockPrismaService {
     updateMany: jest.Mock;
     count: jest.Mock;
   };
-  leadActivity: { updateMany: jest.Mock };
-  emailMessage: { updateMany: jest.Mock };
-  quote: { updateMany: jest.Mock };
-  order: { updateMany: jest.Mock };
-  followUpReminder: { updateMany: jest.Mock };
+  leadActivity: { findMany: jest.Mock; updateMany: jest.Mock };
+  emailMessage: { findMany: jest.Mock; updateMany: jest.Mock };
+  quote: { findMany: jest.Mock; updateMany: jest.Mock };
+  order: { findMany: jest.Mock; updateMany: jest.Mock };
+  followUpReminder: { findMany: jest.Mock; updateMany: jest.Mock };
   customerMergeAudit: {
     create: jest.Mock;
     findUnique: jest.Mock;
+    updateMany: jest.Mock;
     update: jest.Mock;
   };
   identityExclusion: {
@@ -89,17 +93,17 @@ interface MockPrismaService {
 function createMockPrismaService(): MockPrismaService {
   const mock: MockPrismaService = {
     $transaction: jest.fn(),
-    identityMatchCandidate: { findUnique: jest.fn(), update: jest.fn() },
-    lead: { findUnique: jest.fn(), update: jest.fn() },
+    identityMatchCandidate: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+    lead: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
     contact: { findMany: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
     contactPoint: { findMany: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
     conversation: { findMany: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
-    leadActivity: { updateMany: jest.fn() },
-    emailMessage: { updateMany: jest.fn() },
-    quote: { updateMany: jest.fn() },
-    order: { updateMany: jest.fn() },
-    followUpReminder: { updateMany: jest.fn() },
-    customerMergeAudit: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    leadActivity: { findMany: jest.fn(), updateMany: jest.fn() },
+    emailMessage: { findMany: jest.fn(), updateMany: jest.fn() },
+    quote: { findMany: jest.fn(), updateMany: jest.fn() },
+    order: { findMany: jest.fn(), updateMany: jest.fn() },
+    followUpReminder: { findMany: jest.fn(), updateMany: jest.fn() },
+    customerMergeAudit: { create: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), update: jest.fn() },
     identityExclusion: { create: jest.fn(), findFirst: jest.fn() },
   };
   // $transaction: 以 mock 自身作为事务客户端调用回调, 模拟单事务
@@ -149,6 +153,11 @@ describe('TASK-102F CustomerMergeService', () => {
     );
     mockPrisma.contactPoint.findMany.mockResolvedValue([]);
     mockPrisma.conversation.findMany.mockResolvedValue([]);
+    mockPrisma.leadActivity.findMany.mockResolvedValue([]);
+    mockPrisma.emailMessage.findMany.mockResolvedValue([]);
+    mockPrisma.quote.findMany.mockResolvedValue([]);
+    mockPrisma.order.findMany.mockResolvedValue([]);
+    mockPrisma.followUpReminder.findMany.mockResolvedValue([]);
     // 默认: 迁移 updateMany 返回 { count: 0 }
     mockPrisma.contact.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.contactPoint.updateMany.mockResolvedValue({ count: 0 });
@@ -158,6 +167,9 @@ describe('TASK-102F CustomerMergeService', () => {
     mockPrisma.quote.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.followUpReminder.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.identityMatchCandidate.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.customerMergeAudit.updateMany.mockResolvedValue({ count: 1 });
 
     service = new CustomerMergeService(mockPrisma as unknown as PrismaService);
   });
@@ -210,6 +222,7 @@ describe('TASK-102F CustomerMergeService', () => {
     expect(preview.contactCount).toEqual({ source: 1, target: 2 });
     expect(preview.contactPointCount).toEqual({ source: 1, target: 1 });
     expect(preview.conversationCount).toEqual({ source: 0, target: 3 });
+    expect(preview.targetUpdatedAt).toBe(target.updatedAt.toISOString());
   });
 
   // ---- 2. 人工字段优先 ----
@@ -423,7 +436,7 @@ describe('TASK-102F CustomerMergeService', () => {
     // 候选标记为 rejected
     expect(mockPrisma.identityMatchCandidate.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'cand-5' },
+        where: expect.objectContaining({ id: 'cand-5', companyId: 'co-1' }),
         data: expect.objectContaining({ status: 'rejected' }),
       }),
     );
@@ -588,7 +601,7 @@ describe('TASK-102F CustomerMergeService', () => {
     // 审计标记 undone
     expect(mockPrisma.customerMergeAudit.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'audit-8' },
+        where: expect.objectContaining({ id: 'audit-8', companyId: 'co-1' }),
         data: expect.objectContaining({
           status: 'undone',
           undoneById: 'user-2',
@@ -628,10 +641,39 @@ describe('TASK-102F CustomerMergeService', () => {
       }),
     ).rejects.toThrow(/changed|unsafe|undo/i);
 
-    // 不应进入事务 / 不应修改任何数据
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    // Version validation is now inside the transaction after the conditional
+    // audit claim, so the claim rolls back and no restore write is committed.
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(mockPrisma.lead.update).not.toHaveBeenCalled();
     expect(mockPrisma.customerMergeAudit.update).not.toHaveBeenCalled();
+  });
+
+  it('8c. 并发 undo 请求只有一个能 claim 审计状态', async () => {
+    const mergeTime = new Date('2026-06-10T00:00:01.000Z');
+    const audit = {
+      id: 'audit-8c', companyId: 'co-1', sourceLeadId: 'lead-s', targetLeadId: 'lead-t',
+      status: 'completed', targetVersion: mergeTime, undoneAt: null,
+      beforeState: {
+        sourceLead: makeLead({ id: 'lead-s' }), targetLead: makeLead({ id: 'lead-t' }),
+        sourceContactIds: [], targetContactIds: [], sourceContactPointIds: [], sourceConversationIds: [],
+        contactPrimaryMap: {},
+      },
+    };
+    mockPrisma.customerMergeAudit.findUnique.mockResolvedValue(audit);
+    mockPrisma.lead.findUnique.mockResolvedValue(makeLead({ id: 'lead-t', updatedAt: mergeTime }));
+    let claims = 0;
+    mockPrisma.customerMergeAudit.updateMany.mockImplementation(async () => ({ count: claims++ === 0 ? 1 : 0 }));
+
+    const results = await Promise.allSettled([
+      service.undoMerge({ companyId: 'co-1', auditId: audit.id, actorId: 'user-a' }),
+      service.undoMerge({ companyId: 'co-1', auditId: audit.id, actorId: 'user-b' }),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: expect.objectContaining({ message: expect.stringMatching(/claimed|undone|conflict/i) }),
+    });
   });
 
   // ---- 9. 软删除 ----
@@ -697,6 +739,8 @@ describe('TASK-102F CustomerMergeService', () => {
       fieldChoices: [],
     }, {
       id: 'user-1',
+      activeCompanyId: 'co-1',
+      activeCompany: { id: 'co-1', role: 'company_admin' },
       companies: [{ id: 'co-1', role: 'company_admin' }],
     })).rejects.toThrow(/not found/i);
 
@@ -720,6 +764,8 @@ describe('TASK-102F CustomerMergeService', () => {
       fieldChoices: [],
     }, {
       id: 'user-1',
+      activeCompanyId: 'co-1',
+      activeCompany: { id: 'co-1', role: 'sales_user' },
       companies: [{ id: 'co-1', role: 'sales_user' }],
     })).rejects.toThrow(/both customers/i);
 
@@ -746,9 +792,145 @@ describe('TASK-102F CustomerMergeService', () => {
       fieldChoices: [],
     }, {
       id: 'admin-1',
+      activeCompanyId: 'co-1',
+      activeCompany: { id: 'co-1', role: 'company_admin' },
       companies: [{ id: 'co-1', role: 'company_admin' }],
     })).resolves.toEqual({ auditId: 'audit-authorized', targetLeadId: 'lead-target' });
 
     expect(mergeSpy).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'admin-1' }));
+  });
+
+  it('11. 两个并发合并请求只有一个能消费 pending candidate', async () => {
+    const targetUpdatedAt = new Date('2026-07-29T00:00:00.000Z');
+    const source = makeLead({ id: 'lead-s' });
+    const target = makeLead({ id: 'lead-t', updatedAt: targetUpdatedAt });
+    mockPrisma.identityMatchCandidate.findUnique.mockResolvedValue({
+      id: 'cand-concurrent', companyId: 'co-1', sourceLeadId: 'lead-s', targetLeadId: 'lead-t',
+      status: 'pending', sourceLead: source, targetLead: target,
+    });
+    let claims = 0;
+    mockPrisma.identityMatchCandidate.updateMany.mockImplementation(async ({ where }: any) => {
+      if (where.status === 'pending') return { count: claims++ === 0 ? 1 : 0 };
+      return { count: 1 };
+    });
+    mockPrisma.lead.update.mockResolvedValue({ ...target, updatedAt: new Date('2026-07-29T00:00:01.000Z') });
+    mockPrisma.customerMergeAudit.create.mockResolvedValue({ id: 'audit-concurrent' });
+
+    const command: MergeCustomerCommand = {
+      companyId: 'co-1', actorId: 'sales-1', candidateId: 'cand-concurrent',
+      targetUpdatedAt: targetUpdatedAt.toISOString(), mode: 'trusted_defaults', fieldChoices: [],
+    };
+    const results = await Promise.allSettled([service.merge(command), service.merge(command)]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: expect.objectContaining({ message: expect.stringMatching(/consumed concurrently/) }),
+    });
+  });
+
+  it('12. 异常租户子记录不会被迁移：所有关系更新都带 companyId', async () => {
+    const targetUpdatedAt = new Date('2026-07-29T00:00:00.000Z');
+    const source = makeLead({ id: 'lead-s' });
+    const target = makeLead({ id: 'lead-t', updatedAt: targetUpdatedAt });
+    mockPrisma.identityMatchCandidate.findUnique.mockResolvedValue({
+      id: 'cand-isolation', companyId: 'co-1', sourceLeadId: 'lead-s', targetLeadId: 'lead-t',
+      status: 'pending', sourceLead: source, targetLead: target,
+    });
+    mockPrisma.contactPoint.findMany.mockResolvedValue([{ id: 'foreign-cp', companyId: 'co-2', leadId: 'lead-s' }]);
+    mockPrisma.conversation.findMany.mockResolvedValue([{ id: 'foreign-conv', companyId: 'co-2', leadId: 'lead-s' }]);
+    mockPrisma.lead.update.mockResolvedValue({ ...target, updatedAt: new Date('2026-07-29T00:00:01.000Z') });
+    mockPrisma.customerMergeAudit.create.mockResolvedValue({ id: 'audit-isolation' });
+
+    await service.merge({
+      companyId: 'co-1', actorId: 'sales-1', candidateId: 'cand-isolation',
+      targetUpdatedAt: targetUpdatedAt.toISOString(), mode: 'trusted_defaults', fieldChoices: [],
+    });
+
+    for (const relation of [
+      mockPrisma.contact.updateMany,
+      mockPrisma.contactPoint.updateMany,
+      mockPrisma.conversation.updateMany,
+      mockPrisma.leadActivity.updateMany,
+      mockPrisma.emailMessage.updateMany,
+      mockPrisma.quote.updateMany,
+      mockPrisma.order.updateMany,
+      mockPrisma.followUpReminder.updateMany,
+    ]) {
+      for (const [args] of relation.mock.calls) expect(args.where.companyId).toBe('co-1');
+    }
+  });
+
+  it('13. 撤销也只恢复同租户子记录', async () => {
+    const audit = {
+      id: 'audit-tenant-undo', companyId: 'co-1', sourceLeadId: 'lead-s', targetLeadId: 'lead-t',
+      undoneAt: null, status: 'completed', targetVersion: new Date('2026-07-29T00:00:01.000Z'),
+      beforeState: {
+        sourceLead: makeLead({ id: 'lead-s' }), targetLead: makeLead({ id: 'lead-t' }),
+        sourceContactIds: ['foreign-contact'], targetContactIds: [], sourceContactPointIds: ['foreign-cp'],
+        sourceConversationIds: ['foreign-conv'], contactPrimaryMap: { 'foreign-contact': true },
+      },
+    };
+    mockPrisma.customerMergeAudit.findUnique.mockResolvedValue(audit);
+    mockPrisma.lead.findUnique.mockResolvedValue(makeLead({ id: 'lead-t', updatedAt: audit.targetVersion }));
+
+    await service.undoMerge({ companyId: 'co-1', auditId: audit.id, actorId: 'admin-1' });
+
+    for (const relation of [mockPrisma.contact.updateMany, mockPrisma.contactPoint.updateMany, mockPrisma.conversation.updateMany]) {
+      for (const [args] of relation.mock.calls) expect(args.where.companyId).toBe('co-1');
+    }
+  });
+
+  it('14. 完整关系快照可在撤销时把五类业务记录归回 source', async () => {
+    const targetUpdatedAt = new Date('2026-07-29T00:00:00.000Z');
+    const source = makeLead({ id: 'lead-s' });
+    const target = makeLead({ id: 'lead-t', updatedAt: targetUpdatedAt });
+    const candidate = {
+      id: 'cand-full-undo', companyId: 'co-1', sourceLeadId: 'lead-s', targetLeadId: 'lead-t', status: 'pending',
+      sourceLead: source, targetLead: target,
+    };
+    mockPrisma.identityMatchCandidate.findUnique.mockResolvedValue(candidate);
+    const sameTenantRows = {
+      leadActivity: [{ id: 'activity-1', companyId: 'co-1', leadId: 'lead-s' }],
+      emailMessage: [{ id: 'email-1', companyId: 'co-1', leadId: 'lead-s' }],
+      quote: [{ id: 'quote-1', companyId: 'co-1', leadId: 'lead-s' }],
+      order: [{ id: 'order-1', companyId: 'co-1', leadId: 'lead-s' }],
+      followUpReminder: [{ id: 'reminder-1', companyId: 'co-1', leadId: 'lead-s' }],
+    };
+    mockPrisma.leadActivity.findMany.mockResolvedValue(sameTenantRows.leadActivity);
+    mockPrisma.emailMessage.findMany.mockResolvedValue(sameTenantRows.emailMessage);
+    mockPrisma.quote.findMany.mockResolvedValue(sameTenantRows.quote);
+    mockPrisma.order.findMany.mockResolvedValue(sameTenantRows.order);
+    mockPrisma.followUpReminder.findMany.mockResolvedValue(sameTenantRows.followUpReminder);
+    mockPrisma.lead.update.mockResolvedValue({ ...target, updatedAt: new Date('2026-07-29T00:00:01.000Z') });
+    mockPrisma.customerMergeAudit.create.mockResolvedValue({ id: 'audit-full-undo' });
+
+    await service.merge({
+      companyId: 'co-1', actorId: 'user-1', candidateId: candidate.id,
+      targetUpdatedAt: targetUpdatedAt.toISOString(), mode: 'trusted_defaults', fieldChoices: [],
+    });
+    const auditData = mockPrisma.customerMergeAudit.create.mock.calls[0][0].data as any;
+    expect(auditData.beforeState).toMatchObject({
+      sourceActivityIds: ['activity-1'], sourceEmailMessageIds: ['email-1'],
+      sourceQuoteIds: ['quote-1'], sourceOrderIds: ['order-1'], sourceReminderIds: ['reminder-1'],
+    });
+
+    mockPrisma.customerMergeAudit.findUnique.mockResolvedValue({
+      id: 'audit-full-undo', companyId: 'co-1', sourceLeadId: 'lead-s', targetLeadId: 'lead-t',
+      status: 'completed', targetVersion: auditData.targetVersion, undoneAt: null,
+      beforeState: auditData.beforeState,
+    });
+    mockPrisma.lead.findUnique.mockResolvedValue(makeLead({ id: 'lead-t', updatedAt: auditData.targetVersion }));
+    await service.undoMerge({ companyId: 'co-1', auditId: 'audit-full-undo', actorId: 'user-1' });
+
+    for (const [relation, id] of [
+      [mockPrisma.leadActivity.updateMany, 'activity-1'],
+      [mockPrisma.emailMessage.updateMany, 'email-1'],
+      [mockPrisma.quote.updateMany, 'quote-1'],
+      [mockPrisma.order.updateMany, 'order-1'],
+      [mockPrisma.followUpReminder.updateMany, 'reminder-1'],
+    ] as const) {
+      expect(relation.mock.calls.some(([args]: any[]) => args.where.companyId === 'co-1' && args.where.id?.in?.includes(id) && args.data.leadId === 'lead-s')).toBe(true);
+    }
   });
 });

@@ -64,7 +64,7 @@ assert_production_state_unchanged() {
   current_head="$(git -C "$PROJECT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
   [ "$current_head" = "$ACCEPTANCE_HEAD" ] \
     || fail 'production HEAD changed during Weixin acceptance'
-  current_tag="$(git -C "$PROJECT_DIR" describe --exact-match --match 'vaysen-crm-lan-v*-r*' HEAD 2>/dev/null || true)"
+  current_tag="$(git -C "$PROJECT_DIR" describe --exact-match --match 'vaysen-crm-lan-v*-r*' --match 'vaysen-crm-lan-pilot-v*-r*' HEAD 2>/dev/null || true)"
   [ "$current_tag" = "$ACCEPTANCE_RELEASE_TAG" ] \
     || fail 'production release tag changed during Weixin acceptance'
   [ "$(git -C "$PROJECT_DIR" cat-file -t "$current_tag" 2>/dev/null || true)" = tag ] \
@@ -169,8 +169,8 @@ git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 PROJECT_PREFIX="$(git -C "$PROJECT_DIR" rev-parse --show-prefix)"
 ACCEPTANCE_HEAD="$(git -C "$PROJECT_DIR" rev-parse --verify HEAD)"
 [[ "$ACCEPTANCE_HEAD" =~ ^[a-f0-9]{40}$ ]] || fail 'production HEAD is not an immutable full SHA'
-ACCEPTANCE_RELEASE_TAG="$(git -C "$PROJECT_DIR" describe --exact-match --match 'vaysen-crm-lan-v*-r*' HEAD 2>/dev/null || true)"
-[[ "$ACCEPTANCE_RELEASE_TAG" =~ ^vaysen-crm-lan-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]] \
+ACCEPTANCE_RELEASE_TAG="$(git -C "$PROJECT_DIR" describe --exact-match --match 'vaysen-crm-lan-v*-r*' --match 'vaysen-crm-lan-pilot-v*-r*' HEAD 2>/dev/null || true)"
+[[ "$ACCEPTANCE_RELEASE_TAG" =~ ^vaysen-crm-lan(-pilot)?-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]] \
   || fail 'production HEAD is not anchored by the exact Linux release tag'
 [ "$(git -C "$PROJECT_DIR" cat-file -t "$ACCEPTANCE_RELEASE_TAG" 2>/dev/null || true)" = tag ] \
   || fail 'production release anchor must be an annotated tag'

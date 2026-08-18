@@ -6,4 +6,7 @@
  */
 export const RELEASE_FEATURES = {
   aiVoiceCustomerService: false,
+  customerFactsReview: true,
+  salesSequencesManagement: true,
+  salesAutomation: true,
 } as const;

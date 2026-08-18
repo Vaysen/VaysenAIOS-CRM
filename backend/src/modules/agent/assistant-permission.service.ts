@@ -28,8 +28,16 @@ export class AssistantPermissionService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getProfile(companyId: string, user: AuthenticatedUser) {
+    return this.getProfileFromDb(this.prisma, companyId, user);
+  }
+
+  private async getProfileFromDb(
+    db: Pick<Prisma.TransactionClient, 'assistantPermissionProfile'>,
+    companyId: string,
+    user: AuthenticatedUser,
+  ) {
     this.assertCompanyMembership(user, companyId);
-    const stored = await this.prisma.assistantPermissionProfile.findUnique({
+    const stored = await db.assistantPermissionProfile.findUnique({
       where: { companyId },
     });
     const preset = (stored?.preset || 'ADVISORY') as AssistantPermissionPresetValue;
@@ -134,14 +142,114 @@ export class AssistantPermissionService {
     user: AuthenticatedUser,
     capabilityId: string,
     scope: Record<string, unknown> = {},
-  ) {
-    const profile = await this.getProfile(companyId, user);
+    options?: {
+      idempotencyKey?: string;
+      consumeGrant?: boolean;
+      tx?: Prisma.TransactionClient;
+      actionId?: string;
+      atomicRetryCount?: number;
+      dailyExternalSendCount?: number;
+    },
+  ): Promise<any> {
+    if (options?.consumeGrant && !options.tx) {
+      try {
+        return await this.prisma.$transaction(
+          (tx) => this.evaluate(companyId, user, capabilityId, scope, { ...options, tx }),
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error: any) {
+        const retryCount = options.atomicRetryCount || 0;
+        if (error?.code === 'P2034' && retryCount < 2) {
+          return this.evaluate(companyId, user, capabilityId, scope, {
+            ...options,
+            atomicRetryCount: retryCount + 1,
+          });
+        }
+        if (error?.code === 'P2002' && options.idempotencyKey) {
+          const replay = await this.prisma.assistantGrantConsumption.findUnique({
+            where: {
+              companyId_operatorUserId_idempotencyKey: {
+                companyId,
+                operatorUserId: user.id,
+                idempotencyKey: options.idempotencyKey,
+              },
+            },
+          });
+          const scopeDigest = digestAgentInput(this.normalizeScope(scope));
+          if (
+            replay
+            && replay.capability === capabilityId
+            && replay.scopeDigest === scopeDigest
+          ) {
+            const profile = await this.getProfile(companyId, user);
+            return {
+              decision: 'ALLOW' as const,
+              reason: 'TEMPORARY_GRANT_REPLAY',
+              grantId: replay.grantId,
+              grantConsumptionId: replay.id,
+              scopeDigest,
+              profile,
+            };
+          }
+        }
+        throw error;
+      }
+    }
+    const db = options?.tx || this.prisma;
+    const profile = await this.getProfileFromDb(db, companyId, user);
     const definition = getAssistantCapability(capabilityId);
     if (!definition) return { decision: 'DENY' as const, reason: 'UNKNOWN_CAPABILITY', profile };
     const normalizedScope = this.normalizeScope(scope);
     const scopeDigest = digestAgentInput(normalizedScope);
+    const canonicalKey = options?.idempotencyKey?.trim();
+    if (canonicalKey && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{7,199}$/.test(canonicalKey)) {
+      throw new BadRequestException('Invalid canonical idempotency key');
+    }
+
+    const existingConsumption = canonicalKey && options?.consumeGrant
+      ? await db.assistantGrantConsumption.findUnique({
+          where: {
+            companyId_operatorUserId_idempotencyKey: {
+              companyId,
+              operatorUserId: user.id,
+              idempotencyKey: canonicalKey,
+            },
+          },
+        })
+      : null;
+    if (existingConsumption) {
+      if (
+        existingConsumption.capability !== capabilityId
+        || existingConsumption.scopeDigest !== scopeDigest
+      ) {
+        throw new BadRequestException('Idempotency key was reused for another permission scope');
+      }
+      return {
+        decision: 'ALLOW' as const,
+        reason: 'TEMPORARY_GRANT_REPLAY',
+        grantId: existingConsumption.grantId,
+        grantConsumptionId: existingConsumption.id,
+        scopeDigest,
+        profile,
+      };
+    }
+
+    if (
+      options?.dailyExternalSendCount !== undefined
+      && options.dailyExternalSendCount >= profile.thresholds.maxDailyExternalSends
+    ) {
+      return {
+        decision: 'DENY' as const,
+        reason: 'DAILY_EXTERNAL_SEND_LIMIT',
+        grantId: null,
+        grantConsumptionId: null,
+        scopeDigest,
+        profile,
+      };
+    }
+
     const grants = definition.temporaryGrantAllowed
-      ? await this.prisma.assistantTemporaryGrant.findMany({
+      ? await db.assistantTemporaryGrant.findMany({
           where: {
             companyId,
             operatorUserId: user.id,
@@ -154,7 +262,47 @@ export class AssistantPermissionService {
           take: 10,
         })
       : [];
-    const grant = grants.find((item) => item.useCount < item.maxUses);
+    let grant = grants.find((item) => item.useCount < item.maxUses);
+    let grantConsumptionId: string | null = null;
+
+    if (grant && options?.consumeGrant) {
+      if (!canonicalKey) {
+        throw new BadRequestException('Grant consumption requires a canonical idempotency key');
+      }
+      const nextUseCount = grant.useCount + 1;
+      const claimed = await db.assistantTemporaryGrant.updateMany({
+        where: {
+          id: grant.id,
+          status: AssistantGrantStatus.ACTIVE,
+          useCount: grant.useCount,
+          expiresAt: { gt: new Date() },
+        },
+        data: {
+          useCount: { increment: 1 },
+          ...(nextUseCount >= grant.maxUses
+            ? { status: AssistantGrantStatus.CONSUMED, consumedAt: new Date() }
+            : {}),
+        },
+      });
+      if (claimed.count === 1) {
+        const consumption = await db.assistantGrantConsumption.create({
+          data: {
+            companyId,
+            operatorUserId: user.id,
+            grantId: grant.id,
+            idempotencyKey: canonicalKey,
+            capability: capabilityId,
+            scopeDigest,
+            actionId: options.actionId,
+            status: 'CONSUMED',
+            consumedAt: new Date(),
+          },
+        });
+        grantConsumptionId = consumption.id;
+      } else {
+        grant = undefined;
+      }
+    }
     const decision = resolveAssistantCapabilityDecision(
       profile.preset,
       capabilityId,
@@ -169,6 +317,7 @@ export class AssistantPermissionService {
           ? 'APPROVAL_REQUIRED'
           : 'POLICY_DENIED',
       grantId: grant?.id || null,
+      grantConsumptionId,
       scopeDigest,
       profile,
     };

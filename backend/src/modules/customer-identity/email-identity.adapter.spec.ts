@@ -16,6 +16,7 @@
  *   (EmailMessage.leadId 在 schema 中非空且绑定出站邮件账号, 无法表达 leadId=null,
  *    故入站消息走 CommunicationMessage; Conversation.leadId 可空, 满足"挂待关联状态")
  */
+import { Logger } from '@nestjs/common';
 import { EmailIdentityAdapter } from './email-identity.adapter';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { ResolveIdentityResult } from './customer-identity.types';
@@ -78,6 +79,8 @@ function createAdapter(
   );
   return { adapter, prisma, resolver };
 }
+
+afterEach(() => jest.restoreAllMocks());
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -207,11 +210,18 @@ describe('TASK-102E EmailIdentityAdapter', () => {
   // ---- 5. 无效邮箱 -> 不调用 resolve, 邮件仍入库但 leadId=null ----
   it('5. 无效邮箱 -> 不调用 resolve, 邮件仍入库 leadId=null', async () => {
     const { adapter, prisma, resolver } = createAdapter();
+    const messageId = '<m5-message-sentinel@example.com>';
+    const subject = 'M5_SUBJECT_SENTINEL';
+    const body = 'M5_BODY_SENTINEL https://provider.invalid/?token=M5_TOKEN_SENTINEL';
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 
     const result = await adapter.ingest({
       companyId: 'co-1',
       email: 'not-an-email',
-      messageId: 'm5',
+      messageId,
+      displayNameCandidate: 'M5_DISPLAY_NAME_SENTINEL',
+      subject,
+      bodyText: body,
     });
 
     expect(resolver.resolve).not.toHaveBeenCalled();
@@ -221,9 +231,25 @@ describe('TASK-102E EmailIdentityAdapter', () => {
     expect(prisma.communicationMessage.create).toHaveBeenCalledTimes(1);
     expect(prisma.conversation.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ leadId: null }),
+        data: expect.objectContaining({
+          leadId: null,
+          externalThreadId: messageId,
+          subject,
+          lastMessagePreview: body,
+        }),
       }),
     );
+    expect(prisma.communicationMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ externalMessageId: messageId, subject, content: body }),
+      }),
+    );
+    const output = warn.mock.calls.flat().join(' ');
+    expect(output).toContain('[email_identity.invalid]');
+    expect(output).toContain('"status":"rejected"');
+    for (const sentinel of [messageId, 'M5_DISPLAY_NAME_SENTINEL', subject, body, 'M5_TOKEN_SENTINEL']) {
+      expect(output).not.toContain(sentinel);
+    }
   });
 
   // ---- 6. 重复邮件幂等 ----
@@ -238,18 +264,25 @@ describe('TASK-102E EmailIdentityAdapter', () => {
         } as ResolveIdentityResult),
       },
     });
+    const messageId = '<m6-message-sentinel@example.com>';
+    const subject = 'M6_SUBJECT_SENTINEL';
+    const body = 'M6_BODY_SENTINEL https://provider.invalid/?token=M6_TOKEN_SENTINEL';
+    const debug = jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
 
     // 第一次调用: 入库
     const first = await adapter.ingest({
       companyId: 'co-1',
       email: 'dup@example.com',
-      messageId: 'm6',
+      messageId,
+      displayNameCandidate: 'M6_DISPLAY_NAME_SENTINEL',
+      subject,
+      bodyText: body,
     });
     expect(prisma.communicationMessage.create).toHaveBeenCalledTimes(1);
     expect(first.leadId).toBe('lead-1');
     expect(prisma.communicationMessage.findFirst).toHaveBeenCalledWith({
       where: {
-        externalMessageId: 'm6',
+        externalMessageId: messageId,
         conversation: { companyId: 'co-1' },
       },
       include: { conversation: true },
@@ -259,13 +292,16 @@ describe('TASK-102E EmailIdentityAdapter', () => {
     prisma.communicationMessage.findFirst.mockResolvedValue({
       id: 'msg-1',
       conversationId: 'conv-1',
-      externalMessageId: 'm6',
+      externalMessageId: messageId,
       conversation: { id: 'conv-1', leadId: 'lead-1', contactPointId: 'cp-1' },
     });
     const second = await adapter.ingest({
       companyId: 'co-1',
       email: 'dup@example.com',
-      messageId: 'm6',
+      messageId,
+      displayNameCandidate: 'M6_DISPLAY_NAME_SENTINEL',
+      subject,
+      bodyText: body,
     });
 
     // 不再调用 resolve, 不再创建重复消息
@@ -274,5 +310,11 @@ describe('TASK-102E EmailIdentityAdapter', () => {
     expect(prisma.conversation.create).toHaveBeenCalledTimes(1);
     expect(second.leadId).toBe('lead-1');
     expect(second.emailMessageId).toBe('msg-1');
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('[email_identity.reingest]'));
+    expect(debug.mock.calls[0][0]).toContain('"status":"accepted"');
+    const output = debug.mock.calls.flat().join(' ');
+    for (const sentinel of [messageId, 'M6_DISPLAY_NAME_SENTINEL', subject, body, 'M6_TOKEN_SENTINEL']) {
+      expect(output).not.toContain(sentinel);
+    }
   });
 });

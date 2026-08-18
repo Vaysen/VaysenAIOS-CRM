@@ -25,6 +25,8 @@ export interface ElectronAPI {
     getToken: () => Promise<string | null>;
     setToken: (token: string, refreshToken: string) => Promise<void>;
     clearToken: () => Promise<void>;
+    refreshSession: () => Promise<{ accessToken: string }>;
+    logoutSession: () => Promise<void>;
     getCompany: () => Promise<string | null>;
     setCompany: (companyId: string) => Promise<void>;
   };
@@ -37,7 +39,7 @@ export interface ElectronAPI {
     onCurrentChat: (callback: (chatInfo: any) => void) => () => void;
     requestCurrentChat: () => Promise<{
       requested: boolean;
-      chat?: { accountId: string; name: string; phone: string; isGroup: boolean; observedAt: string; selectionProof: string } | null;
+      chat?: { accountId: string; name: string; phone: string; isGroup: boolean; externalId?: string; observedAt: string; selectionProof: string } | null;
     }>;
     onAccountSwitched: (
       callback: (data: { accountId: string; label: string }) => void,
@@ -123,6 +125,27 @@ export interface ElectronAPI {
   app: {
     getVersion: () => Promise<string>;
     onOnlineStatus: (callback: (isOnline: boolean) => void) => () => void;
+    configGet: () => Promise<{
+      valid: boolean;
+      config: { apiBaseUrl: string; updateFeedUrl: string };
+      errors: Array<{ field: 'apiBaseUrl' | 'updateFeedUrl'; value: string; reason: string }>;
+    }>;
+    configSet: (config: { apiBaseUrl?: string; updateFeedUrl?: string }) => Promise<{
+      success: boolean;
+      config?: { apiBaseUrl: string; updateFeedUrl: string };
+      error?: string;
+    }>;
+    checkConnection: (apiBaseUrl: string) => Promise<{
+      ok: boolean;
+      code: 'ok' | 'not_configured' | 'invalid_url' | 'dns' | 'timeout' | 'http_status' | 'version_mismatch' | 'invalid_response' | 'unreachable' | 'network_error';
+      url: string;
+      status?: number;
+      latencyMs?: number;
+      message: string;
+      serverVersion?: string;
+      release?: { tag?: string; commit?: string };
+    }>;
+    onNeedRestart: (callback: (payload: { reason: string; next?: { apiBaseUrl: string; updateFeedUrl: string } }) => void) => () => void;
   };
 
   // API 错误监听

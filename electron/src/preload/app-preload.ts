@@ -6,6 +6,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../shared/ipc-channels';
+import type { ConnectionCheckResult } from '../shared/connection-check';
 import type {
   AgentQuoteDeliveryRequest,
   AgentWhatsappTextSendRequest,
@@ -28,6 +29,8 @@ const appPreload = {
     setToken: (token: string, refreshToken: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTH_SET_TOKEN, { token, refreshToken }),
     clearToken: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_CLEAR_TOKEN),
+    refreshSession: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REFRESH_SESSION),
+    logoutSession: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_SESSION),
     getCompany: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_COMPANY),
     setCompany: (companyId: string) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_SET_COMPANY, companyId),
   },
@@ -153,6 +156,8 @@ const appPreload = {
       ipcRenderer.invoke(IPC_CHANNELS.APP_CONFIG_GET),
     configSet: (config: { apiBaseUrl?: string; updateFeedUrl?: string }): Promise<{ success: boolean; config?: { apiBaseUrl: string; updateFeedUrl: string }; error?: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_CONFIG_SET, config),
+    checkConnection: (apiBaseUrl: string): Promise<ConnectionCheckResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.APP_CHECK_CONNECTION, apiBaseUrl),
     onNeedRestart: (callback: (payload: { reason: string; next?: { apiBaseUrl: string; updateFeedUrl: string } }) => void) => {
       const handler = (_event: any, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.APP_NEED_RESTART, handler);

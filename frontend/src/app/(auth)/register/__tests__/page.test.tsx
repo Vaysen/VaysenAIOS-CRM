@@ -36,7 +36,7 @@ describe('RegisterPage adapter', () => {
     await user.type(screen.getByLabelText('名*', { exact: true }), 'John');
     await user.type(screen.getByLabelText('姓*', { exact: true }), 'Smith');
     await user.type(screen.getByLabelText('用户名*', { exact: true }), 'chris');
-    await user.type(screen.getByLabelText('密码*', { exact: true }), 'password123');
+    await user.type(screen.getByLabelText('密码*', { exact: true }), 'password1234');
     await user.click(screen.getByRole('button', { name: '注册' }));
 
     await waitFor(() => expect(register).toHaveBeenCalledTimes(1));

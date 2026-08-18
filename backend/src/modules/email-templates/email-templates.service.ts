@@ -14,8 +14,12 @@ import {
   resolveEmailCompanyName,
   resolveEmailCompanyWebsite,
 } from '../emails/email-content.guard';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
-const DEFAULT_COMPANY_WEBSITE = 'https://example.com';
+const DEFAULT_COMPANY_WEBSITE = 'https://vaysen.com';
 
 const DEFAULT_VARIABLES = [
   { variable: '{{contact_name}}', label: 'Contact Name', isRequired: false },
@@ -300,7 +304,9 @@ Return strict JSON only:
   }
 
   async update(id: string, dto: UpdateEmailTemplateDto, currentUser: any) {
-    const existing = await this.prisma.emailTemplate.findUnique({ where: { id } });
+    const existing = await this.prisma.emailTemplate.findFirst({
+      where: { id, companyId: requireActiveCompany(currentUser).id },
+    });
     if (!existing) throw new NotFoundException('Email template not found');
     this.checkCompanyAccess(currentUser, existing);
     this.checkWriteAccess(currentUser, existing.companyId);
@@ -359,7 +365,9 @@ Return strict JSON only:
   }
 
   async remove(id: string, currentUser: any) {
-    const existing = await this.prisma.emailTemplate.findUnique({ where: { id } });
+    const existing = await this.prisma.emailTemplate.findFirst({
+      where: { id, companyId: requireActiveCompany(currentUser).id },
+    });
     if (!existing) throw new NotFoundException('Email template not found');
     this.checkCompanyAccess(currentUser, existing);
     this.checkWriteAccess(currentUser, existing.companyId);
@@ -385,7 +393,9 @@ Return strict JSON only:
   }
 
   async updateStatus(id: string, isActive: boolean, currentUser: any) {
-    const existing = await this.prisma.emailTemplate.findUnique({ where: { id } });
+    const existing = await this.prisma.emailTemplate.findFirst({
+      where: { id, companyId: requireActiveCompany(currentUser).id },
+    });
     if (!existing) throw new NotFoundException('Email template not found');
     this.checkCompanyAccess(currentUser, existing);
     this.checkWriteAccess(currentUser, existing.companyId);
@@ -459,7 +469,7 @@ Return strict JSON only:
   }) {
     const theme = this.resolveTheme(options.colorTheme);
     const name = `${options.category} - ${options.market || 'Global'} ${options.productCategory} - ${options.style || 'Professional B2B'}`;
-    const companyName = options.companyName || 'Example Trading Company';
+    const companyName = options.companyName || 'Vaysen Packaging';
     const companyWebsite = options.companyWebsite || DEFAULT_COMPANY_WEBSITE;
     const websiteDisplay = options.websiteDisplay || this.websiteDisplay(companyWebsite);
     const whatsappBlock = options.whatsappUrl
@@ -648,20 +658,13 @@ Return strict JSON only:
   // ========== Access Control ==========
 
   private getCompany(currentUser: any) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company associated');
-    return currentUser.companies[0];
+    return requireActiveCompany(currentUser);
   }
 
   private buildCompanyWhere(currentUser: any): any {
-    const currentCompanyId = currentUser.companies?.[0]?.id;
-    if (!currentCompanyId) return { companyId: '__no_company__' };
-
-    const isOnlySalesUser = currentUser.companies?.every(
-      (c: any) => c.role === 'sales_user',
-    );
-
-    if (isOnlySalesUser) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const currentCompanyId = activeCompany.id;
+    if (!hasFullAccess(currentUser, currentCompanyId)) {
       return { createdBy: currentUser.id, companyId: currentCompanyId };
     }
 
@@ -669,23 +672,22 @@ Return strict JSON only:
   }
 
   private checkCompanyAccess(currentUser: any, template: any) {
-    const isSuperAdmin = currentUser.companies?.some((c: any) => c.role === 'super_admin');
-    if (isSuperAdmin) return;
-
-    const userCompanyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!userCompanyIds.includes(template.companyId)) {
+    const activeCompany = requireActiveCompany(currentUser);
+    if (activeCompany.id !== template.companyId) {
       throw new ForbiddenException('Cannot access templates from another company');
     }
 
-    const isFullAccess = currentUser.companies?.some((c: any) => ['company_admin', 'sales_manager'].includes(c.role));
+    const isFullAccess = hasFullAccess(currentUser, template.companyId);
     if (!isFullAccess && template.createdBy && template.createdBy !== currentUser.id) {
       throw new ForbiddenException('You can only access your own email templates');
     }
   }
 
   private checkWriteAccess(currentUser: any, companyId: string) {
-    const isSuperAdmin = currentUser.companies?.some((c: any) => c.role === 'super_admin');
-    if (isSuperAdmin) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) throw new ForbiddenException('Not a member of this company');

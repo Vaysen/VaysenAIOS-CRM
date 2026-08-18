@@ -7,10 +7,10 @@ export class AdminUpdateUserDto {
   @IsString()
   email?: string;
 
-  @ApiPropertyOptional({ example: 'newpassword123' })
+  @ApiPropertyOptional({ example: 'new-long-password-123' })
   @IsOptional()
   @IsString()
-  @MinLength(6)
+  @MinLength(12)
   @MaxLength(100)
   password?: string;
 

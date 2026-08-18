@@ -6,7 +6,7 @@ const path = require('path');
 
 function businessContext(env = process.env) {
   return {
-    brandName: env.BUSINESS_BRAND_NAME || 'Example Trading Company',
+    brandName: env.BUSINESS_BRAND_NAME || 'Vaysen Packaging (Vaysen包装)',
     description: env.BUSINESS_DESCRIPTION
       || 'an international B2B packaging manufacturer and exporter serving brands, wholesalers, distributors and e-commerce businesses',
     productFocus: env.BUSINESS_PRODUCT_FOCUS

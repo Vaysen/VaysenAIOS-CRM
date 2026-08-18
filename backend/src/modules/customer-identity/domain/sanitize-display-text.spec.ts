@@ -84,6 +84,13 @@ describe('TASK-102B sanitizeContactNameCandidate', () => {
   });
 });
 
+describe('TASK-102B recording status', () => {
+  it('recording status is not a contact name', () => {
+    expect(sanitizeContactNameCandidate('recording audio')).toBeNull();
+    expect(sanitizeContactNameCandidate('\u5f55\u97f3\u4e2d')).toBeNull();
+  });
+});
+
 describe('TASK-102B sanitizeCompanyCandidate', () => {
   it('以 WhatsApp: 开头返回 null', () => {
     expect(sanitizeCompanyCandidate('WhatsApp: +86 138...')).toBeNull();

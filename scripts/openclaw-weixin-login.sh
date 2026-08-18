@@ -189,7 +189,7 @@ export_validated_release_tuple() {
         && [[ "$full_revision" = "$short_revision"* ]] \
         || err 'running backend did not provide a valid immutable release tuple' \
         || return 1
-    [[ "$release_tag" =~ ^vaysen-crm-lan-v[0-9]+\.[0-9]+\.[0-9]+-r[1-9][0-9]*$ ]] \
+    [[ "$release_tag" =~ ^vaysen-crm-lan(-pilot)?-v[0-9]+\.[0-9]+\.[0-9]+-r[1-9][0-9]*$ ]] \
         || err 'running backend release tag is not an immutable Linux release tag' \
         || return 1
     tag_type="$(git -C "$PROJECT_DIR" cat-file -t "$release_tag" 2>/dev/null)" \

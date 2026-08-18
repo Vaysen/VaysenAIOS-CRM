@@ -57,11 +57,23 @@ function createMockPrisma() {
     },
     communicationMessage: {
       findUnique: jest.fn(), findFirst: jest.fn(), create: jest.fn(), update: jest.fn(),
+      groupBy: jest.fn().mockResolvedValue([]),
     },
     lead: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn() },
-    contactPoint: { findUnique: jest.fn(), findFirst: jest.fn(), create: jest.fn() },
+    contactPoint: {
+      findUnique: jest.fn(), findFirst: jest.fn(), create: jest.fn(),
+      update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    externalIdentity: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     leadActivity: { create: jest.fn() },
     auditLog: { create: jest.fn() },
+    userCompanyRelation: {
+      findFirst: jest.fn(({ where }: any) => Promise.resolve({
+        role: { name: where.userId === 'viewer-1' ? 'viewer' : 'company_admin' },
+      })),
+    },
   } as any;
   prisma.conversation.upsert.mockImplementation(async ({ create, update }: any) => {
     const existing = await prisma.conversation.findFirst();
@@ -88,6 +100,20 @@ function createService(overrides: { prisma?: any; resolver?: any } = {}) {
   const ownerNotifications = {
     enqueueInbound: jest.fn().mockResolvedValue({ created: true, record: { id: 'notice-1' } }),
   } as any;
+  const outbound = {
+    execute: jest.fn(async (_request: any, provider: any) => ({
+      outboxId: 'outbox-1',
+      deduplicated: false,
+      receipt: await provider(_request.artifacts || [], {
+        targetAddress: String(_request.targetAddress || '').replace(/^\+/, '').replace(/@s\.whatsapp\.net$/i, ''),
+        subject: String(_request.subject || '').trim(),
+        body: String(_request.body || '').trim(),
+        contentType: _request.contentType || 'text',
+        artifacts: _request.artifacts || [],
+        signal: new AbortController().signal,
+      }),
+    })),
+  } as any;
   const service = new WhatsAppService(
     prisma,
     adapter,
@@ -95,12 +121,23 @@ function createService(overrides: { prisma?: any; resolver?: any } = {}) {
     eventBus,
     resolver,
     ownerNotifications,
+    outbound,
   );
   // 抑制日志噪音
   jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
   jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-  return { service, prisma, resolver, adapter, eventBus, ownerNotifications };
+  jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+  return {
+    service,
+    prisma,
+    resolver,
+    adapter,
+    evolutionApi,
+    eventBus,
+    ownerNotifications,
+    outbound,
+  };
 }
 
 function snapshot(partial: Partial<WhatsAppContactSnapshotDto>): WhatsAppContactSnapshotDto {
@@ -113,6 +150,20 @@ function snapshot(partial: Partial<WhatsAppContactSnapshotDto>): WhatsAppContact
     isSelf: false,
     observedAt: Date.now(),
     ...partial,
+  };
+}
+
+function activeUser(companyId: string, otherCompanyIds: string[] = [], id = 'user-1') {
+  const companies = [companyId, ...otherCompanyIds].map((company) => ({
+    id: company,
+    name: company,
+    role: 'sales_user',
+  }));
+  return {
+    id,
+    activeCompanyId: companyId,
+    activeCompany: companies[0],
+    companies,
   };
 }
 
@@ -284,7 +335,7 @@ describe('WhatsAppService — TASK-102D', () => {
       const { service, prisma } = createService();
       prisma.whatsAppSession.findFirst.mockResolvedValue(null);
 
-      const user = { companies: [{ id: 'co-A' }, { id: 'co-B' }] };
+      const user = activeUser('co-B', ['co-A']);
       const result = await service.findSessionByAccountId('acct-1', user, 'co-B');
 
       expect(result).toBeNull();
@@ -305,7 +356,7 @@ describe('WhatsAppService — TASK-102D', () => {
       prisma.whatsAppSession.findFirst.mockResolvedValue(null);
       await expect(
         service.findSessionByAccountId('acct-1', { companies: [] }, 'co-A'),
-      ).rejects.toThrow('Selected company is not available');
+      ).rejects.toThrow('An authenticated active company is required');
       expect(prisma.whatsAppSession.findFirst).not.toHaveBeenCalled();
     });
 
@@ -318,7 +369,7 @@ describe('WhatsAppService — TASK-102D', () => {
 
       await expect(service.findSessionByAccountId(
         'default',
-        { companies: [{ id: 'co-A' }] },
+        activeUser('co-A'),
         'co-A',
       )).resolves.toBeNull();
       expect(prisma.whatsAppSession.findMany).not.toHaveBeenCalled();
@@ -336,7 +387,7 @@ describe('WhatsAppService — TASK-102D', () => {
 
       await expect(service.findSessionByAccountId(
         'default',
-        { companies: [{ id: 'co-A' }] },
+        activeUser('co-A'),
         'co-A',
       )).resolves.toEqual(expect.objectContaining({ sessionId: 'electron-explicit' }));
     });
@@ -352,7 +403,7 @@ describe('WhatsAppService — TASK-102D', () => {
 
       const result = await service.ensureElectronSessionMapping(
         'default',
-        { id: 'user-1', companies: [{ id: 'co-A' }, { id: 'co-B' }] },
+        activeUser('co-B', ['co-A']),
         'co-B',
         'connected',
       );
@@ -394,7 +445,7 @@ describe('WhatsAppService — TASK-102D', () => {
 
       const result = await service.ensureElectronSessionMapping(
         'default',
-        { id: 'user-1', companies: [{ id: 'co-A' }] },
+        activeUser('co-A'),
         'co-A',
       );
 
@@ -418,7 +469,7 @@ describe('WhatsAppService — TASK-102D', () => {
 
       await expect(service.ensureElectronSessionMapping(
         '../other-tenant',
-        { companies: [{ id: 'co-A' }] },
+        activeUser('co-A'),
         'co-A',
       )).rejects.toThrow('accountId is invalid');
 
@@ -433,7 +484,7 @@ describe('WhatsAppService — TASK-102D', () => {
       sessionId: 'wa-inst-1',
       companyId: 'co-1',
       phoneNumber: '8613900001111',
-      accountName: '示例贸易',
+      accountName: 'Vaysen',
     };
 
     it('resolved(已链接)消息: 关联 contactPointId,不入库 WhatsApp: <phone> 公司名', async () => {
@@ -477,6 +528,52 @@ describe('WhatsAppService — TASK-102D', () => {
       expect(createData.groupStatusSource).toBe('evolution_webhook_jid');
       // service 不直接创建 Lead(由 resolver 负责),因此不会写入 WhatsApp: <phone>
       expect(prisma.lead.create).not.toHaveBeenCalled();
+    });
+
+    it('writes a valid private Evolution pushName when contactName is empty', async () => {
+      const { service, resolver, prisma } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue(baseSession);
+      (resolver.resolve as jest.Mock).mockResolvedValue({
+        action: 'linked', leadId: 'lead-valid-name', contactId: 'contact-1', contactPointId: 'cp-1',
+        externalIdentityId: 'ei-valid-name', reason: 'exact_match',
+      } as ResolveIdentityResult);
+      prisma.conversation.findFirst.mockResolvedValue(null);
+      prisma.conversation.create.mockResolvedValue({ id: 'conv-valid-name' });
+      prisma.lead.findFirst.mockResolvedValue({ id: 'lead-valid-name', companyId: 'co-1', contactName: null });
+
+      await service.handleEvolutionMessage({
+        instanceName: 'wa-inst-1', fromPhone: '8613800001234', isGroup: false,
+        messageContent: 'Hello from a private chat', messageId: 'm-valid-name',
+        timestamp: new Date().toISOString(), pushName: 'Private buyer',
+        externalId: '8613800001234@s.whatsapp.net', externalIdKind: 'phone_jid', phoneCandidate: '8613800001234',
+      });
+
+      expect(prisma.lead.update).toHaveBeenCalledWith({
+        where: { id: 'lead-valid-name', companyId: 'co-1' },
+        data: { contactName: 'Private buyer' },
+      });
+    });
+
+    it('never writes a technical Evolution pushName such as last seen into contactName', async () => {
+      const { service, resolver, prisma } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue(baseSession);
+      (resolver.resolve as jest.Mock).mockResolvedValue({
+        action: 'linked', leadId: 'lead-status-name', contactId: 'contact-1', contactPointId: 'cp-1',
+        externalIdentityId: 'ei-status-name', reason: 'exact_match',
+      } as ResolveIdentityResult);
+      prisma.conversation.findFirst.mockResolvedValue(null);
+      prisma.conversation.create.mockResolvedValue({ id: 'conv-status-name' });
+      prisma.lead.findFirst.mockResolvedValue({ id: 'lead-status-name', companyId: 'co-1', contactName: null });
+
+      await service.handleEvolutionMessage({
+        instanceName: 'wa-inst-1', fromPhone: '8613800001234', isGroup: false,
+        messageContent: 'Status text must not become a name', messageId: 'm-status-name',
+        timestamp: new Date().toISOString(), pushName: 'Last seen today at 10:30',
+        externalId: '8613800001234@s.whatsapp.net', externalIdKind: 'phone_jid', phoneCandidate: '8613800001234',
+      });
+
+      expect((resolver.resolve as jest.Mock).mock.calls[0][0].contactNameCandidate).toBeUndefined();
+      expect(prisma.lead.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: { contactName: expect.anything() } }));
     });
 
     it('unresolved(LID)消息: contactPointId=null,但消息仍入库', async () => {
@@ -748,7 +845,7 @@ describe('WhatsAppService — TASK-102D', () => {
         leadId: 'lead-1',
         contactPointId: 'cp-1',
         customerIdentityTrusted: true,
-        subject: 'WhatsApp接待: 示例贸易',
+        subject: 'WhatsApp接待: Vaysen',
       });
 
       expect(prisma.conversation.upsert).toHaveBeenCalledWith({
@@ -789,7 +886,7 @@ describe('WhatsAppService — TASK-102D', () => {
         '+86 138 0000 1234',
         'sess-1',
         '+86 153 0000 5678',
-        'Vaysen AI CRM',
+        'Vaysen',
       );
 
       expect(prisma.conversation.upsert).toHaveBeenCalledWith(
@@ -908,6 +1005,61 @@ describe('WhatsAppService — TASK-102D', () => {
       },
     );
 
+    it('keeps the real Evolution persistence and SSE contract while logs stay metadata-only', async () => {
+      const { service, resolver, prisma, eventBus } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue(baseSession);
+      prisma.communicationMessage.findUnique.mockResolvedValue(null);
+      (resolver.resolve as jest.Mock).mockResolvedValue({
+        action: 'linked', leadId: 'lead-success', contactId: 'contact-success',
+        contactPointId: 'cp-success', reason: 'exact_match',
+      } as ResolveIdentityResult);
+      prisma.conversation.findFirst.mockResolvedValue(null);
+      prisma.conversation.create.mockResolvedValue({ id: 'conv-success', isGroup: false });
+      prisma.communicationMessage.create.mockResolvedValue({ id: 'message-success' });
+      prisma.lead.findFirst.mockResolvedValue({ id: 'lead-success', companyId: 'co-1', contactName: null });
+
+      const sentinelBody = 'SENTINEL_EVOLUTION_MESSAGE_BODY';
+      const sentinelEmail = 'sentinel-evolution@example.com';
+      const sentinelPhone = '+8613900099999';
+      const sentinelJid = '8613900099999@s.whatsapp.net';
+      const sentinelProviderId = 'provider-sentinel-evolution-1';
+      await service.handleEvolutionMessage({
+        instanceName: 'wa-inst-1',
+        fromPhone: sentinelPhone,
+        isGroup: false,
+        messageContent: `${sentinelBody} ${sentinelEmail}`,
+        messageId: sentinelProviderId,
+        timestamp: '2026-07-18T10:03:00.000Z',
+        pushName: 'Sentinel Buyer',
+        externalId: sentinelJid,
+        phoneCandidate: sentinelPhone.slice(1),
+        direction: 'inbound',
+      });
+
+      expect(eventBus.emit).toHaveBeenCalledWith('whatsapp.message', {
+        companyId: 'co-1',
+        conversationId: 'conv-success',
+        leadId: 'lead-success',
+        fromPhone: sentinelPhone,
+        receiverPhone: baseSession.phoneNumber,
+        receiverName: baseSession.accountName,
+        messagePreview: `${sentinelBody} ${sentinelEmail}`,
+        timestamp: '2026-07-18T10:03:00.000Z',
+        direction: 'inbound',
+      });
+
+      const logOutput = (Logger.prototype.log as jest.Mock).mock.calls
+        .flat()
+        .map(String)
+        .join('\n');
+      expect(logOutput).not.toContain(sentinelBody);
+      expect(logOutput).not.toContain(sentinelEmail);
+      expect(logOutput).not.toContain(sentinelPhone);
+      expect(logOutput).not.toContain(sentinelJid);
+      expect(logOutput).not.toContain(sentinelProviderId);
+      expect(logOutput).toContain('whatsapp.evolution.message_persisted');
+    });
+
     it('uses the same owner-notification source key when an inbound webhook is replayed', async () => {
       const { service, resolver, prisma, ownerNotifications, eventBus } = createService();
       prisma.whatsAppSession.findFirst.mockResolvedValue(baseSession);
@@ -1008,7 +1160,7 @@ describe('WhatsAppService — TASK-102D', () => {
         messageContent: 'Manual reply',
         messageId: 'm-outbound',
         timestamp: '2026-07-14T09:00:00.000Z',
-        pushName: '示例贸易',
+        pushName: 'Vaysen',
         externalId: '8613800001234@c.us',
         phoneCandidate: '8613800001234',
         direction: 'outbound',
@@ -1202,9 +1354,9 @@ describe('WhatsAppService — TASK-102D', () => {
         conversationId: 'conv-baileys',
         conversation: { leadId: 'lead-baileys' },
       });
-    prisma.whatsAppSession.findUnique.mockResolvedValue({
+    prisma.whatsAppSession.findFirst.mockResolvedValue({
       phoneNumber: '8613900001111',
-      accountName: 'Vaysen AI CRM',
+      accountName: 'Vaysen',
     });
     (resolver.resolve as jest.Mock).mockResolvedValue({
       action: 'linked',
@@ -1265,9 +1417,24 @@ describe('WhatsAppService — TASK-102D', () => {
       status: 'connected',
     };
 
+    it('fails closed instead of falling back from an Electron mapping to Baileys', async () => {
+      const { service, adapter } = createService();
+      adapter.isConnected.mockReturnValue(true);
+
+      await expect((service as any).sendTextForSession(
+        {
+          ...connectedSession,
+          authStatePath: 'electron-account:dW5ib3VuZA',
+        },
+        '8613800001234@s.whatsapp.net',
+        'hello',
+      )).rejects.toThrow(/cannot fall back/i);
+      expect(adapter.sendTextMessage).not.toHaveBeenCalled();
+    });
+
     it('resolves only with the real Baileys provider message id', async () => {
       const { service, prisma, adapter } = createService();
-      prisma.whatsAppSession.findUnique.mockResolvedValue(connectedSession);
+      prisma.whatsAppSession.findFirst.mockResolvedValue(connectedSession);
       adapter.isConnected.mockReturnValue(true);
       adapter.buildJid.mockReturnValue('8613800001234@s.whatsapp.net');
       adapter.sendTextMessage.mockResolvedValue({ success: true, messageId: 'provider-123' });
@@ -1276,7 +1443,7 @@ describe('WhatsAppService — TASK-102D', () => {
         'session-db-1',
         '+8613800001234',
         'hello',
-        { companies: [{ id: 'co-1' }] },
+        activeUser('co-1'),
       )).resolves.toEqual(expect.objectContaining({
         success: true,
         provider: 'baileys',
@@ -1288,7 +1455,7 @@ describe('WhatsAppService — TASK-102D', () => {
 
     it('throws when Baileys fails or omits a provider message id', async () => {
       const { service, prisma, adapter } = createService();
-      prisma.whatsAppSession.findUnique.mockResolvedValue(connectedSession);
+      prisma.whatsAppSession.findFirst.mockResolvedValue(connectedSession);
       adapter.isConnected.mockReturnValue(true);
       adapter.buildJid.mockReturnValue('8613800001234@s.whatsapp.net');
       adapter.sendTextMessage.mockResolvedValue({ success: false, error: 'socket closed' });
@@ -1297,13 +1464,95 @@ describe('WhatsAppService — TASK-102D', () => {
         'session-db-1',
         '+8613800001234',
         'hello',
-        { companies: [{ id: 'co-1' }] },
-      )).rejects.toThrow('socket closed');
+        activeUser('co-1'),
+      )).rejects.toMatchObject({
+        response: expect.objectContaining({ message: expect.stringMatching(/outcome is unknown/i) }),
+      });
+    });
+
+    it.each([
+      ['Baileys text', 'sendTextWithReceipt', 'sendTextMessage'],
+      ['Baileys media', 'sendMediaOnly', 'sendMediaMessage'],
+    ])('preserves ambiguous and explicit rejection semantics for %s', async (
+      _label,
+      serviceMethod,
+      adapterMethod,
+    ) => {
+      const { service, prisma, adapter } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue(connectedSession);
+      adapter.isConnected.mockReturnValue(true);
+      adapter.buildJid.mockReturnValue('8613800001234@s.whatsapp.net');
+      const args = serviceMethod === 'sendTextWithReceipt'
+        ? ['session-db-1', '+8613800001234', 'hello', activeUser('co-1')]
+        : [
+            'session-db-1',
+            '+8613800001234',
+            {
+              type: 'document',
+              buffer: Buffer.from('%PDF-quote'),
+              filename: 'quote.pdf',
+              mimeType: 'application/pdf',
+            },
+            activeUser('co-1'),
+          ];
+
+      adapter[adapterMethod].mockResolvedValueOnce({
+        success: false,
+        error: 'response lost',
+      });
+      const ambiguous = await (service as any)[serviceMethod](...args).catch((error: any) => error);
+      expect(ambiguous.providerAccepted).toBeUndefined();
+
+      adapter[adapterMethod].mockResolvedValueOnce({
+        success: false,
+        error: 'invalid target',
+        deliveryOutcome: 'REJECTED',
+        providerAccepted: false,
+      });
+      const rejected = await (service as any)[serviceMethod](...args).catch((error: any) => error);
+      expect(rejected).toMatchObject({
+        providerDeliveryOutcome: 'REJECTED',
+        providerAccepted: false,
+      });
+    });
+
+    it('preserves ambiguous versus explicit Evolution text rejection semantics', async () => {
+      const { service, prisma, evolutionApi } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue({
+        ...connectedSession,
+        sessionId: 'evolution-instance-1',
+      });
+      evolutionApi.sendTextMessage.mockResolvedValueOnce({
+        success: false,
+        error: 'HTTP 503 response lost',
+      });
+      const args = [
+        'session-db-1',
+        '+8613800001234',
+        'hello',
+        activeUser('co-1'),
+      ];
+      const ambiguous = await (service as any).sendEvolutionText(...args)
+        .catch((error: any) => error);
+      expect(ambiguous.providerAccepted).toBeUndefined();
+
+      evolutionApi.sendTextMessage.mockResolvedValueOnce({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        deliveryOutcome: 'REJECTED',
+        providerAccepted: false,
+      });
+      const rejected = await (service as any).sendEvolutionText(...args)
+        .catch((error: any) => error);
+      expect(rejected).toMatchObject({
+        providerDeliveryOutcome: 'REJECTED',
+        providerAccepted: false,
+      });
     });
 
     it('requires a real provider id for media such as quotation PDFs', async () => {
       const { service, prisma, adapter } = createService();
-      prisma.whatsAppSession.findUnique.mockResolvedValue(connectedSession);
+      prisma.whatsAppSession.findFirst.mockResolvedValue(connectedSession);
       adapter.isConnected.mockReturnValue(true);
       adapter.buildJid.mockReturnValue('8613800001234@s.whatsapp.net');
       adapter.sendMediaMessage.mockResolvedValue({ success: true, messageId: undefined });
@@ -1317,8 +1566,88 @@ describe('WhatsAppService — TASK-102D', () => {
           filename: 'quote.pdf',
           mimeType: 'application/pdf',
         },
-        { companies: [{ id: 'co-1' }] },
-      )).rejects.toThrow('missing provider message id');
+        activeUser('co-1'),
+      )).rejects.toThrow('no durable message id');
+    });
+
+    it('uses the same server-copied media bytes for the digest input and provider dispatch', async () => {
+      const { service, prisma, adapter, outbound } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue(connectedSession);
+      adapter.isConnected.mockReturnValue(true);
+      adapter.buildJid.mockReturnValue('8613800001234@s.whatsapp.net');
+      adapter.sendMediaMessage.mockResolvedValue({ success: true, messageId: 'provider-media-1' });
+      const original = Buffer.from('%PDF-original quote');
+      let snapshottedBytes: Buffer | undefined;
+      outbound.execute.mockImplementation(async (request: any, provider: any) => {
+        snapshottedBytes = request.artifacts[0].bytes;
+        original.fill(0);
+        return {
+          outboxId: 'outbox-1',
+          deduplicated: false,
+          receipt: await provider(request.artifacts || [], {
+            targetAddress: '8613800001234',
+            subject: '',
+            body: request.body.trim(),
+            contentType: request.contentType,
+            artifacts: request.artifacts || [],
+            signal: new AbortController().signal,
+          }),
+        };
+      });
+
+      await service.sendMediaOnly(
+        'session-db-1',
+        '+8613800001234',
+        {
+          type: 'document',
+          buffer: original,
+          filename: 'quote.pdf',
+          mimeType: 'application/pdf',
+        },
+        activeUser('co-1'),
+      );
+
+      const providerOptions = adapter.sendMediaMessage.mock.calls[0][2];
+      expect(providerOptions.buffer).toBe(snapshottedBytes);
+      expect(providerOptions.buffer.toString()).toBe('%PDF-original quote');
+      expect(providerOptions.url).toBeUndefined();
+    });
+
+    it('rejects media MIME metadata that conflicts with the actual bytes', async () => {
+      const { service, prisma, adapter, outbound } = createService();
+      prisma.whatsAppSession.findFirst.mockResolvedValue(connectedSession);
+      adapter.isConnected.mockReturnValue(true);
+
+      await expect(service.sendMediaOnly(
+        'session-db-1',
+        '+8613800001234',
+        {
+          type: 'image',
+          buffer: Buffer.from('%PDF-not-an-image'),
+          filename: 'quote.png',
+          mimeType: 'image/png',
+        },
+        activeUser('co-1'),
+      )).rejects.toThrow(/MIME does not match its bytes/i);
+      expect(outbound.execute).not.toHaveBeenCalled();
+      expect(adapter.sendMediaMessage).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for Evolution media URLs and never asks the provider to fetch them', async () => {
+      const { service, evolutionApi, outbound } = createService();
+      await expect(service.sendEvolutionMedia(
+        'session-db-1',
+        '+8613800001234',
+        {
+          type: 'document',
+          url: 'http://169.254.169.254/latest/meta-data',
+          filename: 'quote.pdf',
+          mimeType: 'application/pdf',
+        },
+        activeUser('co-1'),
+      )).rejects.toThrow(/disabled until a trusted byte-upload transport/i);
+      expect(evolutionApi.sendMediaMessage).not.toHaveBeenCalled();
+      expect(outbound.execute).not.toHaveBeenCalled();
     });
   });
 
@@ -1374,5 +1703,225 @@ describe('WhatsAppService — TASK-102D', () => {
       where: { id: 'message-a' },
       data: { deliveryStatus: 'delivered' },
     });
+    const debugOutput = (Logger.prototype.debug as jest.Mock).mock.calls
+      .flat()
+      .map(String)
+      .join('\n');
+    expect(debugOutput).not.toContain('same-provider-id');
+    expect(debugOutput).toContain('whatsapp.evolution.message_status_updated');
+  });
+
+  it('denies viewer account disconnect and deletion in the service layer', async () => {
+    const { service, prisma, adapter } = createService();
+    prisma.whatsAppSession.findFirst.mockResolvedValue({
+      id: 'session-1',
+      companyId: 'company-1',
+      sessionId: 'provider-session-1',
+    });
+    const viewer = {
+      id: 'viewer-1',
+      activeCompanyId: 'company-1',
+      companies: [{ id: 'company-1', role: 'viewer' }],
+    };
+    await expect(service.disconnect('session-1', viewer)).rejects.toThrow(/administrator role/i);
+    await expect(service.removeAccount('session-1', viewer)).rejects.toThrow(/administrator role/i);
+    expect(adapter.disconnect).not.toHaveBeenCalled();
+    expect(prisma.whatsAppSession.delete).not.toHaveBeenCalled();
+  });
+
+  it('lists only safe account fields for an exact active-company administrator', async () => {
+    const { service, prisma } = createService();
+    const safeRow = {
+      id: 'session-1',
+      accountName: 'Sales WhatsApp',
+      phoneNumber: '+12025550123',
+      status: 'connected',
+      connectedAt: new Date(),
+      disconnectedAt: null,
+      lastSeenAt: new Date(),
+      sendLimitPerHour: 60,
+      sendLimitDaily: 300,
+      sendIntervalSeconds: 8,
+      lastSentAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    prisma.whatsAppSession.findMany.mockResolvedValue([safeRow]);
+    prisma.communicationMessage.groupBy.mockResolvedValue([]);
+    const activeAdmin = {
+      id: 'admin-1',
+      activeCompanyId: 'company-1',
+      activeCompany: { id: 'company-1', role: 'company_admin' },
+      companies: [
+        { id: 'company-1', role: 'company_admin' },
+        { id: 'company-2', role: 'company_admin' },
+      ],
+    };
+
+    await expect(service.listAccounts(activeAdmin)).resolves.toEqual([
+      { ...safeRow, todaySentCount: 0 },
+    ]);
+    const query = prisma.whatsAppSession.findMany.mock.calls[0][0];
+    expect(query.where).toEqual({ companyId: 'company-1' });
+    expect(query.select).not.toHaveProperty('qrCode');
+    expect(query.select).not.toHaveProperty('authStatePath');
+    expect(query.select).not.toHaveProperty('sessionId');
+    expect(query.select).toHaveProperty('sendLimitPerHour');
+    expect(query.select).toHaveProperty('sendLimitDaily');
+    expect(query.select).toHaveProperty('sendIntervalSeconds');
+    expect(query.select).toHaveProperty('lastSentAt');
+  });
+
+  it('rejects viewer account listing and never falls back to companies[0]', async () => {
+    const { service, prisma } = createService();
+    await expect(service.listAccounts({
+      id: 'viewer-1',
+      activeCompanyId: 'company-1',
+      companies: [{ id: 'company-1', role: 'viewer' }],
+    })).rejects.toThrow(/administrator role/i);
+    await expect(service.listAccounts({
+      id: 'admin-1',
+      companies: [{ id: 'company-1', role: 'company_admin' }],
+    })).rejects.toThrow(/active company/i);
+    expect(prisma.whatsAppSession.findMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps Evolution creation BadRequest stable when the provider exposes an error', async () => {
+    const { service, prisma, evolutionApi } = createService();
+    const providerSentinel = 'SMTP/provider raw error sentinel https://provider.invalid/token';
+    evolutionApi.getWebhookUrl.mockReturnValue('https://crm.invalid/webhook');
+    evolutionApi.createInstance.mockRejectedValue(new Error(providerSentinel));
+    prisma.whatsAppSession.create.mockResolvedValue({
+      id: 'session-create-failure',
+      companyId: 'co-1',
+      sessionId: 'instance-create-failure',
+      status: 'pending_qr',
+    });
+
+    const error = await service.createEvolutionInstance(
+      { name: 'Sentinel account' },
+      activeUser('co-1'),
+    ).catch((caught: any) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.getStatus()).toBe(400);
+    expect(error.message).toBe('Evolution instance creation failed');
+    expect(error.message).not.toContain(providerSentinel);
+  });
+
+  it('marks only an exact authenticated direct provider inbound identity as trusted', async () => {
+    const { service, prisma } = createService();
+    prisma.whatsAppSession.findFirst.mockResolvedValue({ id: 'session-1' });
+    prisma.externalIdentity.findFirst.mockResolvedValue({ id: 'identity-1' });
+    prisma.contactPoint.updateMany.mockResolvedValue({ count: 1 });
+
+    await (service as any).markTrustedInboundIdentity(prisma, {
+      companyId: 'company-1',
+      sessionDbId: 'session-1',
+      leadId: 'lead-1',
+      contactPointId: 'point-1',
+      externalId: '12025550123@s.whatsapp.net',
+      direction: 'inbound',
+      isDirect: true,
+      verificationMethod: 'baileys_inbound',
+    });
+    expect(prisma.contactPoint.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: 'point-1',
+        companyId: 'company-1',
+        leadId: 'lead-1',
+      }),
+      data: expect.objectContaining({
+        isVerified: true,
+        verificationMethod: 'baileys_inbound',
+        verifiedAt: expect.any(Date),
+      }),
+    }));
+
+    prisma.contactPoint.updateMany.mockClear();
+    await (service as any).markTrustedInboundIdentity(prisma, {
+      companyId: 'company-1',
+      sessionDbId: 'session-1',
+      leadId: 'lead-1',
+      contactPointId: 'point-1',
+      externalId: '12025550123@s.whatsapp.net',
+      direction: 'inbound',
+      isDirect: false,
+      verificationMethod: 'evolution_webhook',
+    });
+    expect(prisma.contactPoint.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('denies viewer account creation, QR access and reconnect before provider mutation', async () => {
+    const { service, prisma, adapter, evolutionApi } = createService();
+    prisma.whatsAppSession.findFirst.mockResolvedValue({
+      id: 'session-1',
+      companyId: 'company-1',
+      sessionId: 'provider-session-1',
+      status: 'pending_qr',
+    });
+    const viewer = {
+      id: 'viewer-1',
+      activeCompanyId: 'company-1',
+      companies: [{ id: 'company-1', role: 'viewer' }],
+    };
+
+    await expect(service.createAccount({ name: 'Blocked' }, viewer))
+      .rejects.toThrow(/administrator role/i);
+    await expect(service.getQrCode('session-1', viewer))
+      .rejects.toThrow(/administrator role/i);
+    await expect(service.reconnect('session-1', viewer))
+      .rejects.toThrow(/administrator role/i);
+    await expect(service.createEvolutionInstance({ name: 'Blocked' }, viewer))
+      .rejects.toThrow(/administrator role/i);
+
+    expect(prisma.whatsAppSession.create).not.toHaveBeenCalled();
+    expect(adapter.initSession).not.toHaveBeenCalled();
+    expect(adapter.removeSocket).not.toHaveBeenCalled();
+    expect(evolutionApi.getWebhookUrl).not.toHaveBeenCalled();
+    expect(evolutionApi.createInstance).not.toHaveBeenCalled();
+  });
+
+  it('denies a non-active tenant even when the operator is an admin member of both', async () => {
+    const { service, prisma, adapter } = createService();
+    prisma.whatsAppSession.findUnique.mockResolvedValue({
+      id: 'session-1',
+      companyId: 'company-1',
+      sessionId: 'provider-session-1',
+    });
+    prisma.userCompanyRelation.findFirst.mockResolvedValue({
+      role: { name: 'company_admin' },
+    });
+    const admin = {
+      id: 'admin-1',
+      activeCompanyId: 'company-2',
+      companies: [
+        { id: 'company-1', role: 'company_admin' },
+        { id: 'company-2', role: 'company_admin' },
+      ],
+    };
+
+    await expect(service.disconnect('session-1', admin))
+      .rejects.toThrow(/account not found/i);
+    expect(adapter.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('keeps the trusted-channel fail-closed contract for invalid group or broadcast JIDs', async () => {
+    const { service, prisma } = createService();
+    prisma.whatsAppSession.findFirst.mockResolvedValue({
+      id: 'session-1', companyId: 'co-1', sessionId: 'sess-1', status: 'connected',
+      phoneNumber: null, accountName: null,
+    });
+
+    await expect(service.handleEvolutionMessage({
+      instanceName: 'wa-inst-1',
+      fromPhone: '8613800001234',
+      isGroup: true,
+      groupJid: 'not-a-channel-jid',
+      messageContent: 'invalid group',
+      messageId: 'm-invalid-group',
+      timestamp: new Date().toISOString(),
+      pushName: 'Invalid Group',
+    })).rejects.toThrow(/trusted channel JID/i);
   });
 });

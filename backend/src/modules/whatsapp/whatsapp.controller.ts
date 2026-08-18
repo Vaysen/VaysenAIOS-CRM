@@ -7,9 +7,11 @@ import {
   Body,
   Param,
   Query,
+  Headers,
   UseGuards,
   Res,
   Sse,
+  Req,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Response } from 'express';
@@ -18,6 +20,12 @@ import { Public } from '../../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { WhatsAppService } from './whatsapp.service';
+import { WebsiteWhatsAppClickDto } from './dto/website-click.dto';
+import {
+  assertFixedWindowRateLimit,
+  envLimit,
+  getRequestIp,
+} from '../../common/security/request-security';
 
 @ApiTags('WhatsApp')
 @Controller('whatsapp')
@@ -27,8 +35,24 @@ export class WhatsAppController {
   @Public()
   @Post('click')
   @ApiOperation({ summary: 'Record WhatsApp click from website' })
-  recordClick(@Body() body: { whatsappNumber: string; contactName?: string; companyName?: string; country?: string; sourceUrl?: string; utmSource?: string }) {
-    return this.whatsappService.recordClick(body);
+  recordClick(@Body() body: WebsiteWhatsAppClickDto, @Req() req: any) {
+    const limit = envLimit('WHATSAPP_CLICK_RATE_LIMIT', 30, 1, 1000);
+    assertFixedWindowRateLimit(
+      'whatsapp.click.ip',
+      getRequestIp(req),
+      limit,
+      15 * 60 * 1000,
+    );
+    assertFixedWindowRateLimit(
+      'whatsapp.click.source',
+      body.sourceKey,
+      limit * 5,
+      15 * 60 * 1000,
+    );
+    return this.whatsappService.recordClick(
+      body,
+      String(req?.headers?.origin || ''),
+    );
   }
 
   @Get('accounts')
@@ -37,6 +61,24 @@ export class WhatsAppController {
   @ApiOperation({ summary: 'List WhatsApp accounts' })
   listAccounts(@CurrentUser() user: any) {
     return this.whatsappService.listAccounts(user);
+  }
+
+  @Patch('accounts/:id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Edit WhatsApp account name / risk-control limits (admin)' })
+  updateAccount(
+    @Param('id') id: string,
+    @Body() body: {
+      name?: string;
+      phone?: string;
+      sendLimitPerHour?: number;
+      sendLimitDaily?: number;
+      sendIntervalSeconds?: number;
+    },
+    @CurrentUser() user: any,
+  ) {
+    return this.whatsappService.updateAccount(id, body, user);
   }
 
   @Post('accounts')
@@ -93,10 +135,15 @@ export class WhatsAppController {
   @ApiOperation({ summary: 'Send WhatsApp message' })
   sendMessage(
     @Param('id') id: string,
-    @Body() body: { to: string; text: string },
+    @Body() body: { to: string; text: string; leadId: string; conversationId: string },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @CurrentUser() user: any,
   ) {
-    return this.whatsappService.sendMessage(id, body, user);
+    return this.whatsappService.sendMessage(id, body, user, {
+      idempotencyKey: idempotencyKey || '',
+      leadId: body.leadId,
+      conversationId: body.conversationId,
+    });
   }
 
   /**
@@ -182,10 +229,15 @@ export class WhatsAppController {
   @ApiOperation({ summary: 'Send text via Evolution API' })
   sendEvolutionText(
     @Param('id') id: string,
-    @Body() body: { to: string; text: string },
+    @Body() body: { to: string; text: string; leadId: string; conversationId: string },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @CurrentUser() user: any,
   ) {
-    return this.whatsappService.sendEvolutionText(id, body.to, body.text, user);
+    return this.whatsappService.sendEvolutionText(id, body.to, body.text, user, {
+      idempotencyKey: idempotencyKey || '',
+      leadId: body.leadId,
+      conversationId: body.conversationId,
+    });
   }
 
   @Post('evolution/accounts/:id/send-media')
@@ -197,14 +249,22 @@ export class WhatsAppController {
     @Body() body: {
       to: string;
       type: 'image' | 'document' | 'video' | 'audio';
+      base64?: string;
       url?: string;
       filename?: string;
       caption?: string;
       mimeType?: string;
+      leadId: string;
+      conversationId: string;
     },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @CurrentUser() user: any,
   ) {
-    return this.whatsappService.sendEvolutionMedia(id, body.to, body, user);
+    return this.whatsappService.sendEvolutionMedia(id, body.to, body, user, {
+      idempotencyKey: idempotencyKey || '',
+      leadId: body.leadId,
+      conversationId: body.conversationId,
+    });
   }
 
   @Post('evolution/accounts/:id/disconnect')

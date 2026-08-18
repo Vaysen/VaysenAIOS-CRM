@@ -26,4 +26,4 @@ foreach ($worker in $workers) {
     -RedirectStandardError $err | Out-Null
 }
 
-Write-Host "Started $($workers.Count) Vaysen AI CRM workers."
+Write-Host "Started $($workers.Count) Vaysen workers."

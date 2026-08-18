@@ -15,7 +15,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'Hi, we are a cosmetics brand looking for custom printed poly mailers. Can you do full-color printing with our logo?',
     unreadCount: 2,
     lead: { id: 'lead-1', companyName: 'Glow Beauty Inc.', contactName: 'Jessica Miller', country: 'USA', language: 'en' },
-    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
   },
   {
     id: 'conv-2',
@@ -26,7 +26,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'Thanks for the quote. We need the 200gsm kraft paper with twisted handles. When can you ship?',
     unreadCount: 0,
     lead: { id: 'lead-2', companyName: 'EcoPackage Ltd.', contactName: 'Thomas Berg', country: 'Germany', language: 'de' },
-    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
   },
   {
     id: 'conv-3',
@@ -37,7 +37,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'Hola, tienen bolsas para basura biodegradables?',
     unreadCount: 1,
     lead: { id: 'lead-3', companyName: 'Distribuidora Verde SA', contactName: 'Carlos Ruiz', country: 'Mexico', language: 'es' },
-    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
   },
   {
     id: 'conv-4',
@@ -59,7 +59,7 @@ export const mockConversations: ConversationSummary[] = [
     lastMessagePreview: 'I received the samples, quality looks good. Let me discuss with my team and get back to you.',
     unreadCount: 0,
     lead: { id: 'lead-5', companyName: 'PackRight Supplies', contactName: 'David Chen', country: 'Australia', language: 'en' },
-    assignedUser: { id: 'u1', firstName: '演示专员', lastName: '' },
+    assignedUser: { id: 'u1', firstName: '茶茶', lastName: '' },
   },
   {
     id: 'conv-6',
@@ -85,7 +85,7 @@ export function getMockConversationDetail(id: string): ConversationDetail | null
       content: conv.lastMessagePreview || 'Initial inquiry message.',
       contentType: 'text',
       fromAddress: conv.lead?.contactName?.toLowerCase().replace(' ', '.') + '@example.com' || 'contact@example.com',
-      toAddress: 'info@example.com',
+      toAddress: 'info@vaysen.com',
       subject: conv.subject,
       sentAt: null,
       receivedAt: conv.lastMessageAt,
@@ -97,7 +97,7 @@ export function getMockConversationDetail(id: string): ConversationDetail | null
       direction: 'outbound',
       content: 'Thank you for reaching out! We can definitely help with your requirements. Let me prepare a detailed quote for you.',
       contentType: 'text',
-      fromAddress: 'info@example.com',
+      fromAddress: 'info@vaysen.com',
       toAddress: conv.lead?.contactName?.toLowerCase().replace(' ', '.') + '@example.com' || 'contact@example.com',
       subject: conv.subject ? 'Re: ' + conv.subject : null,
       sentAt: conv.lastMessageAt,

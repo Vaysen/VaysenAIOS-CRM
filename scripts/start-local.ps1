@@ -55,7 +55,7 @@ function Stop-BackendWorkers {
 }
 
 $LanIp = Get-LanIp
-Write-Host "== Vaysen AI CRM local start ==" -ForegroundColor Cyan
+Write-Host "== Vaysen local start ==" -ForegroundColor Cyan
 Write-Host "Detected LAN IP: $LanIp" -ForegroundColor Cyan
 
 Write-Host "[1/5] Updating local env files..." -ForegroundColor Yellow
@@ -68,7 +68,7 @@ $backendEnv = $backendEnv -replace "API_BASE_URL=.*", "API_BASE_URL=http://$LanI
 $backendEnv = $backendEnv -replace "CORS_ORIGIN=.*", "CORS_ORIGIN=http://localhost:$PortFrontend,http://127.0.0.1:$PortFrontend,http://$LanIp`:$PortFrontend"
 Set-Content -LiteralPath $backendEnvPath -Value $backendEnv -Encoding UTF8
 
-$frontendEnv = "NEXT_PUBLIC_API_URL=http://$LanIp`:$PortBackend/api`nNEXT_PUBLIC_APP_NAME=Vaysen AI CRM`n"
+$frontendEnv = "NEXT_PUBLIC_API_URL=http://$LanIp`:$PortBackend/api`nNEXT_PUBLIC_APP_NAME=Vaysen 外贸系统`n"
 Set-Content -LiteralPath $frontendEnvPath -Value $frontendEnv -Encoding UTF8
 
 Write-Host "[2/5] Starting Docker infrastructure..." -ForegroundColor Yellow

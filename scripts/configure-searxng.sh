@@ -22,7 +22,7 @@ if [ ! -f "$SETTINGS_PATH" ]; then
   sed -i "s/ultrasecretkey/$generated_secret/g" "$SETTINGS_PATH"
 fi
 
-ENGINE_POLICY_MARKER='# Vaysen AI CRM China-network evidence engines v1'
+ENGINE_POLICY_MARKER='# Vaysen China-network evidence engines v1'
 if ! grep -Fqx "$ENGINE_POLICY_MARKER" "$SETTINGS_PATH"; then
   if grep -Eq '^engines:[[:space:]]*($|#)' "$SETTINGS_PATH" \
       || ! grep -Eq '^use_default_settings:[[:space:]]*true[[:space:]]*($|#)' "$SETTINGS_PATH"; then
@@ -86,7 +86,7 @@ if ! grep -Eq '^[[:space:]]*-[[:space:]]*json([[:space:]#]|$)' "$SETTINGS_PATH";
 
   cat >>"$SETTINGS_PATH" <<'EOF'
 
-# Vaysen AI CRM workers consume the internal JSON API. The service remains bound
+# Vaysen workers consume the internal JSON API. The service remains bound
 # to Docker networking and host loopback only; this does not publish it to LAN.
 search:
   formats:

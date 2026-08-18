@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getRuntimeApiBaseUrl } from '@/lib/runtime-config';
 
 /**
  * AI 建议与实时翻译 Hooks
@@ -12,8 +13,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * 后端 API 基础地址由 `NEXT_PUBLIC_API_URL` 环境变量提供。
  */
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 /** Electron apiRequest 返回的统一结构 */
 interface ApiResult {
@@ -79,7 +78,7 @@ async function apiRequest<T = unknown>(config: RequestConfig): Promise<T> {
     : '';
   const fullUrl = url.startsWith('http')
     ? `${url}${queryString}`
-    : `${API_URL}${url}${queryString}`;
+    : `${getRuntimeApiBaseUrl()}${url}${queryString}`;
 
   const reqHeaders: Record<string, string> = {
     'Content-Type': 'application/json',

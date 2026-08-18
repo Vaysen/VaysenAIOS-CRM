@@ -1,4 +1,4 @@
-# Vaysen AI CRM Voice Agent
+# Vaysen Voice Agent
 
 该目录是 AI 语音客服的独立部署边界。当前 v0.1 只提供可容器化的健康/就绪控制面和严格的 provider 配置检查；CRM 数据模型、测试会话、转人工上下文与审计已在 NestJS 后端实现。
 

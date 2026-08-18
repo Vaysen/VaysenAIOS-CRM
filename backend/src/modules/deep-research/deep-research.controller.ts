@@ -21,6 +21,7 @@ import {
 } from './deep-research-run.service';
 import { StartDeepResearchDto } from './dto/start-deep-research.dto';
 import { AgentRunStatus, Prisma } from '@prisma/client';
+import { requireActiveCompany } from '@/common/utils/data-isolation';
 
 @ApiTags('AI Deep Research')
 @ApiBearerAuth()
@@ -118,14 +119,15 @@ export class DeepResearchController {
   }
 
   private async findScopedLead(id: string, user: DeepResearchOperator) {
-    if (!user?.id || !user.companies?.length) throw new ForbiddenException('No company access');
-    const scopes = user.companies.map((company) => (
-      ['company_admin', 'super_admin'].includes(company.role)
-        ? { companyId: company.id }
-        : { companyId: company.id, ownerUserId: user.id }
-    ));
+    const activeCompany = requireActiveCompany(user as any);
+    const isAdmin = ['company_admin', 'super_admin'].includes(activeCompany.role);
     const lead = await this.prisma.lead.findFirst({
-      where: { id, deletedAt: null, OR: scopes },
+      where: {
+        id,
+        companyId: activeCompany.id,
+        deletedAt: null,
+        ...(isAdmin ? {} : { ownerUserId: user.id }),
+      },
       select: { id: true, companyId: true },
     });
     if (!lead) throw new NotFoundException('Lead not found');

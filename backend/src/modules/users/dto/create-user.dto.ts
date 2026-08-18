@@ -6,9 +6,9 @@ export class CreateUserDto {
   @IsString()
   email: string;
 
-  @ApiProperty({ example: 'password123' })
+  @ApiProperty({ example: 'long-password-123' })
   @IsString()
-  @MinLength(6)
+  @MinLength(12)
   @MaxLength(100)
   password: string;
 

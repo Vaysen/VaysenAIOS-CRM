@@ -200,7 +200,7 @@ describe('AgentService OpenClaw business tools', () => {
       COMPANY_ID,
       LEAD_ID,
       {
-        lineItems: [{ catalogItemId: 'DEMO-0001', quantity: 1000 }],
+        lineItems: [{ catalogItemId: 'JYM-0001', quantity: 1000 }],
         currency: 'USD',
       },
       'request-quote-1',
@@ -210,18 +210,18 @@ describe('AgentService OpenClaw business tools', () => {
     expect(result).toEqual(expect.objectContaining({
       status: 'SUCCEEDED',
       currency: 'USD',
-      subtotal: '0',
-      totalAmount: '0',
-      priceVersion: 'demo-usd-v1',
+      subtotal: '10',
+      totalAmount: '10',
+      priceVersion: 'jym-usd-2026-05-31-v1',
     }));
     const quoteData = prisma.quote.create.mock.calls[0][0].data;
     expect(quoteData.currency).toBe('USD');
     expect(quoteData.lineItems.create[0]).toEqual(expect.objectContaining({
-      catalogItemId: 'DEMO-0001',
+      catalogItemId: 'JYM-0001',
       quantity: 1000,
-      unitPrice: 0,
-      totalPrice: 0,
-      priceVersion: 'demo-usd-v1',
+      unitPrice: 0.01,
+      totalPrice: 10,
+      priceVersion: 'jym-usd-2026-05-31-v1',
     }));
     expect(JSON.stringify(quoteData)).not.toContain('unitPriceOverride');
   });
@@ -233,7 +233,7 @@ describe('AgentService OpenClaw business tools', () => {
       LEAD_ID,
       {
         documentType: 'pi',
-        lineItems: [{ catalogItemId: 'DEMO-0001', quantity: 500 }],
+        lineItems: [{ catalogItemId: 'JYM-0001', quantity: 500 }],
         currency: 'USD',
       },
       'request-pi-1',

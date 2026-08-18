@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "reviewedAt": "2026-08-07",
+  "maximumExceptionDays": 90,
+  "exceptions": [
+    {
+      "scope": "backend",
+      "package": "adm-zip",
+      "advisory": "GHSA-xcpc-8h2w-3j85",
+      "reason": "Reachable only through bounded Crawlee fingerprint generation; candidate URL fetching is now DNS-pinned and size/time limited while upstream replacement is tested.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "lodash",
+      "advisory": "GHSA-r5fr-rjxr-66jc",
+      "reason": "Affected lodash is transitive to Nest Swagger; production does not import attacker-controlled templates or iteratee definitions pending framework upgrade.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "multer",
+      "advisory": "GHSA-xf7r-hgr6-v32p",
+      "reason": "Nest 10 pins the affected Multer chain; authenticated upload routes enforce explicit file type and byte limits while the Nest 11 migration is tested.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "multer",
+      "advisory": "GHSA-v52c-386h-88mc",
+      "reason": "Nest 10 pins the affected Multer chain; authenticated upload routes enforce explicit file type and byte limits while the Nest 11 migration is tested.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "multer",
+      "advisory": "GHSA-5528-5vmv-3xc2",
+      "reason": "Nest 10 pins the affected Multer chain; authenticated upload routes enforce explicit file type and byte limits while the Nest 11 migration is tested.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "multer",
+      "advisory": "GHSA-72gw-mp4g-v24j",
+      "reason": "Nest 10 pins the affected Multer chain; authenticated upload routes enforce explicit file type and byte limits while the Nest 11 migration is tested.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "nodemailer",
+      "advisory": "GHSA-p6gq-j5cr-w38f",
+      "reason": "Fix requires a breaking Nodemailer major; attachments and recipient fields remain application-controlled and validated pending mail regression migration.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "nodemailer",
+      "advisory": "GHSA-rcmh-qjqh-p98v",
+      "reason": "Fix requires a breaking Nodemailer major; attachments and recipient fields remain application-controlled and validated pending mail regression migration.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "sharp",
+      "advisory": "GHSA-f88m-g3jw-g9cj",
+      "reason": "Sharp 0.35 is a semver-breaking native upgrade; authenticated image inputs remain byte and type bounded while platform compatibility is tested.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "tmp",
+      "advisory": "GHSA-ph9p-34f9-6g65",
+      "reason": "Affected tmp is transitive CLI support and not used for production request file creation; runtime containers retain restricted writable paths pending upstream update.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "xlsx",
+      "advisory": "GHSA-4r6h-8v6p-xvw6",
+      "reason": "npm publishes no fixed xlsx release; authenticated imports enforce file type and size limits while a maintained parser replacement is evaluated.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "backend",
+      "package": "xlsx",
+      "advisory": "GHSA-5pgg-2g8v-p4x9",
+      "reason": "npm publishes no fixed xlsx release; authenticated imports enforce file type and size limits while a maintained parser replacement is evaluated.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-h25m-26qc-wcjf",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-q4gf-8mx6-v5v3",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-8h8q-6873-q5fj",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-c4j6-fc7j-m34r",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-36qx-fr4f-26g5",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-m99w-x7hq-7vfj",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-89xv-2m56-2m9x",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "next",
+      "advisory": "GHSA-p9j2-gv94-2wf4",
+      "reason": "Complete remediation requires a breaking Next and React migration; LAN and ZeroTier ingress, authentication, and server route controls reduce reachability pending regression work.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "postcss",
+      "advisory": "GHSA-6g55-p6wh-862q",
+      "reason": "Affected PostCSS copy is bundled by Next 14 and processes deployment-owned styles only; removal is coupled to the separately tested Next upgrade.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    },
+    {
+      "scope": "frontend",
+      "package": "postcss",
+      "advisory": "GHSA-r28c-9q8g-f849",
+      "reason": "Affected PostCSS copy is bundled by Next 14 and processes deployment-owned styles only; removal is coupled to the separately tested Next upgrade.",
+      "owner": "team:vaysen-security",
+      "expiresAt": "2026-09-30"
+    }
+  ]
+}

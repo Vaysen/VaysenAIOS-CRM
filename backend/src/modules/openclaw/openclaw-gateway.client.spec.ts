@@ -387,6 +387,52 @@ describe('OpenClawGatewayClient', () => {
     });
   });
 
+  it('invokes only the fixed work-brief tool with an irreversible CRM session', async () => {
+    global.fetch = jest.fn(async (url: any, init: any) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/healthz') return json({ status: 'ok' });
+      if (path === '/api/v1/vaysen/health') {
+        return json({
+          schemaVersion: 1,
+          pluginId: 'vaysen-crm',
+          adapterReady: true,
+          brokerConfigured: true,
+        });
+      }
+      if (path === '/api/v1/admin/rpc') {
+        const method = JSON.parse(init.body).method;
+        if (method === 'channels.status') return rpc(channelsStatus([], undefined, false));
+        if (method === 'models.authStatus') return rpc({ ts: Date.now(), providers: [] });
+        return rpc({ models: [] });
+      }
+      if (path === '/tools/invoke') return json({ ok: true, result: { content: [] } });
+      return json({}, 404);
+    }) as any;
+
+    const digest = 'b'.repeat(64);
+    await expect(client.invokeWorkBrief(digest)).resolves.toEqual({
+      success: true,
+      reason: 'success',
+    });
+    const invokeCall = (global.fetch as jest.Mock).mock.calls.find(([url]) => (
+      new URL(String(url)).pathname === '/tools/invoke'
+    ));
+    expect(invokeCall).toBeDefined();
+    const [, init] = invokeCall!;
+    expect(init.headers).toEqual(expect.objectContaining({
+      'x-openclaw-message-channel': 'webchat',
+    }));
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'crm_work_brief',
+      agentId: 'vaysen-crm',
+      sessionKey: `agent:vaysen-crm:vaysen-crm:${digest}`,
+      idempotencyKey: digest,
+      args: {},
+    });
+    expect(JSON.stringify(init)).not.toContain('companyId');
+    expect(JSON.stringify(init)).not.toContain('operatorUserId');
+  });
+
   it('renders the exact Tencent HTTPS login URL as an in-app QR code and pins the owner account alias', async () => {
     global.fetch = jest.fn(async (_url: any, init: any) => {
       const { method } = JSON.parse(init.body);
@@ -421,12 +467,12 @@ describe('OpenClawGatewayClient', () => {
     expect(requests).toEqual([
       expect.objectContaining({
         method: 'web.login.start',
-        params: expect.objectContaining({ accountId: 'vaysen-owner' }),
+        params: expect.objectContaining({ accountId: 'vaysen-crm-owner' }),
       }),
       expect.objectContaining({
         method: 'web.login.wait',
         params: expect.objectContaining({
-          accountId: 'vaysen-owner',
+          accountId: 'vaysen-crm-owner',
           timeoutMs: 90_000,
         }),
       }),

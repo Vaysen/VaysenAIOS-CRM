@@ -1027,6 +1027,7 @@ export class OpenClawToolBrokerService {
           String(input.leadId || ''),
           String(input.conversationId || ''),
           String(input.text || ''),
+          requestKey,
         );
       case 'whatsapp-send-quote':
         return this.sendWhatsappQuote(
@@ -1034,6 +1035,7 @@ export class OpenClawToolBrokerService {
           String(input.leadId || ''),
           String(input.conversationId || ''),
           String(input.referenceNo || ''),
+          requestKey,
         );
       case 'email-messages-read':
         return this.readEmailMessages(
@@ -1047,6 +1049,7 @@ export class OpenClawToolBrokerService {
           String(input.leadId || ''),
           String(input.subject || ''),
           String(input.body || ''),
+          requestKey,
         );
       case 'email-reply':
         return this.replyEmail(
@@ -1054,6 +1057,7 @@ export class OpenClawToolBrokerService {
           String(input.leadId || ''),
           typeof input.subject === 'string' ? input.subject : undefined,
           String(input.body || ''),
+          requestKey,
         );
     }
   }
@@ -1186,6 +1190,7 @@ export class OpenClawToolBrokerService {
     leadId: string,
     conversationId: string,
     rawText: string,
+    requestKey: string,
   ) {
     const { conversation, lead } = await this.resolveSelectedMessagingCustomer(owner, leadId, conversationId);
     const blocked = await this.requireMessagingCapability(owner, 'crm.message.send', lead.id);
@@ -1197,7 +1202,18 @@ export class OpenClawToolBrokerService {
       throw new ConflictException('The selected customer has no trusted direct WhatsApp target');
     }
     const session = await this.resolveBaileysSession(owner.companyId, conversation.whatsappSessionId);
-    const result = await this.whatsapp.sendMessage(session.id, { to: target, text }, owner.user);
+    const result = await this.whatsapp.sendMessage(
+      session.id,
+      { to: target, text },
+      owner.user,
+      {
+        idempotencyKey: `openclaw:${requestKey}`,
+        leadId: lead.id,
+        conversationId: conversation.id,
+        actorType: 'AGENT',
+        actionType: 'OPENCLAW_WHATSAPP_TEXT',
+      },
+    );
     const messageId = typeof result?.messageId === 'string' ? result.messageId.trim() : '';
     if (result?.success !== true || !messageId) {
       throw new ServiceUnavailableException('WhatsApp provider did not return a delivery receipt');
@@ -1215,6 +1231,7 @@ export class OpenClawToolBrokerService {
     leadId: string,
     conversationId: string,
     rawReferenceNo: string,
+    requestKey: string,
   ) {
     const { conversation, lead } = await this.resolveSelectedMessagingCustomer(owner, leadId, conversationId);
     const quoteBlocked = await this.requireMessagingCapability(owner, 'crm.quote.send', lead.id);
@@ -1266,6 +1283,14 @@ export class OpenClawToolBrokerService {
         caption: `Quotation ${quote.referenceNo}`,
       },
       owner.user,
+      {
+        idempotencyKey: `openclaw:${requestKey}`,
+        leadId: lead.id,
+        conversationId: conversation.id,
+        actorType: 'AGENT',
+        actionType: 'OPENCLAW_WHATSAPP_QUOTE',
+        artifactSourceId: `quote:${quote.id}`,
+      },
     );
     const providerMessageId = typeof result?.providerMessageId === 'string'
       ? result.providerMessageId.trim()
@@ -1325,6 +1350,7 @@ export class OpenClawToolBrokerService {
     leadId: string,
     rawSubject: string,
     rawBody: string,
+    requestKey: string,
   ) {
     const lead = await this.resolveSelectedLead(owner, leadId);
     const blocked = await this.requireMessagingCapability(owner, 'crm.email.send', lead.id);
@@ -1342,6 +1368,9 @@ export class OpenClawToolBrokerService {
       subject,
       html: this.plainTextEmailHtml(body),
       leadId: lead.id,
+      idempotencyKey: `openclaw:${requestKey}`,
+      actorType: 'AGENT',
+      actionType: 'OPENCLAW_EMAIL_SEND',
     }, owner.user);
     return this.requireEmailReceipt(result, lead, subject);
   }
@@ -1351,6 +1380,7 @@ export class OpenClawToolBrokerService {
     leadId: string,
     requestedSubject: string | undefined,
     rawBody: string,
+    requestKey: string,
   ) {
     const lead = await this.resolveSelectedLead(owner, leadId);
     const blocked = await this.requireMessagingCapability(owner, 'crm.email.send', lead.id);
@@ -1380,6 +1410,9 @@ export class OpenClawToolBrokerService {
       html: this.plainTextEmailHtml(body),
       conversationId: thread.id,
       leadId: lead.id,
+      idempotencyKey: `openclaw:${requestKey}`,
+      actorType: 'AGENT',
+      actionType: 'OPENCLAW_EMAIL_REPLY',
     }, owner.user);
     return this.requireEmailReceipt(result, lead, subject);
   }
@@ -1448,29 +1481,19 @@ export class OpenClawToolBrokerService {
   }
 
   private async resolveBaileysSession(companyId: string, selectedSessionId: string | null) {
-    const selected = selectedSessionId
-      ? await this.prisma.whatsAppSession.findFirst({
-          where: { id: selectedSessionId, companyId, status: 'connected' },
-          select: { id: true, authStatePath: true },
-        })
-      : null;
-    if (selected && this.isServerBaileysSession(selected)) return selected;
-
-    // A trusted conversation may originate from the Electron DOM bridge. The
-    // target remains anchored by that conversation, but OpenClaw runs on the
-    // Linux server and must deliver through the company's unique connected
-    // server Baileys session rather than rejecting the Electron session id.
-    const sessions = await this.prisma.whatsAppSession.findMany({
-      where: { companyId, status: 'connected' },
-      select: { id: true, authStatePath: true },
-      orderBy: { updatedAt: 'desc' },
-      take: 10,
-    });
-    const baileys = sessions.filter((session: any) => this.isServerBaileysSession(session));
-    if (baileys.length !== 1) {
-      throw new ConflictException('The selected customer must resolve to exactly one connected server Baileys account');
+    if (!selectedSessionId) {
+      throw new ConflictException(
+        'The selected WhatsApp conversation has no trusted server session binding',
+      );
     }
-    return baileys[0] as { id: string };
+    const selected = await this.prisma.whatsAppSession.findFirst({
+      where: { id: selectedSessionId, companyId, status: 'connected' },
+      select: { id: true, authStatePath: true },
+    });
+    if (selected && this.isServerBaileysSession(selected)) return selected;
+    throw new ConflictException(
+      'Electron or Evolution conversations cannot fall back to an unrelated Baileys session',
+    );
   }
 
   private isServerBaileysSession(session: { authStatePath?: string | null } | null): boolean {
@@ -1592,7 +1615,9 @@ export class OpenClawToolBrokerService {
     if (!user || user.companies.length !== 1) {
       throw new ServiceUnavailableException('OpenClaw owner must resolve to exactly one active company');
     }
-    const relation = user.companies[0];
+    // The database query above is scoped by the configured company slug and
+    // the exact-one check prevents any ambiguous first-membership fallback.
+    const [relation] = user.companies;
     if (!['company_admin', 'super_admin'].includes(relation.role.name)) {
       throw new ForbiddenException('OpenClaw owner must be a company administrator');
     }
@@ -1602,6 +1627,8 @@ export class OpenClawToolBrokerService {
       user: {
         id: user.id,
         email: user.email,
+        activeCompanyId: relation.companyId,
+        activeCompany: { id: relation.companyId, role: relation.role.name },
         companies: [{ id: relation.companyId, role: relation.role.name }],
       },
     };

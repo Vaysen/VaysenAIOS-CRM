@@ -16,6 +16,10 @@ import * as path from 'path';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { completeAiJson } from '@/common/ai/ai-client.util';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 
 const LEAD_FIELDS: { field: string; aliases: string[] }[] = [
   { field: 'companyName', aliases: ['company name', 'company', 'company_name', 'companyname', 'name', 'organization', 'business name'] },
@@ -224,10 +228,7 @@ Rules:
       throw new BadRequestException('Parse token expired or invalid. Please re-upload the file.');
     }
 
-    const companyId = currentUser.companies[0]?.id;
-    if (!companyId) {
-      throw new ForbiddenException('No company associated');
-    }
+    const companyId = requireActiveCompany(currentUser).id;
 
     this.checkWriteAccess(currentUser, companyId);
 
@@ -410,12 +411,10 @@ Rules:
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = hasFullAccess(currentUser, companyId);
 
-    const where: any = { companyId: { in: companyIds } };
+    const where: any = { companyId };
     if (!isFullAccess) {
       where.createdBy = currentUser.id;
     }
@@ -437,20 +436,16 @@ Rules:
   }
 
   async findOne(id: string, currentUser: any) {
-    const task = await this.prisma.importTask.findUnique({ where: { id } });
+    const companyId = requireActiveCompany(currentUser).id;
+    const task = await this.prisma.importTask.findFirst({
+      where: { id, companyId },
+    });
     if (!task) {
       throw new NotFoundException('Import task not found');
     }
 
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(task.companyId)) {
-      throw new ForbiddenException('Cannot access imports from another company');
-    }
-
     // Sub-account isolation: non-admin can only access own imports
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const isFullAccess = hasFullAccess(currentUser, companyId);
     if (!isFullAccess && task.createdBy !== currentUser.id) {
       throw new ForbiddenException('You can only access your own imports');
     }
@@ -662,10 +657,10 @@ Rules:
   }
 
   private checkWriteAccess(currentUser: any, companyId: string) {
-    const isSuperAdmin = currentUser.companies?.some(
-      (c: any) => c.role === 'super_admin',
-    );
-    if (isSuperAdmin) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) {
@@ -679,8 +674,6 @@ Rules:
   }
 
   private isSalesUserOnly(currentUser: any): boolean {
-    const roles = currentUser.companies?.map((c: any) => c.role) || [];
-    return roles.length > 0 && roles.every((r: string) => r === 'sales_user' || r === 'viewer')
-      && roles.some((r: string) => r === 'sales_user');
+    return requireActiveCompany(currentUser).role === 'sales_user';
   }
 }

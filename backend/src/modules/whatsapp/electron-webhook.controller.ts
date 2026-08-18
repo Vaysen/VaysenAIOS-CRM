@@ -29,6 +29,14 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ContactsSyncDto } from './dto/electron-contacts.dto';
 import { sanitizeContactNameCandidate } from '../customer-identity/domain/sanitize-display-text';
+import { requireActiveCompany } from '../../common/utils/data-isolation';
+import { safeLogEvent } from '../../common/security/safe-logging';
+
+const ELECTRON_PUBLIC_ERRORS = {
+  message: { code: 'WHATSAPP_ELECTRON_MESSAGE_FAILED', message: 'WhatsApp message processing failed' },
+  status: { code: 'WHATSAPP_ELECTRON_STATUS_FAILED', message: 'WhatsApp status processing failed' },
+  contacts: { code: 'WHATSAPP_ELECTRON_CONTACTS_SYNC_FAILED', message: 'WhatsApp contacts synchronization failed' },
+} as const;
 
 @ApiTags('WhatsApp Electron')
 @Controller('whatsapp/electron-webhook')
@@ -77,10 +85,13 @@ export class ElectronWebhookController {
       );
       const senderName = sanitizeContactNameCandidate(payload.sender || '');
 
-      this.logger.log(
-        `[Electron Webhook] 消息来自 ${payload.fromPhone || chatName || 'unknown'}: ` +
-        `${(payload.text || `[${payload.type}]`).substring(0, 100)}`,
-      );
+      this.logger.log(safeLogEvent('whatsapp.electron.message_received', {
+        sender: payload.fromPhone || chatName || 'unknown',
+        message: payload.text,
+        contentType: payload.type,
+        resourceId: payload.id,
+        contentBytes: Buffer.byteLength(String(payload.text || ''), 'utf8'),
+      }));
 
       // Authenticated tenant + validated accountId establishes a durable,
       // auditable Electron mapping. A real message proves the partition is
@@ -92,7 +103,10 @@ export class ElectronWebhookController {
         'connected',
       );
       if (payload.isSelf === true) {
-        this.logger.log(`[Electron Webhook] 忽略 self chat 消息: ${payload.id}`);
+        this.logger.log(safeLogEvent('whatsapp.electron.self_message_ignored', {
+          resourceId: payload.id,
+          status: 'ignored',
+        }));
         return { status: 'ignored', reason: 'self_chat' };
       }
 
@@ -103,10 +117,10 @@ export class ElectronWebhookController {
       // 即便 LID 无法解析为真实号码(unresolved),消息仍会入库。
       const externalIdCandidate = payload.externalId?.trim() || undefined;
       const externalId = externalIdCandidate
-        && /^\d+@(?:g\.us|c\.us|s\.whatsapp\.net|lid)$/i.test(externalIdCandidate)
+        && /^\d+@(?:g\.us|broadcast|c\.us|s\.whatsapp\.net|lid)$/i.test(externalIdCandidate)
         ? externalIdCandidate
         : undefined;
-      const groupJid = externalId?.toLowerCase().endsWith('@g.us') ? externalId : undefined;
+      const groupJid = externalId && /@(?:g\.us|broadcast)$/i.test(externalId) ? externalId : undefined;
       const privateJid = externalId && /@(?:c\.us|s\.whatsapp\.net|lid)$/i.test(externalId)
         ? externalId
         : undefined;
@@ -117,9 +131,10 @@ export class ElectronWebhookController {
       // cannot be added to the immutable captured payload.
       const isGroup = groupJid ? true : privateJid ? false : null;
       if (payload.isGroup === true && !groupJid) {
-        this.logger.warn(
-          `[Electron Webhook] renderer 标记群聊但缺少可信 @g.us，按 unknown 隔离: ${payload.id}`,
-        );
+        this.logger.warn(safeLogEvent('whatsapp.electron.group_identity_untrusted', {
+          resourceId: payload.id,
+          status: 'unknown',
+        }));
       }
       const jidPhone = privateJid && !privateJid.toLowerCase().endsWith('@lid')
         ? privateJid.split('@')[0]
@@ -146,10 +161,10 @@ export class ElectronWebhookController {
 
       return { status: 'ok' };
     } catch (err: any) {
-      this.logger.error(`[Electron Webhook] 消息处理失败: ${err?.message}`, err?.stack);
+      this.logger.error(safeLogEvent('whatsapp.electron.message_failed', { error: err }));
       throw new ServiceUnavailableException({
         status: 'error',
-        message: err?.message || 'Electron WhatsApp message processing failed',
+        ...ELECTRON_PUBLIC_ERRORS.message,
       });
     }
   }
@@ -177,9 +192,10 @@ export class ElectronWebhookController {
   ) {
     try {
       const currentCompanyId = this.requireCurrentCompanyId(requestedCompanyId, user);
-      this.logger.log(
-        `[Electron Webhook] 状态更新: accountId=${payload.accountId}, status=${payload.status}`,
-      );
+      this.logger.log(safeLogEvent('whatsapp.electron.status_updated', {
+        accountId: payload.accountId,
+        status: payload.status,
+      }));
 
       // 映射状态
       let dbStatus: 'connected' | 'waiting_scan' | 'reconnecting' | 'disconnected';
@@ -194,9 +210,11 @@ export class ElectronWebhookController {
           dbStatus = 'reconnecting';
           break;
         case 'selector_warning':
-          this.logger.warn(
-            `[Electron Webhook] 选择器告警: ${payload.group} - ${payload.message}`,
-          );
+          this.logger.warn(safeLogEvent('whatsapp.electron.selector_warning', {
+            selectorGroup: payload.group,
+            message: payload.message,
+            status: 'warning',
+          }));
           return { status: 'ok' };
         case 'unread_update':
           // 未读计数更新，无需修改 session 状态
@@ -223,10 +241,10 @@ export class ElectronWebhookController {
 
       return { status: 'ok' };
     } catch (err: any) {
-      this.logger.error(`[Electron Webhook] 状态处理失败: ${err?.message}`, err?.stack);
+      this.logger.error(safeLogEvent('whatsapp.electron.status_failed', { error: err }));
       throw new ServiceUnavailableException({
         status: 'error',
-        message: err?.message || 'Electron WhatsApp status processing failed',
+        ...ELECTRON_PUBLIC_ERRORS.status,
       });
     }
   }
@@ -248,9 +266,10 @@ export class ElectronWebhookController {
   ) {
     try {
       const currentCompanyId = this.requireCurrentCompanyId(requestedCompanyId, user);
-      this.logger.log(
-        `[Electron Webhook] 联系人同步: accountId=${dto.accountId}, count=${dto.contacts?.length || 0}`,
-      );
+      this.logger.log(safeLogEvent('whatsapp.electron.contacts_sync_started', {
+        accountId: dto.accountId,
+        count: dto.contacts?.length || 0,
+      }));
 
       if (!dto.contacts || dto.contacts.length === 0) {
         return { status: 'ok', message: 'no contacts' };
@@ -280,10 +299,10 @@ export class ElectronWebhookController {
 
       return { status: 'ok', synced, skipped };
     } catch (err: any) {
-      this.logger.error(`[Electron Webhook] 联系人同步失败: ${err?.message}`, err?.stack);
+      this.logger.error(safeLogEvent('whatsapp.electron.contacts_sync_failed', { error: err }));
       throw new ServiceUnavailableException({
         status: 'error',
-        message: err?.message || 'Electron WhatsApp contacts sync failed',
+        ...ELECTRON_PUBLIC_ERRORS.contacts,
       });
     }
   }
@@ -316,8 +335,7 @@ export class ElectronWebhookController {
     if (!companyId) {
       throw new Error('X-Company-Id is required for Electron WhatsApp webhook requests');
     }
-    const companyIds = (user?.companies || []).map((company: any) => company?.id);
-    if (!companyIds.includes(companyId)) {
+    if (requireActiveCompany(user).id !== companyId) {
       throw new Error('X-Company-Id is not available to the current user');
     }
     return companyId;

@@ -1,7 +1,7 @@
 use_default_settings: true
 
 general:
-  instance_name: Vaysen AI CRM Local Search
+  instance_name: Vaysen Local Search
   enable_metrics: false
 
 search:

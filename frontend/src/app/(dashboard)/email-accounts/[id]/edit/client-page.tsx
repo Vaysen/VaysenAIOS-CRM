@@ -23,7 +23,18 @@ export default function EditEmailAccountPage() {
     hourlySendLimit: 10,
     sendIntervalSeconds: 60,
     warmupEnabled: false,
+    accountRole: 'CORE',
+    tags: [] as string[],
+    imapHost: '',
+    imapPort: 993,
+    imapSecure: true,
+    imapUsername: '',
+    imapPassword: '',
+    inboundEnabled: false,
+    inboundPollIntervalSeconds: 300,
   });
+  const [tagInput, setTagInput] = useState('');
+  const [showImap, setShowImap] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +60,15 @@ export default function EditEmailAccountPage() {
           hourlySendLimit: d.hourlySendLimit || 10,
           sendIntervalSeconds: d.sendIntervalSeconds || 60,
           warmupEnabled: d.warmupEnabled ?? false,
+          accountRole: d.accountRole || 'CORE',
+          tags: d.tags || [],
+          imapHost: d.imapHost || '',
+          imapPort: d.imapPort || 993,
+          imapSecure: d.imapSecure ?? true,
+          imapUsername: d.imapUsername || '',
+          imapPassword: '',
+          inboundEnabled: d.inboundEnabled ?? false,
+          inboundPollIntervalSeconds: d.inboundPollIntervalSeconds || 300,
         });
       } catch (err: any) {
         setError(err.response?.data?.message || 'Failed to load account');
@@ -61,6 +81,13 @@ export default function EditEmailAccountPage() {
 
   const handleChange = (field: string, value: any) => {
     setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const addTag = () => {
+    const tag = tagInput.trim();
+    if (!tag || form.tags.includes(tag)) return;
+    setForm((prev) => ({ ...prev, tags: [...prev.tags, tag] }));
+    setTagInput('');
   };
 
   const validateReceivingConfig = () => {
@@ -81,6 +108,7 @@ export default function EditEmailAccountPage() {
       setError(null);
       const payload: any = { ...form };
       if (!payload.smtpPassword) delete payload.smtpPassword;
+      if (!payload.imapPassword) delete payload.imapPassword;
       await api.patch(`/email-accounts/${id}`, payload);
       router.push('/email-accounts');
     } catch (err: any) {
@@ -158,6 +186,41 @@ export default function EditEmailAccountPage() {
           </div>
         </div>
 
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white pt-2">Account Role</h3>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">账户角色</label>
+          <select
+            value={form.accountRole}
+            onChange={(e) => handleChange('accountRole', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+          >
+            <option value="CORE">核心邮箱（一对一商务邮件，不可用于营销群发）</option>
+            <option value="MARKETING">营销邮箱（营销活动/批量群发专用）</option>
+            <option value="SUPPORT">客服邮箱（客户服务往来）</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">标签（可选，回车添加）</label>
+          <div className="flex gap-2">
+            <input type="text" value={tagInput} onChange={(e) => setTagInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
+              placeholder="如：主域名 / 备用域1"
+              className="flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none" />
+            <button onClick={addTag} className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">添加</button>
+          </div>
+          {form.tags.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {form.tags.map((tag) => (
+                <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-gray-100 dark:bg-gray-800 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300">
+                  {tag}
+                  <button onClick={() => handleChange('tags', form.tags.filter((x) => x !== tag))} className="text-gray-400 hover:text-red-500">&times;</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white pt-2">SMTP Configuration</h3>
 
         {form.smtpHost === 'smtp-relay.brevo.com' && (
@@ -206,11 +269,63 @@ export default function EditEmailAccountPage() {
             type="email"
             value={form.replyToEmail}
             onChange={(e) => handleChange('replyToEmail', e.target.value)}
-            placeholder="sales@reply.example.com"
+            placeholder="sales@reply.vaysen.com"
             className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
           />
           <p className="mt-1 text-xs text-gray-500">Brevo 会将发到这个地址的客户回复解析后自动写入 CRM 收件箱。</p>
         </div>
+
+        <div className="flex items-center justify-between pt-2">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">IMAP Receiving（可选）</h3>
+          <button onClick={() => setShowImap(!showImap)} className="text-sm text-blue-600 hover:text-blue-700">
+            {showImap ? '收起' : '展开'}
+          </button>
+        </div>
+
+        {showImap && (
+          <div className="space-y-4 rounded-lg border border-gray-200 dark:border-gray-800 p-4">
+            <p className="text-xs text-gray-500">启用 IMAP 后，系统按轮询间隔从该邮箱拉取客户回复并写入「邮件中心 → 收件箱」。国内邮箱建议用 imap 端口 993（SSL）。</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IMAP Host</label>
+                <input type="text" value={form.imapHost} onChange={(e) => handleChange('imapHost', e.target.value)} placeholder="imap.qiye.aliyun.com"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IMAP Port</label>
+                <input type="number" value={form.imapPort} onChange={(e) => handleChange('imapPort', parseInt(e.target.value) || 993)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="imapSecure" checked={form.imapSecure} onChange={(e) => handleChange('imapSecure', e.target.checked)}
+                className="rounded border-gray-300 dark:border-gray-700" />
+              <label htmlFor="imapSecure" className="text-sm text-gray-700 dark:text-gray-300">Use SSL/TLS</label>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IMAP Username</label>
+              <input type="text" value={form.imapUsername} onChange={(e) => handleChange('imapUsername', e.target.value)} placeholder="通常与 SMTP 用户名相同"
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IMAP Password（留空保持当前）</label>
+              <input type="password" value={form.imapPassword} onChange={(e) => handleChange('imapPassword', e.target.value)}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">轮询间隔（秒）</label>
+                <input type="number" value={form.inboundPollIntervalSeconds} onChange={(e) => handleChange('inboundPollIntervalSeconds', parseInt(e.target.value) || 300)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="inboundEnabled" checked={form.inboundEnabled} onChange={(e) => handleChange('inboundEnabled', e.target.checked)}
+                className="rounded border-gray-300 dark:border-gray-700" />
+              <label htmlFor="inboundEnabled" className="text-sm text-gray-700 dark:text-gray-300">启用 IMAP 自动收信</label>
+            </div>
+          </div>
+        )}
 
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white pt-2">Sending Limits</h3>
 

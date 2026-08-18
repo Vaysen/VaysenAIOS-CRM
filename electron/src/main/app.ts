@@ -6,7 +6,7 @@
 import { app, BrowserWindow, globalShortcut, crashReporter } from 'electron';
 import path from 'path';
 import { WindowManager } from './window-manager';
-import { LocalServer } from './local-server';
+import { LocalServer, resolveInstallerSmokeToken, resolveLocalServerPort } from './local-server';
 import { IpcHandlers } from './ipc-handlers';
 import { TrayManager } from './tray';
 import { AutoUpdater } from './auto-updater';
@@ -21,7 +21,7 @@ import { installSafeConsole } from './safe-console';
 if (app.isPackaged) installSafeConsole();
 
 // 必须在任何 electron-store/safeStorage 数据访问之前固定历史 userData 路径。
-// 产品显示名升级为 Vaysen AI CRM时仍复用旧版数据目录。
+// 产品显示名升级为 Vaysen 外贸系统时仍复用旧版数据目录。
 configureStableUserDataPath(app);
 
 // 防止多个实例运行（单实例锁：第二个实例聚焦主窗口）
@@ -36,8 +36,8 @@ try {
   crashReporter.start({
     uploadToServer: false,
     ignoreSystemCrashHandler: false,
-    productName: 'Vaysen AI CRM',
-    companyName: 'Example Trading Company',
+    productName: 'Vaysen 外贸系统',
+    companyName: 'Vaysen Packaging',
   });
 } catch {
   // 重复初始化或环境不支持时静默忽略
@@ -76,7 +76,11 @@ app.whenReady().then(async () => {
     frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
   } else {
     // 生产模式：启动本地 Express 服务器
-    localServer = new LocalServer(API_BASE_URL);
+    localServer = new LocalServer(
+      API_BASE_URL,
+      resolveLocalServerPort(),
+      resolveInstallerSmokeToken(),
+    );
     const frontendOutDir = path.join(process.resourcesPath, 'frontend-out');
     const port = await localServer.start(frontendOutDir);
     frontendUrl = `http://127.0.0.1:${port}`;
@@ -142,7 +146,7 @@ app.whenReady().then(async () => {
 
   console.log('[App] 应用启动完成');
   console.log(`[App] 前端地址: ${frontendUrl}`);
-  console.log(`[App] API 地址: ${API_BASE_URL || '(disabled: configuration required)'}`);
+  console.log(`[App] LAN API: ${API_BASE_URL ? 'configured' : 'not configured'}`);
   console.log(`[App] 开发模式: ${isDev}`);
 });
 

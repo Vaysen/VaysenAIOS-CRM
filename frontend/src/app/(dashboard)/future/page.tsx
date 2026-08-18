@@ -2,13 +2,13 @@ import { Metadata } from 'next';
 import { Rocket, RefreshCw, Palette, Puzzle } from 'lucide-react';
 import { ModulePage } from '@/components/shared/module-page';
 
-export const metadata: Metadata = { title: '后期能力 — 示例贸易' };
+export const metadata: Metadata = { title: '后期能力 — Vaysen' };
 
 export default function FuturePage() {
   return (
     <ModulePage
       title="后期能力规划"
-      description="示例贸易外贸系统后续版本的功能路线图。"
+      description="Vaysen外贸系统后续版本的功能路线图。"
       isEmpty
       emptyState={
         <div>
@@ -18,7 +18,7 @@ export default function FuturePage() {
             {[
               { icon: RefreshCw, title: 'ERP 双向同步', desc: '与工厂 ERP 实时同步库存、生产和发货数据。' },
               { icon: Palette, title: '3D 定制包装设计器', desc: '客户在线实时预览定制包装效果。' },
-              { icon: Puzzle, title: '独立站组件库', desc: 'example.com 可复用的产品目录、询盘表单和客户门户组件。' },
+              { icon: Puzzle, title: '独立站组件库', desc: 'vaysen.com 可复用的产品目录、询盘表单和客户门户组件。' },
             ].map((item) => (
               <div key={item.title} className="flex gap-3 p-3 bg-gray-50 rounded-lg">
                 <item.icon className="w-5 h-5 text-gray-500 shrink-0"/>

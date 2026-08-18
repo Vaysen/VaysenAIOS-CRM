@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Param, UseGuards, Headers } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -14,8 +14,30 @@ export class BusinessMailController {
 
   @Post('send')
   @ApiOperation({ summary: 'Send a one-to-one business email (SMTP)' })
-  send(@Body() dto: SendMailDto, @CurrentUser() user: any) {
-    return this.businessMailService.sendMail(dto, user);
+  send(
+    @Body() dto: SendMailDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() user: any,
+  ) {
+    return this.businessMailService.sendMail(
+      {
+        emailAccountId: dto.emailAccountId,
+        to: dto.to,
+        subject: dto.subject,
+        html: dto.html,
+        conversationId: dto.conversationId,
+        leadId: dto.leadId,
+        attachments: dto.attachments?.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content,
+          mimeType: attachment.mimeType,
+        })),
+        idempotencyKey: idempotencyKey || dto.idempotencyKey,
+        actorType: 'HUMAN',
+        actionType: 'RAW_SMTP',
+      },
+      user,
+    );
   }
 
   @Post('test-smtp/:accountId')

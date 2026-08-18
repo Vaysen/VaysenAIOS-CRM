@@ -88,7 +88,7 @@ export class WindowManager {
       x: bounds.x >= 0 ? bounds.x : undefined,
       y: bounds.y >= 0 ? bounds.y : undefined,
       show: false,
-      title: 'Vaysen AI CRM',
+      title: 'Vaysen 外贸系统',
       backgroundColor: '#0f172a',
       frame: true, // 使用系统标题栏（可改为 false 启用自定义标题栏）
       webPreferences: {

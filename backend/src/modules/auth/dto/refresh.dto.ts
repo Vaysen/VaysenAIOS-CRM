@@ -1,8 +1,12 @@
-import { IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RefreshDto {
-  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...' })
+  @ApiPropertyOptional({
+    description: 'Non-browser compatibility mode only; browsers use the HttpOnly cookie',
+  })
+  @IsOptional()
   @IsString()
-  refreshToken: string;
+  @MaxLength(512)
+  refreshToken?: string;
 }

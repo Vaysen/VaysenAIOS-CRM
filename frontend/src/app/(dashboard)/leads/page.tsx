@@ -1,9 +1,14 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
+import {
+  createManualSendIntentTracker,
+  runManualSendIntent,
+} from '@/lib/manual-send-intent';
+import { canWriteActiveCompany } from '@/lib/active-company-membership';
 import { useAuthStore } from '@/store/authStore';
 import { useSelectionStore } from '@/store/selectionStore';
 import { Plus, Search, Filter, Trash2, Eye, Pencil, Upload, Send, List, Columns, Mail, MousePointer, Reply, Calendar, Download, FileText, FileSpreadsheet, ShieldCheck, ShieldAlert, ShieldQuestion, ExternalLink, AlertTriangle } from 'lucide-react';
@@ -63,7 +68,7 @@ interface PaginationMeta {
 
 export default function LeadsPage() {
   const { t } = useT();
-  const { user: currentUser } = useAuthStore();
+  const { user: currentUser, activeCompanyId } = useAuthStore();
   const router = useRouter();
   const {
     selectedLeadIds,
@@ -116,11 +121,15 @@ export default function LeadsPage() {
   const [emailTemplates, setEmailTemplates] = useState<any[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const batchEmailIntent = useMemo(
+    () => createManualSendIntentTracker('leads-batch-email-ui', {
+      userId: currentUser?.id,
+      activeCompanyId,
+    }),
+    [activeCompanyId, currentUser?.id],
+  );
 
-  const currentCompany = currentUser?.companies?.[0];
-  const isViewer = currentCompany?.role === 'viewer' &&
-    !currentUser?.companies?.some((c: any) => c.role === 'super_admin');
-  const canWrite = !isViewer;
+  const canWrite = canWriteActiveCompany(currentUser, activeCompanyId);
 
   const fetchLeads = useCallback(async () => {
     try {
@@ -254,14 +263,21 @@ export default function LeadsPage() {
 
     try {
       const ids = selectAllAcrossPages ? undefined : Array.from(selectedLeadIds);
-      const res = await api.post('/emails/send-batch', {
+      const payload = {
         leadIds: ids,
         emailAccountId: selectedAccountId,
         emailTemplateId: selectedTemplateId,
         sendIntervalSeconds: 30,
         selectAll: selectAllAcrossPages,
         filters: selectAllAcrossPages ? { status: statusFilter || undefined, country: countryFilter || undefined, leadGrade: gradeFilter || undefined, ownerUserId: ownerFilter || undefined } : undefined,
-      });
+      };
+      const res = await runManualSendIntent(
+        batchEmailIntent,
+        payload,
+        (idempotencyKey) => api.post('/emails/send-batch', payload, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+        }),
+      );
       const data = res.data;
       setBatchEmailProgress({ sent: data.queued || 0, total: data.totalLeads || 0, skipped: data.skipped?.length || 0 });
       clearSelection();

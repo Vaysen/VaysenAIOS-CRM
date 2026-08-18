@@ -145,7 +145,7 @@ export default function EditEmailTemplatePage() {
           country: 'United States',
           product_name: 'Macaroni Production Line',
           sender_name: 'David',
-          sender_company: 'Example Trading Company',
+          sender_company: 'Vaysen Packaging',
           website: 'https://example.com',
           pain_point: 'improve production efficiency',
           last_email_date: '2026-05-28',

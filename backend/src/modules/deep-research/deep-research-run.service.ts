@@ -20,6 +20,7 @@ import { Queue } from 'bullmq';
 import { PrismaService } from '@/common/prisma/prisma.service';
 import { QUEUES } from '@/common/queues/queue-names';
 import { digestAgentInput } from '@/modules/agent/agent-security';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '@/common/security/safe-logging';
 import { assessResearchSubject } from './research-subject-policy';
 
 export type DeepResearchType = 'full' | 'contacts' | 'market';
@@ -34,6 +35,8 @@ export type DeepResearchJobData = {
 
 export type DeepResearchOperator = {
   id: string;
+  activeCompanyId?: string | null;
+  activeCompany?: { id: string; role: string } | null;
   companies?: Array<{ id: string; role: string }>;
 };
 
@@ -66,17 +69,19 @@ export class DeepResearchRunService implements OnModuleInit, OnModuleDestroy {
       Number(process.env.DEEP_RESEARCH_RECONCILE_INTERVAL_MS || 30_000),
     );
     void this.reconcilePendingRuns().catch((error) => {
-      this.logger.error(
-        'Initial deep-research queue reconciliation failed',
-        error instanceof Error ? error.stack : String(error),
-      );
+      this.logger.error(safeLogEvent('deep_research.reconcile_startup_failed', {
+        status: 'failed',
+        error,
+        errorCategory: safeErrorCategory(error),
+      }));
     });
     this.reconciliationTimer = setInterval(() => {
       void this.reconcilePendingRuns().catch((error) => {
-        this.logger.error(
-          'Deep-research queue reconciliation failed',
-          error instanceof Error ? error.stack : String(error),
-        );
+        this.logger.error(safeLogEvent('deep_research.reconcile_interval_failed', {
+          status: 'failed',
+          error,
+          errorCategory: safeErrorCategory(error),
+        }));
       });
     }, intervalMs);
     this.reconciliationTimer.unref?.();
@@ -169,13 +174,22 @@ export class DeepResearchRunService implements OnModuleInit, OnModuleDestroy {
             },
           });
         } catch (auditError) {
-          this.logger.error(
-            `Deep research ${run.id} was queued but RUN_QUEUED audit append failed`,
-            auditError instanceof Error ? auditError.stack : String(auditError),
-          );
+          this.logger.error(safeLogEvent('deep_research.run_queued_audit_failed', {
+            status: 'failed',
+            eventType: 'RUN_QUEUED',
+            runRef: safeDigest(run.id, 'agent-run'),
+            error: auditError,
+            errorCategory: safeErrorCategory(auditError),
+          }));
         }
       }
     } catch (error) {
+      this.logger.error(safeLogEvent('deep_research.queue_enqueue_failed', {
+        status: 'failed',
+        runRef: safeDigest(run.id, 'agent-run'),
+        error,
+        errorCategory: safeErrorCategory(error),
+      }));
       if (!created) {
         throw new ServiceUnavailableException('Background research queue is unavailable');
       }
@@ -270,7 +284,11 @@ export class DeepResearchRunService implements OnModuleInit, OnModuleDestroy {
       if (!run.subjectId) continue;
       const type = this.typeFromTool(run.tasks[0]?.toolName);
       if (!type) {
-        this.logger.error(`Pending deep-research run ${run.id} has no recognized task`);
+        this.logger.error(safeLogEvent('deep_research.reconcile_task_missing', {
+          status: 'failed',
+          runRef: safeDigest(run.id, 'agent-run'),
+          count: 1,
+        }));
         continue;
       }
       const jobId = `agent-run-${run.id}`;
@@ -285,13 +303,23 @@ export class DeepResearchRunService implements OnModuleInit, OnModuleDestroy {
         // PENDING run or an expired RUNNING lease.
         await existing.remove();
       }
-      await this.addQueueJob({
-        companyId: run.companyId,
-        agentRunId: run.id,
-        leadId: run.subjectId,
-        userId: run.operatorUserId,
-        type,
-      });
+      try {
+        await this.addQueueJob({
+          companyId: run.companyId,
+          agentRunId: run.id,
+          leadId: run.subjectId,
+          userId: run.operatorUserId,
+          type,
+        });
+      } catch (error) {
+        this.logger.error(safeLogEvent('deep_research.reconcile_enqueue_failed', {
+          status: 'failed',
+          runRef: safeDigest(run.id, 'agent-run'),
+          error,
+          errorCategory: safeErrorCategory(error),
+        }));
+        throw error;
+      }
       repaired += 1;
       try {
         await this.prisma.agentAuditLog.create({
@@ -310,10 +338,13 @@ export class DeepResearchRunService implements OnModuleInit, OnModuleDestroy {
           },
         });
       } catch (auditError) {
-        this.logger.error(
-          `Requeued deep research ${run.id} but RUN_REQUEUED audit append failed`,
-          auditError instanceof Error ? auditError.stack : String(auditError),
-        );
+        this.logger.error(safeLogEvent('deep_research.run_requeued_audit_failed', {
+          status: 'failed',
+          eventType: 'RUN_REQUEUED',
+          runRef: safeDigest(run.id, 'agent-run'),
+          error: auditError,
+          errorCategory: safeErrorCategory(auditError),
+        }));
       }
     }
     return repaired;
@@ -434,12 +465,20 @@ export class DeepResearchRunService implements OnModuleInit, OnModuleDestroy {
   }
 
   private assertCompanyMembership(user: DeepResearchOperator, companyId: string) {
-    if (!user?.id || !user.companies?.some((company) => company.id === companyId)) {
+    if (
+      !user?.id
+      || user.activeCompanyId !== companyId
+      || user.activeCompany?.id !== companyId
+      || !user.companies?.some((company) => company.id === companyId)
+    ) {
       throw new ForbiddenException('No access to this company');
     }
   }
 
   private isCompanyAdmin(user: DeepResearchOperator, companyId: string) {
+    if (user.activeCompanyId !== companyId || user.activeCompany?.id !== companyId) {
+      return false;
+    }
     return user.companies?.some(
       (company) => company.id === companyId && ['company_admin', 'super_admin'].includes(company.role),
     ) ?? false;

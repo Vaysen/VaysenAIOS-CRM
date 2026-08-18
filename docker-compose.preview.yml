@@ -1,12 +1,12 @@
 # ============================================================
-# Vaysen AI CRM — Preview Deployment
+# Vaysen Trade OS — Preview Deployment
 # Safe preview mode: no real email/WhatsApp, no AI auto-send
 # Usage: docker compose -f docker-compose.preview.yml --env-file .env.preview up -d
 # ============================================================
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: vaysen-pg
+    container_name: vaysen-crm-postgres
     env_file:
       - .env.preview
     environment:
@@ -26,7 +26,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: vaysen-redis
+    container_name: vaysen-crm-redis
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -42,7 +42,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: vaysen-backend
+    container_name: vaysen-crm-backend
     env_file:
       - .env.preview
     environment:
@@ -92,7 +92,7 @@ services:
       args:
         # NEXT_PUBLIC_* are build-time in Next.js — must be set at build time
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api}
-    container_name: vaysen-frontend
+    container_name: vaysen-crm-frontend
     environment:
       NODE_ENV: production
       PORT: "4001"
@@ -105,7 +105,7 @@ services:
   # Nginx reverse proxy — uncomment for single-port access via :80
   nginx:
     image: nginx:alpine
-    container_name: vaysen-nginx
+    container_name: vaysen-crm-nginx
     ports:
       - "80:80"
     volumes:

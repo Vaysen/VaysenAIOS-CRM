@@ -2,7 +2,8 @@ import { Controller, Get, Post, Patch, Param, Query, Body, UseGuards } from '@ne
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { OrdersService, CreateOrderDto } from './orders.service';
+import { OrdersService } from './orders.service';
+import { CreateOrderDto } from './dto/create-order.dto';
 
 @ApiTags('Orders')
 @ApiBearerAuth()

@@ -7,7 +7,7 @@ import {
 } from './business-context';
 
 describe('business context', () => {
-  it('defaults every AI business entry point to Example Trading Company', () => {
+  it('defaults every AI business entry point to Vaysen Packaging', () => {
     const context = resolveBusinessContext({});
     expect(context).toEqual({
       brandName: DEFAULT_BUSINESS_BRAND_NAME,
@@ -41,7 +41,7 @@ describe('business context', () => {
 
   it('does not let stale industry settings override the packaging environment', () => {
     const context = resolveBusinessContext({
-      BUSINESS_BRAND_NAME: 'Example Trading Company',
+      BUSINESS_BRAND_NAME: 'Vaysen Packaging',
       BUSINESS_PRODUCT_FOCUS: 'custom recyclable mailers',
       BUSINESS_TARGET_CUSTOMER_PROFILE: 'e-commerce packaging buyers',
     }, {
@@ -51,7 +51,7 @@ describe('business context', () => {
     });
 
     expect(context).toEqual({
-      brandName: 'Example Trading Company',
+      brandName: 'Vaysen Packaging',
       productFocus: 'custom recyclable mailers',
       targetCustomerProfile: 'e-commerce packaging buyers',
     });

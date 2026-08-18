@@ -73,6 +73,7 @@ export interface AgentDesktopCapabilitySnapshot {
       name: string;
       phone: string;
       isGroup: boolean;
+      externalId?: string;
       observedAt: string;
       selectionProof: string;
     } | null;

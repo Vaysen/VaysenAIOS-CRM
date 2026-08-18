@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
 import { Card } from '@/components/ui/card';
-import { Package, Truck, CheckCircle, Clock, Filter, Eye, Plus, FileText } from 'lucide-react';
+import { Package, Truck, CheckCircle, Clock, Filter, Eye, FileText } from 'lucide-react';
+import { formatOrderAmount, type OrderListItem, type OrderListResponse } from '@/types/order';
 
 const STAGES = [
   { key: '', label: '全部' },
@@ -15,6 +16,7 @@ const STAGES = [
   { key: 'shipping', label: '出货' },
   { key: 'payment', label: '收款' },
   { key: 'completed', label: '完成' },
+  { key: 'after_sales', label: '售后' },
 ];
 
 const STAGE_ICONS: Record<string, React.ReactNode> = {
@@ -25,23 +27,18 @@ const STAGE_ICONS: Record<string, React.ReactNode> = {
 };
 
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<any[]>([]);
+  const [orders, setOrders] = useState<OrderListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState('');
 
   useEffect(() => {
-    api.get('/orders', { params: { limit: 100, stage: stage || undefined } }).then((res) => {
+    api.get<OrderListResponse>('/orders', { params: { limit: 100, stage: stage || undefined } }).then((res) => {
       setOrders(res.data?.data || []);
     }).catch(() => setError('加载失败')).finally(() => setLoading(false));
   }, [stage]);
 
-  const parseFields = (o: any) => { try { return JSON.parse(o.outputContent || '{}'); } catch { return {}; } };
-
-  const active = orders.filter((o: any) => {
-    const s = parseFields(o).stage;
-    return s && !['completed'].includes(s);
-  }).length;
+  const active = orders.filter((order) => order.stage !== 'completed').length;
 
   return (
     <div className="space-y-6">
@@ -62,8 +59,8 @@ export default function OrdersPage() {
         {[
           { label: '全部订单', value: orders.length },
           { label: '进行中', value: active },
-          { label: '已完成', value: orders.filter((o: any) => parseFields(o).stage === 'completed').length },
-          { label: '待收款', value: orders.filter((o: any) => parseFields(o).stage === 'payment').length },
+          { label: '已完成', value: orders.filter((order) => order.stage === 'completed').length },
+          { label: '待收款', value: orders.filter((order) => order.stage === 'payment').length },
         ].map((m) => (
           <Card key={m.label} className="p-3">
             <p className="text-[10px] text-gray-500">{m.label}</p>
@@ -97,26 +94,25 @@ export default function OrdersPage() {
           </div>
         ) : (
           <div className="divide-y">
-            {orders.map((o: any) => {
-              const fields = parseFields(o);
-              const stageLabel = STAGES.find(s => s.key === fields.stage)?.label || fields.stage || '—';
+            {orders.map((order) => {
+              const stageLabel = STAGES.find((s) => s.key === order.stage)?.label || order.stage || '—';
               return (
-                <Link key={o.id} href={`/orders/${o.id}`}
+                <Link key={order.id} href={`/orders/${order.id}`}
                   className="flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium">{fields.referenceNo || '订单'}</p>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${fields.stage === 'completed' ? 'bg-green-50 text-green-600' : fields.stage === 'shipping' ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'}`}>
-                        {STAGE_ICONS[fields.stage]}{stageLabel}
+                      <p className="text-sm font-medium">{order.orderNo || '订单'}</p>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${order.stage === 'completed' ? 'bg-green-50 text-green-600' : order.stage === 'shipping' ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'}`}>
+                        {STAGE_ICONS[order.stage]}{stageLabel}
                       </span>
                     </div>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {fields.lead?.companyName || '未关联客户'}
-                      {fields.quote?.totalAmount ? ` · $${Number(fields.quote.totalAmount).toLocaleString()}` : ''}
+                      {order.lead?.companyName || '未关联客户'} · {formatOrderAmount(order.totalAmount, order.currency)}
                     </p>
+                    {order.opportunity && <p className="text-xs text-blue-600">商机：{order.opportunity.name} · {order.opportunity.stage}</p>}
                   </div>
                   <div className="flex items-center gap-3 shrink-0 ml-4">
-                    <span className="text-[10px] text-gray-400">{new Date(o.createdAt).toLocaleDateString('zh-CN')}</span>
+                    <span className="text-[10px] text-gray-400">{new Date(order.createdAt).toLocaleDateString('zh-CN')}</span>
                     <Eye className="w-4 h-4 text-gray-300" />
                   </div>
                 </Link>

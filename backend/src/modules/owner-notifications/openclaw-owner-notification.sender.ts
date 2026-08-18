@@ -51,7 +51,7 @@ export class OpenClawOwnerNotificationSender implements OwnerNotificationSender 
     const channel = notification.eventType === 'WHATSAPP_INBOUND' ? 'WhatsApp' : '邮件';
     const subject = notification.subject ? `\n主题：${notification.subject}` : '';
     return [
-      `【Vaysen AI CRM ${channel}新消息】${subject}`,
+      `【Vaysen ${channel}新消息】${subject}`,
       notification.preview,
       '请打开 CRM 查看并处理。',
     ].join('\n');

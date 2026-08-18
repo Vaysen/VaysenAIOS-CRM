@@ -1,5 +1,16 @@
-import { IsString, IsOptional, IsInt, IsBoolean, Min, IsUUID } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsInt,
+  IsBoolean,
+  Min,
+  IsUUID,
+  IsIn,
+  IsArray,
+  ArrayMaxSize,
+} from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { EMAIL_ACCOUNT_ROLES, EmailAccountRole } from './create-email-account.dto';
 
 export class UpdateEmailAccountDto {
   @ApiPropertyOptional({ description: 'Sender display name' })
@@ -36,6 +47,60 @@ export class UpdateEmailAccountDto {
   @IsOptional()
   @IsString()
   smtpPassword?: string;
+
+  // ========== IMAP（收信，可选） ==========
+
+  @ApiPropertyOptional({ description: 'IMAP host' })
+  @IsOptional()
+  @IsString()
+  imapHost?: string;
+
+  @ApiPropertyOptional({ description: 'IMAP port', example: 993 })
+  @IsOptional()
+  @IsInt()
+  imapPort?: number;
+
+  @ApiPropertyOptional({ description: 'Use SSL/TLS for IMAP' })
+  @IsOptional()
+  @IsBoolean()
+  imapSecure?: boolean;
+
+  @ApiPropertyOptional({ description: 'IMAP username' })
+  @IsOptional()
+  @IsString()
+  imapUsername?: string;
+
+  @ApiPropertyOptional({ description: 'IMAP password (only set to update; encrypted before persistence)' })
+  @IsOptional()
+  @IsString()
+  imapPassword?: string;
+
+  @ApiPropertyOptional({ description: 'Enable inbound IMAP polling' })
+  @IsOptional()
+  @IsBoolean()
+  inboundEnabled?: boolean;
+
+  @ApiPropertyOptional({ description: 'Inbound polling interval in seconds' })
+  @IsOptional()
+  @IsInt()
+  @Min(30)
+  inboundPollIntervalSeconds?: number;
+
+  // ========== 分级与标签 ==========
+
+  @ApiPropertyOptional({ description: 'Account role: CORE | MARKETING | SUPPORT', enum: EMAIL_ACCOUNT_ROLES })
+  @IsOptional()
+  @IsIn(EMAIL_ACCOUNT_ROLES)
+  accountRole?: EmailAccountRole;
+
+  @ApiPropertyOptional({ description: 'Free-form tags, e.g. ["主域名","备用域1"]', type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMaxSize(20)
+  tags?: string[];
+
+  // ========== 配额 ==========
 
   @ApiPropertyOptional({ description: 'Daily send limit' })
   @IsOptional()

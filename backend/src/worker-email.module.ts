@@ -9,6 +9,7 @@ import { QUEUES } from './common/queues/queue-names';
 import { EmailComposeProcessor } from './modules/emails/email-compose.processor';
 import { EmailValidateProcessor } from './modules/emails/email-validate.processor';
 import { EmailSendProcessor } from './modules/emails/email-send.processor';
+import { OutboundModule } from './modules/outbound/outbound.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { EmailSendProcessor } from './modules/emails/email-send.processor';
     PrismaModule,
     TimelineModule,
     FollowUpRemindersModule,
+    OutboundModule,
   ],
   providers: [EmailComposeProcessor, EmailValidateProcessor, EmailSendProcessor],
 })

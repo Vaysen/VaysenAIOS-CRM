@@ -40,6 +40,9 @@ const SYSTEM_TITLE_EXACT = new Set([
   'online',
   'unavailable',
   'messages',
+  'recording',
+  'recording audio',
+  '\u5f55\u97f3\u4e2d',
 ]);
 
 const SYSTEM_TITLE_PREFIXES = [
@@ -49,6 +52,9 @@ const SYSTEM_TITLE_PREFIXES = [
   'last seen',
   'click here to view',
   'typing',
+  'recording',
+  'recording audio',
+  '\u5f55\u97f3',
 ] as const;
 
 /**
@@ -283,7 +289,7 @@ export function buildContactSnapshotFromElement(item: DomElement): WhatsAppConta
   if (!dataId) return null;
 
   const jidMatch = dataId.match(
-    /(\d{7,15}@(?:c\.us|s\.whatsapp\.net)|\d+@lid|\d{10,}@g\.us)/,
+    /(\d{7,15}@(?:c\.us|s\.whatsapp\.net)|\d+@lid|\d{10,}@(?:g\.us|broadcast))/,
   );
   const externalId = jidMatch ? jidMatch[1] : dataId;
 
@@ -291,7 +297,7 @@ export function buildContactSnapshotFromElement(item: DomElement): WhatsAppConta
   let phoneCandidate: string | null = null;
   let isGroup = false;
 
-  if (externalId.includes('@g.us')) {
+  if (externalId.includes('@g.us') || externalId.includes('@broadcast')) {
     isGroup = true;
     externalIdKind = 'unknown';
   } else if (externalId.endsWith('@lid')) {

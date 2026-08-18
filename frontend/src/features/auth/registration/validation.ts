@@ -2,7 +2,7 @@
  * 纯验证函数 (FF-005)
  *
  * 无副作用、无 I/O，可独立单元测试。
- * 规则：username ≥ 3 / password ≥ 6 / firstName 必填 / lastName 必填 / companyName 可空
+ * 规则：username ≥ 3 / password ≥ 12 / firstName 必填 / lastName 必填 / companyName 可空
  */
 import type { RegistrationValues, RegistrationErrors } from './types';
 import { REGISTRATION_LIMITS } from './schema';
@@ -23,7 +23,7 @@ export function validateField(
     case 'password':
       if (!value) return '密码不能为空';
       if (value.length < REGISTRATION_LIMITS.passwordMinLength) {
-        return '密码至少6位';
+        return '密码至少12位';
       }
       return undefined;
 

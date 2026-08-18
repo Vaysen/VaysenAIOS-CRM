@@ -3,7 +3,12 @@ import { AgentRunStatus } from '@prisma/client';
 import { DeepResearchController } from './deep-research.controller';
 
 const companyId = 'company-1';
-const operator = { id: 'user-1', companies: [{ id: companyId, role: 'sales_user' }] };
+const operator = {
+  id: 'user-1',
+  activeCompanyId: companyId,
+  activeCompany: { id: companyId, role: 'sales_user' },
+  companies: [{ id: companyId, role: 'sales_user' }],
+};
 
 describe('DeepResearchController tenant scope', () => {
   it('does not enqueue a lead outside the operator company/owner scope', async () => {
@@ -22,7 +27,8 @@ describe('DeepResearchController tenant scope', () => {
     expect(prisma.lead.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         id: 'other-lead',
-        OR: [{ companyId, ownerUserId: operator.id }],
+        companyId,
+        ownerUserId: operator.id,
       }),
     }));
     expect(runs.enqueueForLead).not.toHaveBeenCalled();

@@ -5,6 +5,8 @@ import { createPortal } from 'react-dom';
 import api from '@/lib/api';
 import { FileText, X, Sparkles, Loader2, CheckCircle2, RefreshCw, ExternalLink, Calculator, Package, Plus, Trash2, Search, DollarSign, ChevronDown, ChevronRight, FolderOpen, Send } from 'lucide-react';
 import { sanitizeRichHtml } from '@/lib/sanitize-rich-html';
+import { getRuntimeApiBaseUrl } from '@/lib/runtime-config';
+import { calculateQuotePreviewTotals } from '@/types/quote';
 
 interface Props {
   conversationId: string;
@@ -152,13 +154,15 @@ export function QuotePIForm({ conversationId, leadId, type, onClose, placement =
     setLineItems(prev => prev.length > 1 ? prev.filter((_, i) => i !== index) : prev);
   };
 
-  const subtotal = lineItems.reduce((sum, item) => sum + item.totalPrice, 0);
-  const discountNum = Number(discount) || 0;
+  const totals = calculateQuotePreviewTotals(
+    lineItems.map((item) => item.totalPrice),
+    discount,
+    taxRate,
+    sampleFee,
+    moldFee,
+  );
+  const { subtotal, discount: discountNum, taxAmount, sampleFee: sampleFeeNum, moldFee: moldFeeNum, totalAmount } = totals;
   const taxRateNum = Number(taxRate) || 0;
-  const sampleFeeNum = Number(sampleFee) || 0;
-  const moldFeeNum = Number(moldFee) || 0;
-  const taxAmount = ((subtotal - discountNum) * taxRateNum) / 100;
-  const totalAmount = subtotal - discountNum + taxAmount + sampleFeeNum + moldFeeNum;
 
   const handleConfirm = async () => {
     setConfirming(true);
@@ -186,8 +190,8 @@ export function QuotePIForm({ conversationId, leadId, type, onClose, placement =
         tradeTerms,
         paymentTerms,
         deliveryTime,
-        sampleFee: sampleFee || undefined,
-        moldFee: moldFee || undefined,
+        sampleFee: sampleFee === '' ? undefined : Number(sampleFee),
+        moldFee: moldFee === '' ? undefined : Number(moldFee),
         discount: discountNum,
         taxRate: taxRateNum,
         notes,
@@ -209,7 +213,7 @@ export function QuotePIForm({ conversationId, leadId, type, onClose, placement =
   const loadPreview = async () => {
     if (!quoteResult?.id || previewHtml) return;
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
+       const apiUrl = getRuntimeApiBaseUrl();
       const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') || '' : '';
       const res = await fetch(`${apiUrl}/quotes/${quoteResult.id}/pi`, {
         headers: { 'Authorization': `Bearer ${token}` },
@@ -226,7 +230,7 @@ export function QuotePIForm({ conversationId, leadId, type, onClose, placement =
     if (!quoteResult?.id) return;
     setPdfLoading(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
+       const apiUrl = getRuntimeApiBaseUrl();
       const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') || '' : '';
       const res = await fetch(`${apiUrl}/quotes/${quoteResult.id}/pi`, {
         headers: { 'Authorization': `Bearer ${token}` },
@@ -504,12 +508,12 @@ export function QuotePIForm({ conversationId, leadId, type, onClose, placement =
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-[10px] text-gray-500 mb-0.5 block">样品费 ({currency})</label>
-                <input type="number" value={sampleFee} onChange={e => setSampleFee(e.target.value === '' ? '' : Number(e.target.value))}
+                <input type="number" min="0" max="99999999.99" step="0.01" value={sampleFee} onChange={e => setSampleFee(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full border rounded px-2.5 py-1.5 text-[11px] outline-none focus:border-blue-400" />
               </div>
               <div>
                 <label className="text-[10px] text-gray-500 mb-0.5 block">开模费 ({currency})</label>
-                <input type="number" value={moldFee} onChange={e => setMoldFee(e.target.value === '' ? '' : Number(e.target.value))}
+                <input type="number" min="0" max="99999999.99" step="0.01" value={moldFee} onChange={e => setMoldFee(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full border rounded px-2.5 py-1.5 text-[11px] outline-none focus:border-blue-400" />
               </div>
             </div>
@@ -589,7 +593,7 @@ function PreviewContent({ quoteId }: { quoteId: string }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
+         const apiUrl = getRuntimeApiBaseUrl();
         const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') || '' : '';
         const res = await fetch(`${apiUrl}/quotes/${quoteId}/pi`, {
           headers: { 'Authorization': `Bearer ${token}` },

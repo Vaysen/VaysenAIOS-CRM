@@ -6,6 +6,9 @@ const SYSTEM_TEXT_EXACT = new Set([
   'online',
   'unavailable',
   'messages',
+  'recording',
+  'recording audio',
+  '\u5f55\u97f3\u4e2d',
 ]);
 
 const SYSTEM_TEXT_PREFIXES = [
@@ -15,6 +18,9 @@ const SYSTEM_TEXT_PREFIXES = [
   'last seen',
   'click here to view',
   'typing',
+  'recording',
+  'recording audio',
+  '\u5f55\u97f3',
 ] as const;
 
 /** 状态文案绝不能成为 CRM 客户名。未知/过长输入也按不可信处理。 */
@@ -31,8 +37,27 @@ export function sanitizeWhatsAppDisplayName(input: unknown): string | null {
 
 /** 只保留可信 JID 提供的完整号码；不做尾号推断。 */
 export function normalizeWhatsAppPhone(input: unknown): string {
+  const raw = String(input ?? '').trim().toLowerCase();
+  if (raw.includes('@lid') || raw.includes('@jid') || raw.includes('@g.us') || raw.includes('@broadcast')) {
+    return '';
+  }
   const digits = String(input ?? '').replace(/\D/g, '');
   return digits.startsWith('00') ? digits.slice(2) : digits;
+}
+
+/**
+ * Returns an E.164 value only when the source already contains a complete
+ * international number. JID/LID values remain channel identities and are
+ * deliberately rejected here.
+ */
+export function normalizeWhatsAppE164(input: unknown): string | null {
+  const raw = String(input ?? '').trim();
+  const normalized = normalizeWhatsAppPhone(raw);
+  if (!normalized || normalized.length < 8 || normalized.length > 15) return null;
+  if (!raw.startsWith('+') && !raw.startsWith('00') && raw.includes('@') && !raw.toLowerCase().endsWith('@c.us') && !raw.toLowerCase().endsWith('@s.whatsapp.net')) {
+    return null;
+  }
+  return `+${normalized}`;
 }
 
 export function normalizeWhatsAppName(input: unknown): string {

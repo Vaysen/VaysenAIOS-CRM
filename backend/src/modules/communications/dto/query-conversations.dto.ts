@@ -39,6 +39,16 @@ export class QueryConversationsDto {
   @IsString()
   leadId?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by normalized E.164 phone or WhatsApp JID' })
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by WhatsApp provider session ID' })
+  @IsOptional()
+  @IsString()
+  sessionId?: string;
+
   @ApiPropertyOptional({ description: 'Filter by assigned user ID' })
   @IsOptional()
   @IsString()

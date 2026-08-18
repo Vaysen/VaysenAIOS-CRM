@@ -15,6 +15,13 @@ function safeReleaseTag(value: string | undefined) {
     : 'unknown';
 }
 
+function safeServerVersion(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(normalized)
+    ? normalized
+    : 'unknown';
+}
+
 function readBuildRevision(env: NodeJS.ProcessEnv) {
   if (env.BUILD_REVISION) return safeRevision(env.BUILD_REVISION);
   try {
@@ -27,8 +34,10 @@ function readBuildRevision(env: NodeJS.ProcessEnv) {
 export function buildHealthPayload(env: NodeJS.ProcessEnv = process.env) {
   const runtimeCommit = safeRevision(env.RELEASE_COMMIT);
   const buildCommit = readBuildRevision(env);
+  const serverVersion = safeServerVersion(env.RELEASE_VERSION || env.APP_VERSION || env.VERSION);
   return {
     status: 'ok',
+    serverVersion,
     release: {
       commit: runtimeCommit,
       commitShort: safeRevision(env.RELEASE_COMMIT_SHORT),

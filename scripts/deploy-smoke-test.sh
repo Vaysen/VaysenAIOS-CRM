@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Vaysen AI CRM — 最小部署冒烟测试（容器内部，不依赖外网 DNS/证书）
+# Vaysen Pilot — 最小部署冒烟测试（容器内部，不依赖外网 DNS/证书）
 # =============================================================================
 # 覆盖 TASK-109 验收项 #8：主页、health、登录、数据库、Redis、队列、上传目录
 #
@@ -83,13 +83,13 @@ frontend_asset_probe() {
 }
 
 echo -e "${YELLOW}============================================${NC}"
-echo -e "${YELLOW}  Vaysen AI CRM 最小部署冒烟测试${NC}"
+echo -e "${YELLOW}  Vaysen Pilot 最小部署冒烟测试${NC}"
 echo -e "${YELLOW}  $(date '+%Y-%m-%d %H:%M:%S')${NC}"
 echo -e "${YELLOW}============================================${NC}"
 
 # 镜像自身也必须携带不可变 revision。只检查容器 label 会把 Compose
 # 运行时元数据误当成镜像溯源，无法证明磁盘上的镜像确由本次源码构建。
-for image in backend frontend backend-worker python-service; do
+for image in backend frontend backend-worker; do
     image_ref="vaysen-crm-${image}:${RELEASE_COMMIT_SHORT:-}"
     image_revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref" 2>/dev/null || true)"
     if [ -n "${RELEASE_COMMIT:-}" ] && [ "$image_revision" = "$RELEASE_COMMIT" ]; then
@@ -189,7 +189,7 @@ done
 searx_evidence_ready() {
   docker exec vaysen-crm-backend node -e '
 fetch("http://searxng:8080/search?q=OpenAI+official+company+website&format=json&language=en", {
-  headers: { Accept: "application/json", "User-Agent": "Vaysen AI CRM/2.0 evidence-research" },
+  headers: { Accept: "application/json", "User-Agent": "VaysenCRM/2.0 evidence-research" },
   signal: AbortSignal.timeout(20000),
 })
   .then(async (response) => {

@@ -1,5 +1,5 @@
 /**
- * Vaysen AI CRM — Preview Demo Data Seed
+ * Vaysen Trade OS — Preview Demo Data Seed
  * Safe preview data: no real email, no WhatsApp send, AI test mode.
  * Run: npx ts-node prisma/seed-preview.ts
  */
@@ -22,7 +22,7 @@ const DEMO_CUSTOMERS = [
 ];
 
 async function main() {
-  console.log('=== Vaysen AI CRM Preview Demo Data Seed ===');
+  console.log('=== Vaysen Preview Demo Data Seed ===');
   const company = await prisma.company.findFirst({ where: { isActive: true } });
   if (!company) throw new Error('No active company. Run create-accounts first.');
   const cid = company.id;

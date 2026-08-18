@@ -21,7 +21,7 @@ const workspacePages = new Set([
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { sidebarOpen } = useUIStore();
+  const { sidebarOpen, setSidebarOpen } = useUIStore();
   const { user } = useAuthStore();
   const [showAutoPopup, setShowAutoPopup] = useState(false);
   const [assignmentNotice, setAssignmentNotice] = useState<{ total: number } | null>(null);
@@ -66,6 +66,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const isWhatsAppChatPage = pathname === '/whatsapp/chat';
   const isWhatsAppBroadcastPage = pathname === '/whatsapp/broadcast';
 
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setSidebarOpen(false);
+    }
+  }, [setSidebarOpen]);
+
   // 全局路由监听：离开 WhatsApp 聊天页时隐藏 WebContentsView
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -81,7 +87,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-muted/30 text-foreground">
       <Sidebar />
-      <div className={cn('transition-all duration-300', sidebarOpen ? 'ml-60' : 'ml-16')}>
+      <div className={cn('flex min-h-screen min-w-0 flex-col transition-all duration-300', sidebarOpen ? 'ml-16 lg:ml-60' : 'ml-16')}>
         <Header />
         {showBackToWorkspace && (
           <div className="border-b border-border bg-background/90 px-6 py-2 backdrop-blur">
@@ -95,9 +101,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
         )}
         <main className={cn(
-          'mx-auto w-full max-w-[1800px]',
+          'mx-auto flex min-h-0 w-full max-w-[1800px] flex-1 flex-col',
           // WhatsApp 聊天页和群发页不需要 padding，让 WebContentsView 精确贴合
-          (isWhatsAppChatPage || isWhatsAppBroadcastPage) ? 'p-0' : 'p-5 lg:p-6'
+          (isWhatsAppChatPage || isWhatsAppBroadcastPage) ? 'overflow-hidden p-0' : 'p-5 lg:p-6'
         )}>{children}</main>
       </div>
 

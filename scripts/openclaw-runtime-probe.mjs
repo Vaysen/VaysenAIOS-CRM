@@ -88,7 +88,7 @@ async function run() {
     || adapter?.adapterReady !== true
     || adapter?.brokerConfigured !== true
     || adapter?.ownerNotificationReady !== true) {
-    throw new Error('Vaysen AI CRM adapter health contract failed');
+    throw new Error('Vaysen adapter health contract failed');
   }
   const rpc = (method) => requestJson('/api/v1/admin/rpc', {
     method: 'POST',

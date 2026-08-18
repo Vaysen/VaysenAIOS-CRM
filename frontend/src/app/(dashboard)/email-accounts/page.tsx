@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/authStore';
 import { useT } from '@/i18n/use-translation';
-import { ArrowLeft, Plus, Trash2, Pencil, Play, Send, Power, PowerOff } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Pencil, Play, Send, Power, PowerOff, Mail } from 'lucide-react';
+import { createClientUuid } from '@/lib/client-id';
 
 interface EmailAccount {
   id: string; senderName: string; senderEmail: string; smtpHost: string; smtpPort: number;
@@ -13,6 +14,13 @@ interface EmailAccount {
   sendIntervalSeconds: number; warmupEnabled: boolean; status: string;
   lastTestedAt?: string; failureCount: number; spfConfigured: boolean; dkimConfigured: boolean;
   dmarcConfigured: boolean; createdAt: string; userId?: string; replyToEmail?: string;
+  accountRole?: string; tags?: string[];
+}
+interface VerifiedLeadOption {
+  id: string;
+  companyName?: string | null;
+  contactEmail: string;
+  emailVerificationStatus: string;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -21,6 +29,12 @@ const STATUS_COLORS: Record<string, string> = {
   testing: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
   failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
   suspended: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+};
+
+const ROLE_META: Record<string, { label: string; cls: string }> = {
+  MARKETING: { label: '营销邮箱', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' },
+  CORE: { label: '核心邮箱', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
+  SUPPORT: { label: '客服邮箱', cls: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
 };
 
 export default function EmailAccountsPage() {
@@ -32,8 +46,12 @@ export default function EmailAccountsPage() {
   const [resultMsg, setResultMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [testEmail, setTestEmail] = useState('');
+  const [testLeadId, setTestLeadId] = useState('');
+  const [verifiedLeads, setVerifiedLeads] = useState<VerifiedLeadOption[]>([]);
+  const testActionRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const [showTestModal, setShowTestModal] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [users, setUsers] = useState<any[]>([]);
@@ -48,13 +66,14 @@ export default function EmailAccountsPage() {
       setLoading(true); setError(null);
       const params: any = { page, limit: 20 };
       if (statusFilter) params.status = statusFilter;
+      if (roleFilter) params.accountRole = roleFilter;
       const res = await api.get('/email-accounts', { params });
       setAccounts(res.data.data || []);
       setTotalPages(res.data.meta?.totalPages || 1);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to load email accounts');
     } finally { setLoading(false); }
-  }, [page, statusFilter]);
+  }, [page, statusFilter, roleFilter]);
 
   useEffect(() => { fetchAccounts(); }, [fetchAccounts]);
   useEffect(() => { api.get('/users', { params: { limit: 100 } }).then(r => setUsers(r.data?.data || [])).catch((error) => { console.error('[Frontend] background operation failed:', error); }); }, []);
@@ -62,6 +81,18 @@ export default function EmailAccountsPage() {
     api.get('/integrations/brevo/status')
       .then((response) => setBrevoStatus(response.data))
       .catch(() => setBrevoStatus({ enabled: false }));
+  }, []);
+  useEffect(() => {
+    api.get('/leads', { params: { page: 1, limit: 100 } })
+      .then((response) => {
+        const rows = Array.isArray(response.data?.data) ? response.data.data : [];
+        setVerifiedLeads(rows.filter((lead: VerifiedLeadOption) => (
+          !!lead.contactEmail
+          && ['smtp_verified', 'official_page_verified', 'verified_public_source']
+            .includes(lead.emailVerificationStatus)
+        )));
+      })
+      .catch(() => setVerifiedLeads([]));
   }, []);
 
   const handleAssignUser = async (accountId: string, userId: string) => {
@@ -109,12 +140,22 @@ export default function EmailAccountsPage() {
   };
 
   const handleSendTest = async (id: string) => {
-    if (!testEmail) return;
+    if (!testEmail || !testLeadId) return;
     try {
       setActionLoading(id); setResultMsg(null);
-      const res = await api.post(`/email-accounts/${id}/send-test`, { recipientEmail: testEmail });
+      const fingerprint = `${id}:${testLeadId}:${testEmail.toLowerCase()}`;
+      if (testActionRef.current?.fingerprint !== fingerprint) {
+        testActionRef.current = { fingerprint, key: `smtp-test-ui:${createClientUuid()}` };
+      }
+      const res = await api.post(`/email-accounts/${id}/send-test`, {
+        recipientEmail: testEmail,
+        leadId: testLeadId,
+      }, {
+        headers: { 'Idempotency-Key': testActionRef.current.key },
+      });
       setResultMsg({ type: res.data.success ? 'success' : 'error', text: res.data.message });
-      setShowTestModal(null); setTestEmail('');
+      testActionRef.current = null;
+      setShowTestModal(null); setTestEmail(''); setTestLeadId('');
     } catch (err: any) {
       setResultMsg({ type: 'error', text: err.response?.data?.message || 'Send failed' });
     } finally { setActionLoading(null); }
@@ -138,13 +179,20 @@ export default function EmailAccountsPage() {
           <h2 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">{t('emailAccounts.title')}</h2>
           <p className="text-gray-500 dark:text-gray-400">{t('emailAccounts.subtitle')}</p>
         </div>
-        {canWrite && (
-          <Link href="/email-accounts/new"
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
-            <Plus className="h-4 w-4" />
-            {t('emailAccounts.addAccount')}
+        <div className="flex items-center gap-2">
+          <Link href="/imap-inbound"
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+            <Mail className="h-4 w-4" />
+            IMAP 收件配置
           </Link>
-        )}
+          {canWrite && (
+            <Link href="/email-accounts/new"
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+              <Plus className="h-4 w-4" />
+              {t('emailAccounts.addAccount')}
+            </Link>
+          )}
+        </div>
       </div>
 
       {resultMsg && (
@@ -183,6 +231,13 @@ export default function EmailAccountsPage() {
             <option key={s} value={s}>{getStatusLabel(s)}</option>
           ))}
         </select>
+        <select value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
+          className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none">
+          <option value="">全部角色</option>
+          <option value="MARKETING">营销邮箱</option>
+          <option value="CORE">核心邮箱</option>
+          <option value="SUPPORT">客服邮箱</option>
+        </select>
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 overflow-hidden">
@@ -191,6 +246,7 @@ export default function EmailAccountsPage() {
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">{t('emailAccounts.table.sender')}</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">角色</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">归属业务员</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">{t('emailAccounts.table.smtpServer')}</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">{t('emailAccounts.table.status')}</th>
@@ -202,15 +258,25 @@ export default function EmailAccountsPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">{t('common.loading')}</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">{t('common.loading')}</td></tr>
               ) : accounts.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">{t('emailAccounts.noAccounts')}</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">{t('emailAccounts.noAccounts')}</td></tr>
               ) : (
                 accounts.map((a) => (
                   <tr key={a.id} className="border-b border-gray-100 dark:border-gray-800 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-900/30">
                     <td className="px-4 py-3">
                       <div className="font-medium text-gray-900 dark:text-white">{a.senderName}</div>
                       <div className="text-xs text-gray-400">{a.senderEmail}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${ROLE_META[a.accountRole || 'CORE']?.cls || ROLE_META.CORE.cls}`}>
+                          {ROLE_META[a.accountRole || 'CORE']?.label || '核心邮箱'}
+                        </span>
+                        {(a.tags || []).map((tag) => (
+                          <span key={tag} className="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">{tag}</span>
+                        ))}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       {canWrite ? (
@@ -310,15 +376,27 @@ export default function EmailAccountsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-white dark:bg-gray-950 rounded-xl border border-gray-200 dark:border-gray-800 p-6 w-full max-w-md shadow-xl">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">{t('emailAccounts.testModalTitle')}</h3>
-            <label className="block text-sm text-gray-500 mb-1">{t('emailAccounts.recipientEmail')}</label>
-            <input type="email" value={testEmail} onChange={(e) => setTestEmail(e.target.value)} placeholder="test@example.com"
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none mb-4" />
+            <label className="block text-sm text-gray-500 mb-1">Verified customer</label>
+            <select value={testLeadId} onChange={(event) => {
+              const lead = verifiedLeads.find((item) => item.id === event.target.value);
+              setTestLeadId(event.target.value);
+              setTestEmail(lead?.contactEmail || '');
+              testActionRef.current = null;
+            }}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none mb-4">
+              <option value="">Select a verified lead</option>
+              {verifiedLeads.map((lead) => (
+                <option key={lead.id} value={lead.id}>
+                  {lead.companyName || lead.contactEmail} — {lead.contactEmail}
+                </option>
+              ))}
+            </select>
             <div className="flex justify-end gap-2">
               <button onClick={() => setShowTestModal(null)}
                 className="rounded-lg border border-gray-300 dark:border-gray-700 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
                 {t('common.cancel')}
               </button>
-              <button onClick={() => handleSendTest(showTestModal)} disabled={!testEmail || actionLoading === showTestModal}
+              <button onClick={() => handleSendTest(showTestModal)} disabled={!testEmail || !testLeadId || actionLoading === showTestModal}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
                 {actionLoading === showTestModal ? t('common.loading') : t('emailAccounts.sendTest')}
               </button>

@@ -4,6 +4,16 @@ import { resolve } from 'path';
 import { QuotesController } from './quotes.controller';
 
 describe('QuotesController retired WhatsApp PDF delivery', () => {
+  it('keeps quote conversion on the single service endpoint', async () => {
+    const converted = { id: 'order-1', orderNo: 'ORD-20260803-ABCDEF', stage: 'won' };
+    const quotesService = { convertToOrder: jest.fn().mockResolvedValue(converted) };
+    const controller = new QuotesController(quotesService as any);
+    const user = { id: 'user-1', activeCompanyId: 'company-1' };
+
+    await expect(controller.convertToOrder('quote-1', user)).resolves.toBe(converted);
+    expect(quotesService.convertToOrder).toHaveBeenCalledWith('quote-1', user);
+  });
+
   it('returns 410 without generating a PDF, sending WhatsApp media, or writing a message', () => {
     const quotesService = {
       generatePiHtml: jest.fn(),

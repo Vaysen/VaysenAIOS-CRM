@@ -17,11 +17,16 @@ import { normalizePhoneIdentity } from '../customer-identity/domain/normalize-ph
 import { sanitizeContactNameCandidate } from '../customer-identity/domain/sanitize-display-text';
 import { WhatsAppContactSnapshotDto } from './dto/electron-contacts.dto';
 import { OwnerNotificationService } from '../owner-notifications/owner-notification.service';
+import { WebsiteWhatsAppClickDto } from './dto/website-click.dto';
 import * as path from 'path';
 import * as fs from 'fs';
-import { createHash } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
+import { OutboundComplianceService } from '../outbound/outbound-compliance.service';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '../../common/security/safe-logging';
 
 const ELECTRON_AUTH_STATE_PREFIX = 'electron-account:';
+const EVOLUTION_AUTH_STATE_PREFIX = 'evolution-api:';
+const EVOLUTION_AUTH_STATE_PATTERN = /^evolution-api:[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const ELECTRON_ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 
 export interface WhatsAppProviderSendReceipt {
@@ -32,6 +37,15 @@ export interface WhatsAppProviderSendReceipt {
   messageId: string;
   status: 'accepted';
   acceptedAt: string;
+}
+
+export interface WhatsAppOutboundContext {
+  idempotencyKey: string;
+  leadId: string;
+  conversationId: string;
+  actorType?: 'HUMAN' | 'AGENT';
+  actionType?: string;
+  artifactSourceId?: string;
 }
 
 @Injectable()
@@ -46,7 +60,50 @@ export class WhatsAppService implements OnModuleInit {
     private eventBus: RealtimeEventBus,
     private identityResolver: IdentityResolutionService,
     private ownerNotificationService: OwnerNotificationService,
+    private outbound: OutboundComplianceService,
   ) {}
+
+  private logSafe(
+    level: 'log' | 'warn' | 'error' | 'debug',
+    eventCode: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    const message = safeLogEvent(eventCode, fields);
+    if (level === 'error') this.logger.error(message);
+    else if (level === 'warn') this.logger.warn(message);
+    else if (level === 'debug') this.logger.debug(message);
+    else this.logger.log(message);
+  }
+
+  private safeRef(value: unknown, domain: string): string | undefined {
+    const candidate = String(value ?? '').trim();
+    return candidate ? safeDigest(candidate, domain) : undefined;
+  }
+
+  private safeStatus(value: unknown): string {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    const mapped = normalized === 'waiting_scan' || normalized === 'pending_qr'
+      ? 'pending'
+      : normalized;
+    return [
+      'accepted', 'active', 'blocked', 'closed', 'connected', 'connecting',
+      'delivered', 'disconnected', 'error', 'failed', 'ignored', 'inactive',
+      'logged_in', 'offline', 'open', 'pending', 'ready', 'read',
+      'reconnecting', 'rejected', 'sent', 'success', 'unknown', 'updated',
+      'warning',
+    ].includes(mapped) ? mapped : 'unknown';
+  }
+
+  private safeContentType(value: unknown): string {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return ['audio', 'document', 'html', 'image', 'json', 'text', 'video'].includes(normalized)
+      ? normalized
+      : 'text';
+  }
+
+  private safeDirection(value: unknown): 'inbound' | 'outbound' | undefined {
+    return value === 'inbound' || value === 'outbound' ? value : undefined;
+  }
 
   // ════════════════════════════════════════════════════════════
   // TASK-102D: 联系人 / 消息统一走 IdentityResolutionService
@@ -153,16 +210,22 @@ export class WhatsAppService implements OnModuleInit {
         });
         synced++;
       } catch (err: any) {
-        this.logger.warn(
-          `[syncContacts] 跳过快照 ${snap.externalId}: ${err?.message}`,
-        );
+        this.logSafe('warn', 'whatsapp.contacts.snapshot_skipped', {
+          eventType: 'snapshot_skipped',
+          externalId: this.safeRef(snap.externalId, 'whatsapp-external-id'),
+          errorCategory: safeErrorCategory(err),
+        });
         skipped++;
       }
     }
 
-    this.logger.log(
-      `[syncContacts] companyId=${companyId} accountId=${accountId} synced=${synced} skipped=${skipped}`,
-    );
+    this.logSafe('log', 'whatsapp.contacts.sync_completed', {
+      eventType: 'sync_completed',
+      companyRef: this.safeRef(companyId, 'whatsapp-company'),
+      accountRef: this.safeRef(accountId, 'whatsapp-account'),
+      count: synced,
+      skipped,
+    });
     return { synced, skipped };
   }
 
@@ -309,9 +372,11 @@ export class WhatsAppService implements OnModuleInit {
           },
         });
       } catch (error: any) {
-        this.logger.error(
-          `Failed to write Electron WhatsApp mapping audit for ${session.id}: ${error?.message}`,
-        );
+        this.logSafe('error', 'whatsapp.session.mapping_audit_failed', {
+          eventType: 'mapping_audit_failed',
+          sessionRef: this.safeRef(session.id, 'whatsapp-session'),
+          errorCategory: safeErrorCategory(error),
+        });
       }
     }
 
@@ -319,13 +384,11 @@ export class WhatsAppService implements OnModuleInit {
   }
 
   private requireSelectedCompany(user: any, currentCompanyId: string): string {
-    const companyIds: string[] =
-      (user?.companies?.map((company: any) => company.id) as string[]) || [];
     const selectedCompanyId = currentCompanyId?.trim();
     if (!selectedCompanyId) {
       throw new BadRequestException('X-Company-Id is required for Electron WhatsApp ingestion');
     }
-    if (!companyIds.includes(selectedCompanyId)) {
+    if (this.requireActiveCompanyId(user) !== selectedCompanyId) {
       throw new ForbiddenException('Selected company is not available to the current user');
     }
     return selectedCompanyId;
@@ -395,11 +458,12 @@ export class WhatsAppService implements OnModuleInit {
       // Message ingestion is authoritative and must not be rolled back by a
       // secondary notification outage. Keep this log metadata-only: never log
       // provider ids, customer addresses, previews, or exception text.
-      this.logger.error(
-        `Owner WhatsApp notification enqueue failed ` +
-        `(company=${params.companyId}, source=${params.sourceType}, ` +
-        `error=${error?.name || error?.code || 'unknown'})`,
-      );
+      this.logSafe('error', 'whatsapp.owner_notification.failed', {
+        eventType: 'owner_notification_failed',
+        companyRef: this.safeRef(params.companyId, 'whatsapp-company'),
+        sourceType: params.sourceType,
+        errorCategory: safeErrorCategory(error),
+      });
     }
   }
 
@@ -413,7 +477,9 @@ export class WhatsAppService implements OnModuleInit {
     // sessions. Fail closed unless the production runtime explicitly opts in;
     // a missing or misspelled value must never touch live session state.
     if (process.env.WHATSAPP_RESTORE_SESSIONS !== 'true') {
-      this.logger.log('WhatsApp session restore is disabled for this backend instance');
+      this.logSafe('log', 'whatsapp.session.restore_disabled', {
+        eventType: 'restore_disabled',
+      });
       return;
     }
     // 延迟 3 秒启动，等待其他模块初始化完成
@@ -429,25 +495,36 @@ export class WhatsAppService implements OnModuleInit {
       });
 
       if (sessions.length === 0) {
-        this.logger.log('No WhatsApp sessions to restore');
+        this.logSafe('log', 'whatsapp.session.restore_empty', {
+          eventType: 'restore_empty',
+          count: 0,
+        });
         return;
       }
 
-      this.logger.log(`Restoring ${sessions.length} WhatsApp session(s)...`);
+      this.logSafe('log', 'whatsapp.session.restore_started', {
+        eventType: 'restore_started',
+        count: sessions.length,
+      });
 
       for (const session of sessions) {
         try {
           if (this.isElectronManagedSession(session)) {
-            this.logger.log(
-              `Skipping Electron-managed WhatsApp mapping ${session.sessionId} during Baileys restore`,
-            );
+            this.logSafe('log', 'whatsapp.session.restore_skipped', {
+              eventType: 'restore_skipped',
+              reasonCode: 'electron_managed',
+              sessionRef: this.safeRef(session.sessionId, 'whatsapp-session'),
+            });
             continue;
           }
           // 检查 auth state 目录是否存在
           const authDir = session.authStatePath || path.join(this.authStateBaseDir, session.sessionId);
           const fs = require('fs');
           if (!fs.existsSync(authDir)) {
-            this.logger.warn(`Auth state dir not found for session ${session.sessionId}, skipping`);
+            this.logSafe('warn', 'whatsapp.session.auth_state_missing', {
+              eventType: 'auth_state_missing',
+              sessionRef: this.safeRef(session.sessionId, 'whatsapp-session'),
+            });
             await this.prisma.whatsAppSession.update({
               where: { id: session.id },
               data: { status: 'disconnected' },
@@ -471,15 +548,18 @@ export class WhatsAppService implements OnModuleInit {
             },
           });
 
-          this.logger.log(
-            `Session ${session.sessionId} restored: status=${result.status}` +
-            (result.qrCode ? ' (needs QR scan)' : ' (connected automatically)'),
-          );
+          this.logSafe('log', 'whatsapp.session.restored', {
+            eventType: 'restored',
+            sessionRef: this.safeRef(session.sessionId, 'whatsapp-session'),
+            status: this.safeStatus(result.status),
+            hasQr: Boolean(result.qrCode),
+          });
         } catch (err: any) {
-          this.logger.error(
-            `Failed to restore session ${session.sessionId}: ${err?.message}`,
-            err?.stack,
-          );
+          this.logSafe('error', 'whatsapp.session.restore_failed', {
+            eventType: 'restore_failed',
+            sessionRef: this.safeRef(session.sessionId, 'whatsapp-session'),
+            errorCategory: safeErrorCategory(err),
+          });
           // 标记为断开，用户可以手动重连
           await this.prisma.whatsAppSession.update({
             where: { id: session.id },
@@ -488,31 +568,45 @@ export class WhatsAppService implements OnModuleInit {
         }
       }
     } catch (err: any) {
-      this.logger.error(`restoreSessions failed: ${err?.message}`, err?.stack);
+      this.logSafe('error', 'whatsapp.session.restore_failed', {
+        eventType: 'restore_failed',
+        errorCategory: safeErrorCategory(err),
+      });
     }
   }
 
-  /** Record a WhatsApp click from website and match/create lead */
-  async recordClick(params: {
-    whatsappNumber: string;
-    companySlug?: string;
-    companyId?: string;
-    contactName?: string;
-    companyName?: string;
-    country?: string;
-    sourceUrl?: string;
-    utmSource?: string;
-  }) {
-    let company = null;
-    if (params.companyId) {
-      company = await this.prisma.company.findUnique({ where: { id: params.companyId } });
-    } else if (params.companySlug) {
-      company = await this.prisma.company.findUnique({ where: { slug: params.companySlug } });
-    }
+  /**
+   * Record a signed website WhatsApp click. The source key is configured by the
+   * operator and binds exactly one public website origin to one CRM tenant.
+   * Client-supplied tenant selectors are deliberately absent from the DTO.
+   */
+  async recordClick(params: WebsiteWhatsAppClickDto, requestOrigin: string) {
+    const source = this.verifyWebsiteClickSource(params, requestOrigin);
+    const company = await this.prisma.company.findFirst({
+      where: { id: source.companyId, isActive: true },
+      select: { id: true },
+    });
     if (!company) {
-      company = await this.prisma.company.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'asc' } });
+      throw new ServiceUnavailableException('Website click destination is unavailable');
     }
-    if (!company) throw new NotFoundException('No active company');
+
+    await this.prisma.publicRequestNonce.deleteMany({
+      where: { expiresAt: { lt: new Date() } },
+    });
+    try {
+      await this.prisma.publicRequestNonce.create({
+        data: {
+          sourceKey: params.sourceKey,
+          nonce: params.nonce,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        },
+      });
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'P2002') {
+        throw new BadRequestException('Duplicate website click request');
+      }
+      throw error;
+    }
 
     const phoneDigits = (params.whatsappNumber || '').replace(/\D/g, '');
 
@@ -533,20 +627,28 @@ export class WhatsAppService implements OnModuleInit {
     // 网站提供的真实公司名(非 "WhatsApp: <phone>" 占位)回写到新建 Lead
     if (leadId && params.companyName && isNew) {
       await this.prisma.lead
-        .update({ where: { id: leadId }, data: { companyName: params.companyName } })
+        .updateMany({
+          where: { id: leadId, companyId: company.id },
+          data: { companyName: params.companyName },
+        })
         .catch(() => {});
     }
 
     if (!leadId || !contactPointId) {
       // 号码无法解析为有效身份时,仅记录点击活动,不创建会话
       this.logger.warn(
-        `[recordClick] whatsappNumber=${params.whatsappNumber} 无法解析为身份(action=${resolved.action}),仅记录点击`,
+        `[recordClick] verified source produced unresolved identity (action=${resolved.action})`,
       );
-      return { leadId: leadId || null, contactPointId: contactPointId || null, isNew };
+      return { accepted: true, matched: false, isNew };
     }
 
     const existingConv = await this.prisma.conversation.findFirst({
-      where: { leadId, channel: 'whatsapp', status: 'active' },
+      where: {
+        companyId: company.id,
+        leadId,
+        channel: 'whatsapp',
+        status: 'active',
+      },
     });
     if (!existingConv) {
       await this.prisma.conversation.create({
@@ -573,25 +675,165 @@ export class WhatsAppService implements OnModuleInit {
       },
     });
 
-    return { leadId, contactPointId, isNew };
+    return { accepted: true, matched: true, isNew };
+  }
+
+  private verifyWebsiteClickSource(
+    params: WebsiteWhatsAppClickDto,
+    requestOrigin: string,
+  ): { companyId: string } {
+    const sources = this.websiteClickSources();
+    const source = sources.find((candidate) => candidate.sourceKey === params.sourceKey);
+    if (!source) {
+      throw new ForbiddenException('Untrusted website click source');
+    }
+
+    let normalizedOrigin: string;
+    try {
+      normalizedOrigin = new URL(requestOrigin).origin;
+    } catch {
+      throw new ForbiddenException('A trusted website origin is required');
+    }
+    if (!source.allowedOrigins.includes(normalizedOrigin)) {
+      throw new ForbiddenException('Untrusted website origin');
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (
+      !Number.isSafeInteger(params.timestamp)
+      || Math.abs(nowSeconds - params.timestamp) > 300
+    ) {
+      throw new BadRequestException('Website click signature has expired');
+    }
+
+    const canonical = [
+      'v1',
+      params.sourceKey,
+      String(params.timestamp),
+      params.nonce,
+      params.whatsappNumber,
+      params.contactName || '',
+      params.companyName || '',
+      params.country || '',
+      params.sourceUrl || '',
+      params.utmSource || '',
+    ].join('\n');
+    const expected = createHmac('sha256', source.secret)
+      .update(canonical, 'utf8')
+      .digest();
+    const supplied = Buffer.from(params.signature, 'hex');
+    if (
+      supplied.length !== expected.length
+      || !timingSafeEqual(expected, supplied)
+    ) {
+      throw new ForbiddenException('Invalid website click signature');
+    }
+    return { companyId: source.companyId };
+  }
+
+  private websiteClickSources(): Array<{
+    sourceKey: string;
+    companyId: string;
+    secret: string;
+    allowedOrigins: string[];
+  }> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(process.env.WHATSAPP_CLICK_SOURCES || '[]');
+    } catch {
+      throw new ServiceUnavailableException(
+        'Website click sources are not securely configured',
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new ServiceUnavailableException(
+        'Website click sources are not securely configured',
+      );
+    }
+    const normalized = parsed.map((item: any) => {
+      const allowedOrigins = Array.isArray(item?.allowedOrigins)
+        ? item.allowedOrigins.map((value: unknown) => {
+            try {
+              return new URL(String(value)).origin;
+            } catch {
+              return '';
+            }
+          }).filter(Boolean)
+        : [];
+      return {
+        sourceKey: String(item?.sourceKey || ''),
+        companyId: String(item?.companyId || ''),
+        secret: String(item?.secret || ''),
+        allowedOrigins,
+      };
+    });
+    const valid = normalized.every((item) =>
+      /^[A-Za-z0-9._-]{3,64}$/.test(item.sourceKey)
+      && /^[A-Za-z0-9._:-]{1,128}$/.test(item.companyId)
+      && item.secret.length >= 32
+      && !/change-me|replace-with|example|placeholder/i.test(item.secret)
+      && item.allowedOrigins.length > 0,
+    );
+    const sourceKeys = new Set(normalized.map((item) => item.sourceKey));
+    if (!valid || normalized.length === 0 || sourceKeys.size !== normalized.length) {
+      throw new ServiceUnavailableException(
+        'Website click sources are not securely configured',
+      );
+    }
+    return normalized;
   }
 
   // ========== Account Management (WhatsAppSession) ==========
 
   async listAccounts(currentUser: any) {
-    const companyIds = currentUser?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) return [];
-    return this.prisma.whatsAppSession.findMany({
-      where: { companyId: { in: companyIds } },
+    const companyId = this.requireActiveCompanyId(currentUser);
+    await this.assertActiveAdmin(currentUser, companyId);
+    const sessions = await this.prisma.whatsAppSession.findMany({
+      where: { companyId },
+      select: this.safeAccountSelect(),
       orderBy: { createdAt: 'desc' },
     });
+    // R111 批次C：今日已发计数（CommunicationMessage outbound today，按会话聚合）
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const counts = await this.prisma.communicationMessage.groupBy({
+      by: ['conversationId'],
+      where: {
+        direction: 'outbound',
+        createdAt: { gte: todayStart },
+        conversation: { channel: 'whatsapp', whatsappSessionId: { in: sessions.map((s) => s.id) } },
+      },
+      _count: { _all: true },
+    });
+    const sessionIdToCount = new Map<string, number>();
+    if (counts.length > 0) {
+      const conversations = await this.prisma.conversation.findMany({
+        where: { id: { in: counts.map((c) => c.conversationId) }, channel: 'whatsapp' },
+        select: { id: true, whatsappSessionId: true },
+      });
+      for (const row of counts) {
+        const conv = conversations.find((c) => c.id === row.conversationId);
+        if (conv?.whatsappSessionId) {
+          sessionIdToCount.set(
+            conv.whatsappSessionId,
+            (sessionIdToCount.get(conv.whatsappSessionId) ?? 0) + row._count._all,
+          );
+        }
+      }
+    }
+    return sessions.map((session) => ({
+      ...this.publicAccount(session),
+      sendLimitPerHour: session.sendLimitPerHour,
+      sendLimitDaily: session.sendLimitDaily,
+      sendIntervalSeconds: session.sendIntervalSeconds,
+      lastSentAt: session.lastSentAt ?? null,
+      todaySentCount: sessionIdToCount.get(session.id) ?? 0,
+    }));
   }
 
   async createAccount(dto: { name: string; phone?: string }, currentUser: any) {
-    const companyIds = currentUser?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) throw new BadRequestException('No company access');
-
-    const companyId = companyIds[0];
+    const companyId = this.requireActiveCompanyId(currentUser);
+    await this.assertActiveAdmin(currentUser, companyId);
     const sessionId = `wa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const authStateDir = path.join(this.authStateBaseDir, sessionId);
 
@@ -624,22 +866,27 @@ export class WhatsAppService implements OnModuleInit {
       });
 
       return {
-        ...session,
+        ...this.publicAccount(session),
         qrCode: result.qrCode,
         status: result.status,
       };
     } catch (err: any) {
-      this.logger.error(`Failed to init WhatsApp session: ${err?.message}`);
+      this.logSafe('error', 'whatsapp.session.init_failed', {
+        eventType: 'init_failed',
+        sessionRef: this.safeRef(session.id, 'whatsapp-session'),
+        errorCategory: safeErrorCategory(err),
+      });
       await this.prisma.whatsAppSession.update({
         where: { id: session.id },
         data: { status: 'disconnected' },
       });
-      throw new BadRequestException(`WhatsApp session init failed: ${err?.message}`);
+      throw new BadRequestException('WhatsApp session initialization failed');
     }
   }
 
   async getQrCode(accountId: string, currentUser: any) {
     const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
     if (session.status === 'connected') {
       return { status: 'connected', qrCode: null, phoneNumber: session.phoneNumber };
     }
@@ -683,6 +930,7 @@ export class WhatsAppService implements OnModuleInit {
 
   async reconnect(accountId: string, currentUser: any) {
     const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
 
     // 仅移除旧 socket，保留 EventEmitter（避免竞争条件）
     this.adapter.removeSocket(session.sessionId);
@@ -713,6 +961,7 @@ export class WhatsAppService implements OnModuleInit {
 
   async disconnect(accountId: string, currentUser: any) {
     const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
     await this.adapter.disconnect(session.sessionId);
     await this.prisma.whatsAppSession.update({
       where: { id: session.id },
@@ -724,8 +973,78 @@ export class WhatsAppService implements OnModuleInit {
     return { success: true };
   }
 
+  /**
+   * R111 批次C：编辑账号名称/风控参数（仅 admin）。
+   * sendLimitPerHour / sendLimitDaily / sendIntervalSeconds 为账号级营销限速。
+   */
+  async updateAccount(
+    accountId: string,
+    dto: {
+      name?: string;
+      phone?: string;
+      sendLimitPerHour?: number;
+      sendLimitDaily?: number;
+      sendIntervalSeconds?: number;
+    },
+    currentUser: any,
+  ) {
+    const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
+    if (
+      dto.sendLimitPerHour !== undefined
+      && (!Number.isInteger(dto.sendLimitPerHour) || dto.sendLimitPerHour < 1 || dto.sendLimitPerHour > 1000)
+    ) {
+      throw new BadRequestException('sendLimitPerHour must be an integer between 1 and 1000');
+    }
+    if (
+      dto.sendLimitDaily !== undefined
+      && (!Number.isInteger(dto.sendLimitDaily) || dto.sendLimitDaily < 1 || dto.sendLimitDaily > 10000)
+    ) {
+      throw new BadRequestException('sendLimitDaily must be an integer between 1 and 10000');
+    }
+    if (
+      dto.sendIntervalSeconds !== undefined
+      && (!Number.isInteger(dto.sendIntervalSeconds) || dto.sendIntervalSeconds < 0 || dto.sendIntervalSeconds > 3600)
+    ) {
+      throw new BadRequestException('sendIntervalSeconds must be an integer between 0 and 3600');
+    }
+    const updated = await this.prisma.whatsAppSession.update({
+      where: { id: session.id },
+      data: {
+        accountName: dto.name !== undefined ? (dto.name?.trim() || session.accountName) : undefined,
+        phoneNumber: dto.phone !== undefined ? (dto.phone?.trim() || null) : undefined,
+        sendLimitPerHour: dto.sendLimitPerHour,
+        sendLimitDaily: dto.sendLimitDaily,
+        sendIntervalSeconds: dto.sendIntervalSeconds,
+      },
+      select: this.safeAccountSelect(),
+    });
+    return {
+      ...this.publicAccount(updated),
+      sendLimitPerHour: updated.sendLimitPerHour,
+      sendLimitDaily: updated.sendLimitDaily,
+      sendIntervalSeconds: updated.sendIntervalSeconds,
+      lastSentAt: updated.lastSentAt ?? null,
+    };
+  }
+
+  /**
+   * R111 批次C：删除账号 — 有历史消息则归档（status=archived），否则物理删除。
+   */
   async removeAccount(accountId: string, currentUser: any) {
     const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
+    const hasHistory = await this.prisma.communicationMessage.count({
+      where: { conversation: { channel: 'whatsapp', whatsappSessionId: session.id } },
+      take: 1,
+    });
+    if (hasHistory > 0) {
+      await this.adapter.disconnect(session.sessionId);
+      return this.prisma.whatsAppSession.update({
+        where: { id: session.id },
+        data: { status: 'archived', disconnectedAt: new Date() },
+      });
+    }
     await this.adapter.disconnect(session.sessionId);
     return this.prisma.whatsAppSession.delete({ where: { id: accountId } });
   }
@@ -734,10 +1053,11 @@ export class WhatsAppService implements OnModuleInit {
     accountId: string,
     dto: { to: string; text: string },
     currentUser: any,
+    compliance?: WhatsAppOutboundContext,
   ) {
     const session = await this.getAccountOrFail(accountId, currentUser);
     const jid = this.buildRecipientJid(dto.to);
-    const receipt = await this.sendTextForSession(session, jid, dto.text);
+    const receipt = await this.sendTextWithReceipt(accountId, dto.to, dto.text, currentUser, compliance);
 
     // Persist through the same idempotent provider-ingestion path used by
     // Baileys `fromMe` writeback. If the socket echoes this message later, the
@@ -774,10 +1094,44 @@ export class WhatsAppService implements OnModuleInit {
     to: string,
     text: string,
     currentUser: any,
+    compliance?: WhatsAppOutboundContext,
   ): Promise<WhatsAppProviderSendReceipt> {
     const session = await this.getAccountOrFail(accountId, currentUser);
-    const jid = this.buildRecipientJid(to);
-    return this.sendTextForSession(session, jid, text);
+    const execution = await this.outbound.execute({
+      companyId: session.companyId,
+      operatorUser: currentUser,
+      actorType: compliance?.actorType === 'AGENT' ? 'AGENT' : 'HUMAN',
+      channel: 'WHATSAPP',
+      actionType: compliance?.actionType || 'WHATSAPP_TEXT',
+      idempotencyKey: compliance?.idempotencyKey || '',
+      leadId: compliance?.leadId || '',
+      conversationId: compliance?.conversationId,
+      whatsappSessionId: session.id,
+      targetAddress: to,
+      body: text,
+      contentType: 'text',
+    }, async (_outboundArtifacts, envelope) => {
+      const receipt = await this.sendTextForSession(
+        session,
+        this.buildRecipientJid(envelope.targetAddress),
+        envelope.body,
+        envelope.signal,
+      );
+      return {
+        provider: receipt.provider,
+        receiptId: receipt.providerMessageId,
+        acceptedAt: receipt.acceptedAt,
+      };
+    });
+    const acceptedAt = new Date(execution.receipt.acceptedAt || new Date()).toISOString();
+    return {
+      success: true,
+      provider: 'baileys',
+      providerMessageId: execution.receipt.receiptId,
+      messageId: execution.receipt.receiptId,
+      status: 'accepted',
+      acceptedAt,
+    };
   }
 
   private buildRecipientJid(to: string): string {
@@ -794,7 +1148,13 @@ export class WhatsAppService implements OnModuleInit {
     session: any,
     jid: string,
     text: string,
+    signal?: AbortSignal,
   ): Promise<WhatsAppProviderSendReceipt> {
+    if (this.isElectronManagedSession(session)) {
+      throw new ServiceUnavailableException(
+        'Electron-managed WhatsApp sessions cannot fall back to an unbound Baileys socket',
+      );
+    }
     if (session.status !== 'connected' || !this.adapter.isConnected(session.sessionId)) {
       throw new ServiceUnavailableException('WhatsApp account is not connected');
     }
@@ -802,12 +1162,13 @@ export class WhatsAppService implements OnModuleInit {
       throw new BadRequestException('WhatsApp message text is required');
     }
 
-    const result = await this.adapter.sendTextMessage(session.sessionId, jid, text);
-    const providerMessageId = result.success ? result.messageId?.trim() : '';
-    if (!result.success || !providerMessageId) {
-      throw new ServiceUnavailableException(
-        `WhatsApp provider rejected the message: ${result.error || 'missing provider message id'}`,
-      );
+    const result = await this.adapter.sendTextMessage(session.sessionId, jid, text, signal);
+    if (!result.success) {
+      this.throwProviderFailure(result, 'WhatsApp text message');
+    }
+    const providerMessageId = result.messageId?.trim() || '';
+    if (!providerMessageId) {
+      throw new ServiceUnavailableException('WhatsApp provider returned no durable message id');
     }
     const acceptedAt = new Date().toISOString();
     return {
@@ -829,8 +1190,9 @@ export class WhatsAppService implements OnModuleInit {
     to: string,
     text: string,
     currentUser: any,
+    compliance?: WhatsAppOutboundContext,
   ): Promise<WhatsAppProviderSendReceipt> {
-    return this.sendTextWithReceipt(accountId, to, text, currentUser);
+    return this.sendTextWithReceipt(accountId, to, text, currentUser, compliance);
   }
 
   /**
@@ -843,26 +1205,80 @@ export class WhatsAppService implements OnModuleInit {
     options: {
       type: 'image' | 'document' | 'video' | 'audio';
       buffer?: Buffer;
+      base64?: string;
       url?: string;
       filename?: string;
       caption?: string;
       mimeType?: string;
     },
     currentUser: any,
+    compliance?: WhatsAppOutboundContext,
   ): Promise<WhatsAppProviderSendReceipt> {
     const session = await this.getAccountOrFail(accountId, currentUser);
     if (session.status !== 'connected' || !this.adapter.isConnected(session.sessionId)) {
       throw new ServiceUnavailableException('WhatsApp account is not connected');
     }
-    const jid = this.buildRecipientJid(to);
-    const result = await this.adapter.sendMediaMessage(session.sessionId, jid, options);
-    const providerMessageId = result.success ? result.messageId?.trim() : '';
-    if (!result.success || !providerMessageId) {
-      throw new ServiceUnavailableException(
-        `WhatsApp provider rejected the media message: ${result.error || 'missing provider message id'}`,
-      );
+    if (options.url || !Buffer.isBuffer(options.buffer)) {
+      throw new BadRequestException('Outbound media requires trusted uploaded bytes; provider-side URLs are forbidden');
     }
-    const acceptedAt = new Date().toISOString();
+    const trustedBytes = Buffer.from(options.buffer);
+    const trustedMimeType = this.detectMediaMime(
+      trustedBytes,
+      options.type,
+      options.mimeType,
+    );
+    const artifactSha256 = createHash('sha256').update(trustedBytes).digest('hex');
+    const providerOptions = Object.freeze({
+      ...options,
+      buffer: trustedBytes,
+      url: undefined,
+      mimeType: trustedMimeType,
+    });
+    const execution = await this.outbound.execute({
+      companyId: session.companyId,
+      operatorUser: currentUser,
+      actorType: compliance?.actorType === 'AGENT' ? 'AGENT' : 'HUMAN',
+      channel: 'WHATSAPP',
+      actionType: compliance?.actionType || 'WHATSAPP_MEDIA',
+      idempotencyKey: compliance?.idempotencyKey || '',
+      leadId: compliance?.leadId || '',
+      conversationId: compliance?.conversationId,
+      whatsappSessionId: session.id,
+      targetAddress: to,
+      body: options.caption || `[${options.type}:${options.filename || 'attachment'}]`,
+      contentType: options.type,
+      artifacts: [{
+        sourceId: compliance?.artifactSourceId || `inline:${artifactSha256}`,
+        bytes: trustedBytes,
+        mimeType: trustedMimeType,
+        filename: options.filename,
+      }],
+    }, async (outboundArtifacts, envelope) => {
+      const result = await this.adapter.sendMediaMessage(
+        session.sessionId,
+        this.buildRecipientJid(envelope.targetAddress),
+        {
+          ...providerOptions,
+          buffer: outboundArtifacts[0].bytes,
+          caption: envelope.body,
+        },
+        envelope.signal,
+      );
+      if (!result.success) {
+        this.throwProviderFailure(result, 'WhatsApp media message');
+      }
+      const providerMessageId = result.messageId?.trim() || '';
+      if (!providerMessageId) {
+        throw new ServiceUnavailableException('WhatsApp provider returned no durable message id');
+      }
+      return {
+        provider: 'baileys',
+        receiptId: providerMessageId,
+        acceptedAt: new Date(),
+      };
+    });
+    const providerMessageId = execution.receipt.receiptId;
+    const acceptedAt = new Date(execution.receipt.acceptedAt || new Date()).toISOString();
     return {
       success: true,
       provider: 'baileys',
@@ -876,15 +1292,20 @@ export class WhatsAppService implements OnModuleInit {
   // ========== Private helpers ==========
 
   private async getAccountOrFail(accountId: string, currentUser: any) {
-    const session = await this.prisma.whatsAppSession.findUnique({
-      where: { id: accountId },
+    const companyId = this.requireActiveCompanyId(currentUser);
+    await this.assertActiveMembership(currentUser, companyId);
+    const session = await this.prisma.whatsAppSession.findFirst({
+      where: { id: accountId, companyId },
     });
     if (!session) throw new NotFoundException('WhatsApp account not found');
-    const companyIds = currentUser?.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(session.companyId)) {
-      throw new NotFoundException('WhatsApp account not found');
-    }
     return session;
+  }
+
+  /** Resolve the persisted, tenant-scoped Evolution marker created by the
+   * Evolution session flow; do not infer transport from request strings. */
+  async isEvolutionSession(sessionId: string, currentUser: any): Promise<boolean> {
+    const session = await this.getAccountOrFail(sessionId, currentUser);
+    return EVOLUTION_AUTH_STATE_PATTERN.test(session.authStatePath || '');
   }
 
   private async handleConnected(sessionId: string, phoneNumber: string) {
@@ -899,7 +1320,12 @@ export class WhatsAppService implements OnModuleInit {
         lastSeenAt: new Date(),
       },
     });
-    this.logger.log(`WhatsApp session ${sessionId} connected: ${phoneNumber}`);
+    this.logSafe('log', 'whatsapp.session.connected', {
+      eventType: 'connected',
+      sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+      phoneRef: this.safeRef(phoneNumber, 'whatsapp-phone'),
+      status: 'connected',
+    });
   }
 
   private async handleDisconnected(sessionDbId: string) {
@@ -910,7 +1336,11 @@ export class WhatsAppService implements OnModuleInit {
         disconnectedAt: new Date(),
       },
     });
-    this.logger.log(`WhatsApp session ${sessionDbId} disconnected, attempting auto-reconnect in 5s...`);
+    this.logSafe('log', 'whatsapp.session.disconnected', {
+      eventType: 'disconnected',
+      sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+      status: 'disconnected',
+    });
 
     // 自动重连 — 5秒后尝试重新连接
     setTimeout(async () => {
@@ -919,11 +1349,19 @@ export class WhatsAppService implements OnModuleInit {
           where: { id: sessionDbId },
         });
         if (!session || session.status === 'connected') {
-          this.logger.log(`Session ${sessionDbId} already connected or removed, skipping reconnect`);
+          this.logSafe('log', 'whatsapp.session.reconnect_skipped', {
+            eventType: 'reconnect_skipped',
+            sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+            reasonCode: 'connected_or_removed',
+          });
           return;
         }
 
-        this.logger.log(`Auto-reconnecting session ${sessionDbId}...`);
+        this.logSafe('log', 'whatsapp.session.reconnect_started', {
+          eventType: 'reconnect_started',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          status: 'reconnecting',
+        });
 
         // 标记为重连中
         await this.prisma.whatsAppSession.update({
@@ -952,12 +1390,18 @@ export class WhatsAppService implements OnModuleInit {
           },
         });
 
-        this.logger.log(
-          `Auto-reconnect result for ${sessionDbId}: status=${result.status}` +
-          (result.qrCode ? ' (needs QR scan)' : ' (connected automatically)'),
-        );
+        this.logSafe('log', 'whatsapp.session.reconnected', {
+          eventType: 'reconnected',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          status: this.safeStatus(result.status),
+          hasQr: Boolean(result.qrCode),
+        });
       } catch (err: any) {
-        this.logger.error(`Auto-reconnect failed for ${sessionDbId}: ${err?.message}`, err?.stack);
+        this.logSafe('error', 'whatsapp.session.reconnect_failed', {
+          eventType: 'reconnect_failed',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          errorCategory: safeErrorCategory(err),
+        });
         // 标记为断开，用户可以手动重连
         await this.prisma.whatsAppSession.update({
           where: { id: sessionDbId },
@@ -996,7 +1440,11 @@ export class WhatsAppService implements OnModuleInit {
         },
       });
       if (duplicate) {
-        this.logger.log(`[Baileys] Duplicate message acknowledged: ${externalMessageId}`);
+        this.logSafe('log', 'whatsapp.incoming.duplicate', {
+          eventType: 'duplicate',
+          messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+          direction,
+        });
         if (direction === 'inbound') {
           await this.enqueueOwnerWhatsappInbound({
             companyId,
@@ -1013,11 +1461,13 @@ export class WhatsAppService implements OnModuleInit {
       }
 
       // [DEBUG] 确认新代码在运行 — 验证 Baileys socket 生命周期
-      this.logger.log(
-        `[DEBUG] handleIncomingMessage ACTIVE — companyId=${companyId}, ` +
-        `sessionDbId=${sessionDbId}, msgId=${msg.key?.id || ''}, ` +
-        `time=${new Date().toISOString()}`,
-      );
+      this.logSafe('log', 'whatsapp.incoming.received', {
+        eventType: 'received',
+        companyRef: this.safeRef(companyId, 'whatsapp-company'),
+        sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+        messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+        direction,
+      });
 
       // 提取发送者号码 — 处理多种 JID 格式
       const rawJid = msg.key?.remoteJid || '';
@@ -1029,7 +1479,11 @@ export class WhatsAppService implements OnModuleInit {
 
       // 如果是广播消息 (@broadcast)，跳过
       if (rawJid.includes('@broadcast')) {
-        this.logger.log('Skipping broadcast message');
+        this.logSafe('log', 'whatsapp.incoming.skipped', {
+          eventType: 'skipped',
+          reasonCode: 'broadcast',
+          isGroup: false,
+        });
         return;
       }
 
@@ -1041,9 +1495,12 @@ export class WhatsAppService implements OnModuleInit {
           originalJid = participant; // 群消息回复用 participant 的 JID
         } else {
           // 群消息无 participant — 无法确定发送者，跳过避免群ID被当手机号
-          this.logger.warn(
-            `Group message without participant from ${rawJid}, skipping to prevent group ID being stored as phone number`
-          );
+          this.logSafe('warn', 'whatsapp.incoming.skipped', {
+            eventType: 'skipped',
+            reasonCode: 'group_participant_missing',
+            jidRef: this.safeRef(rawJid, 'whatsapp-jid'),
+            isGroup: true,
+          });
           return;
         }
       }
@@ -1052,39 +1509,50 @@ export class WhatsAppService implements OnModuleInit {
       // LID 不是真实手机号，不能用 @s.whatsapp.net 回复，必须用原始 @lid JID
       const isLid = jidDomain === 'lid';
       if (isLid) {
-        this.logger.log(
-          `LID privacy format detected: ${rawJid}. Will use original JID for replies. ` +
-          `Storing LID prefix as identifier (not a real phone number).`
-        );
+        this.logSafe('log', 'whatsapp.incoming.lid_detected', {
+          eventType: 'lid_detected',
+          jidRef: this.safeRef(rawJid, 'whatsapp-jid'),
+          direction,
+        });
         // fromPhone 保留 LID 前缀作为标识符，但标记为 LID 格式
         // 后续发消息时需要用 originalJid 而非 buildJid(fromPhone)
       }
 
       // 详细日志：记录原始 JID 用于排查号码问题
-      this.logger.log(
-        `Incoming WhatsApp message: rawJid=${rawJid}, fromPhone=${fromPhone}, ` +
-        `pushName=${msg.pushName || ''}, msgId=${msg.key?.id || ''}, ` +
-        `type=${Object.keys(msg.message || {})[0] || 'unknown'}`
-      );
+      this.logSafe('log', 'whatsapp.incoming.classified', {
+        eventType: 'classified',
+        jidRef: this.safeRef(rawJid, 'whatsapp-jid'),
+        phoneRef: this.safeRef(fromPhone, 'whatsapp-phone'),
+        messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+        direction,
+      });
 
       // 手机号合法性校验 — 必须是纯数字且符合国际号码格式
       // WhatsApp 个人 JID 格式: 国家码+号码 (如 8613365923697), 长度 7-15 位
       // 群 ID 通常以非标准前缀开头或超过 15 位
       // LID 格式 (@lid) 跳过此校验 — 用 originalJid 回复
       if (!isLid && !/^\d{7,15}$/.test(fromPhone)) {
-        this.logger.warn(
-          `Invalid phone number: "${fromPhone}" from JID "${rawJid}". ` +
-          `Does not match international phone format (7-15 digits). Skipping.`
-        );
+        this.logSafe('warn', 'whatsapp.incoming.invalid_sender', {
+          eventType: 'invalid_sender',
+          phoneRef: this.safeRef(fromPhone, 'whatsapp-phone'),
+          jidRef: this.safeRef(rawJid, 'whatsapp-jid'),
+        });
         // 最后尝试从 participant 获取
         const participant = msg.key?.participant || msg.participant || '';
         if (participant) {
           const altPhone = participant.split('@')[0] || '';
           if (/^\d{7,15}$/.test(altPhone)) {
-            this.logger.log(`Using participant phone instead: ${altPhone}`);
+            this.logSafe('log', 'whatsapp.incoming.participant_fallback', {
+              eventType: 'participant_fallback',
+              phoneRef: this.safeRef(altPhone, 'whatsapp-phone'),
+            });
             fromPhone = altPhone;
           } else {
-            this.logger.warn(`Participant phone also invalid: "${altPhone}", skipping message`);
+            this.logSafe('warn', 'whatsapp.incoming.skipped', {
+              eventType: 'skipped',
+              reasonCode: 'participant_invalid',
+              phoneRef: this.safeRef(altPhone, 'whatsapp-phone'),
+            });
             return;
           }
         } else {
@@ -1151,7 +1619,10 @@ export class WhatsAppService implements OnModuleInit {
         contentType = 'system';
       } else {
         messageContent = '[不支持的消息类型]';
-        this.logger.warn(`Unsupported message type: ${JSON.stringify(Object.keys(m || {}))}`);
+        this.logSafe('warn', 'whatsapp.incoming.unsupported_type', {
+          eventType: 'unsupported_type',
+          count: Object.keys(m || {}).length,
+        });
       }
 
       // 下载媒体文件（图片/视频/语音/文档）— 保存到 uploads/whatsapp/ 目录
@@ -1180,10 +1651,18 @@ export class WhatsAppService implements OnModuleInit {
               size: mediaBuffer.data.length,
             };
 
-            this.logger.log(`Media downloaded: ${contentType} -> ${mediaUrl} (${mediaBuffer.data.length} bytes)`);
+            this.logSafe('log', 'whatsapp.incoming.media_downloaded', {
+              eventType: 'media_downloaded',
+              contentType: this.safeContentType(contentType),
+              bytes: mediaBuffer.data.length,
+            });
           }
         } catch (mediaErr: any) {
-          this.logger.error(`Failed to download media: ${mediaErr?.message}`);
+          this.logSafe('error', 'whatsapp.incoming.media_failed', {
+            eventType: 'media_failed',
+            contentType: this.safeContentType(contentType),
+            errorCategory: safeErrorCategory(mediaErr),
+          });
         }
       }
 
@@ -1246,6 +1725,16 @@ export class WhatsAppService implements OnModuleInit {
       let persisted: { conversation: any; messageId: string };
       try {
         persisted = await this.prisma.$transaction(async (tx) => {
+          await this.markTrustedInboundIdentity(tx, {
+            companyId,
+            sessionDbId,
+            leadId,
+            contactPointId,
+            externalId: originalJid,
+            direction,
+            isDirect: !isGroupChat && /@s\.whatsapp\.net$/i.test(originalJid),
+            verificationMethod: 'baileys_inbound',
+          });
           const persistedConversation = await this.upsertWhatsappConversation(tx, {
             companyId,
             sessionDbId,
@@ -1315,7 +1804,11 @@ export class WhatsAppService implements OnModuleInit {
       } catch (error) {
         const candidate = error as { code?: string; meta?: { target?: unknown } };
         if (candidate?.code === 'P2002' && String(candidate.meta?.target || '').includes('ingestionKey')) {
-          this.logger.log(`[Baileys] Concurrent duplicate acknowledged: ${externalMessageId}`);
+          this.logSafe('log', 'whatsapp.incoming.concurrent_duplicate', {
+            eventType: 'concurrent_duplicate',
+            messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+            direction,
+          });
           if (direction === 'inbound') {
             const winner = await this.prisma.communicationMessage.findUnique({
               where: { ingestionKey },
@@ -1358,9 +1851,14 @@ export class WhatsAppService implements OnModuleInit {
         });
       }
 
-      this.logger.log(
-        `WhatsApp ${direction} message for ${customerAddress}: ${messageContent.slice(0, 50)}`,
-      );
+      this.logSafe('log', 'whatsapp.incoming.persisted', {
+        eventType: 'persisted',
+        messageRef: this.safeRef(persisted.messageId, 'whatsapp-message'),
+        conversationRef: this.safeRef(conversation.id, 'whatsapp-conversation'),
+        addressRef: this.safeRef(customerAddress, 'whatsapp-address'),
+        direction,
+        contentType: this.safeContentType(contentType),
+      });
 
       // 主动获取客户头像 — 异步执行，不阻塞消息处理
       // 如果 ContactPoint 已缓存头像则直接使用，否则从 Baileys 获取并缓存
@@ -1389,7 +1887,10 @@ export class WhatsAppService implements OnModuleInit {
         direction,
       });
     } catch (err: any) {
-      this.logger.error(`Failed to handle incoming WhatsApp message: ${err?.message}`, err?.stack);
+      this.logSafe('error', 'whatsapp.incoming.failed', {
+        eventType: 'incoming_failed',
+        errorCategory: safeErrorCategory(err),
+      });
       throw err;
     }
   }
@@ -1421,29 +1922,49 @@ export class WhatsAppService implements OnModuleInit {
     }
 
     const onConnected = async ({ phoneNumber }: any) => {
-      this.logger.log(`Connected event received for session ${sessionDbId}, phone: ${phoneNumber}`);
+      this.logSafe('log', 'whatsapp.session.connected_event', {
+        eventType: 'connected_event',
+        sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+        phoneRef: this.safeRef(phoneNumber, 'whatsapp-phone'),
+        status: 'connected',
+      });
       try {
         await this.handleConnected(sessionDbId, phoneNumber);
       } catch (err: any) {
-        this.logger.error(`handleConnected failed: ${err?.message}`, err?.stack);
+        this.logSafe('error', 'whatsapp.session.connected_failed', {
+          eventType: 'connected_failed',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          errorCategory: safeErrorCategory(err),
+        });
       }
     };
     (onConnected as any).__svcBound = true;
     emitter.on('connected', onConnected);
 
     const onDisconnected = async () => {
-      this.logger.log(`Disconnected event received for session ${sessionDbId}`);
+      this.logSafe('log', 'whatsapp.session.disconnected_event', {
+        eventType: 'disconnected_event',
+        sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+        status: 'disconnected',
+      });
       try {
         await this.handleDisconnected(sessionDbId);
       } catch (err: any) {
-        this.logger.error(`handleDisconnected failed: ${err?.message}`, err?.stack);
+        this.logSafe('error', 'whatsapp.session.disconnected_failed', {
+          eventType: 'disconnected_failed',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          errorCategory: safeErrorCategory(err),
+        });
       }
     };
     (onDisconnected as any).__svcBound = true;
     emitter.on('disconnected', onDisconnected);
 
     const onQr = async ({ qrCode }: any) => {
-      this.logger.log(`QR refresh event received for session ${sessionDbId}`);
+      this.logSafe('log', 'whatsapp.session.qr_received', {
+        eventType: 'qr_received',
+        sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+      });
       try {
         // 检查当前会话状态 — 只有在未连接状态下才更新 QR 码
         // 避免重连过程中生成的 QR 码覆盖已连接状态
@@ -1453,10 +1974,11 @@ export class WhatsAppService implements OnModuleInit {
         });
 
         if (current?.status === 'connected') {
-          this.logger.log(
-            `Session ${sessionDbId} is connected, ignoring QR refresh ` +
-            `(likely generated during auto-reconnect, will resolve automatically)`,
-          );
+          this.logSafe('log', 'whatsapp.session.qr_ignored', {
+            eventType: 'qr_ignored',
+            sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+            status: 'connected',
+          });
           return;
         }
 
@@ -1469,7 +1991,11 @@ export class WhatsAppService implements OnModuleInit {
           },
         });
       } catch (err: any) {
-        this.logger.error(`QR update failed: ${err?.message}`, err?.stack);
+        this.logSafe('error', 'whatsapp.session.qr_update_failed', {
+          eventType: 'qr_update_failed',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          errorCategory: safeErrorCategory(err),
+        });
       }
     };
     (onQr as any).__svcBound = true;
@@ -1479,7 +2005,13 @@ export class WhatsAppService implements OnModuleInit {
       try {
         await this.handleIncomingMessage(companyId, sessionDbId, sessionId, msg, direction);
       } catch (err: any) {
-        this.logger.error(`handleIncomingMessage failed: ${err?.message}`, err?.stack);
+        this.logSafe('error', 'whatsapp.incoming.handler_failed', {
+          eventType: 'handler_failed',
+          companyRef: this.safeRef(companyId, 'whatsapp-company'),
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          direction: this.safeDirection(direction),
+          errorCategory: safeErrorCategory(err),
+        });
       }
     };
     (onMessage as any).__svcBound = true;
@@ -1489,14 +2021,24 @@ export class WhatsAppService implements OnModuleInit {
       try {
         await this.updateMessageStatus(sessionId, messageId, status);
       } catch (err: any) {
-        this.logger.error(`updateMessageStatus failed: ${err?.message}`, err?.stack);
+        this.logSafe('error', 'whatsapp.message.status_update_failed', {
+          eventType: 'status_update_failed',
+          sessionRef: this.safeRef(sessionId, 'whatsapp-session'),
+          messageRef: this.safeRef(messageId, 'whatsapp-message'),
+          status: this.safeStatus(status),
+          errorCategory: safeErrorCategory(err),
+        });
       }
     };
     (onMessageStatus as any).__svcBound = true;
     emitter.on('message-status', onMessageStatus);
 
     const onReconnecting = async () => {
-      this.logger.log(`Session ${sessionDbId} reconnecting...`);
+      this.logSafe('log', 'whatsapp.session.reconnecting', {
+        eventType: 'reconnecting',
+        sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+        status: 'reconnecting',
+      });
       try {
         // 标记为重连中，前端可以显示"重连中"状态
         // 不清除 qrCode，避免前端闪烁
@@ -1507,19 +2049,31 @@ export class WhatsAppService implements OnModuleInit {
           },
         });
       } catch (err: any) {
-        this.logger.error(`Failed to update reconnecting status: ${err?.message}`);
+        this.logSafe('error', 'whatsapp.session.reconnecting_failed', {
+          eventType: 'reconnecting_failed',
+          sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+          errorCategory: safeErrorCategory(err),
+        });
       }
     };
     (onReconnecting as any).__svcBound = true;
     emitter.on('reconnecting', onReconnecting);
 
     const onError = ({ message }: { message: string }) => {
-      this.logger.error(`Session ${sessionDbId} error: ${message}`);
+      this.logSafe('error', 'whatsapp.session.provider_error', {
+        eventType: 'provider_error',
+        sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+        errorCategory: safeErrorCategory({ message }),
+      });
     };
     (onError as any).__svcBound = true;
     emitter.on('error', onError);
 
-    this.logger.log(`Service-layer event listeners bound for session ${sessionDbId} (sessionId: ${sessionId})`);
+    this.logSafe('log', 'whatsapp.session.listeners_bound', {
+      eventType: 'listeners_bound',
+      sessionRef: this.safeRef(sessionDbId, 'whatsapp-session'),
+      accountRef: this.safeRef(sessionId, 'whatsapp-account'),
+    });
   }
 
   private async findOrCreateConversation(
@@ -1579,13 +2133,10 @@ export class WhatsAppService implements OnModuleInit {
    * 使用 Evolution API 管理连接，Webhook 接收消息
    */
   async createEvolutionInstance(dto: { name: string; phone?: string }, currentUser: any) {
-    // Fail before creating a database row when the optional service is disabled
-    // or incompletely configured.
+    const companyId = this.requireActiveCompanyId(currentUser);
+    await this.assertActiveAdmin(currentUser, companyId);
+    // Check optional provider configuration only after authorization.
     const webhookUrl = this.evolutionApi.getWebhookUrl();
-    const companyIds = currentUser?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) throw new BadRequestException('No company access');
-
-    const companyId = companyIds[0];
     const instanceName = `jyml-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // 创建数据库记录
@@ -1616,22 +2167,28 @@ export class WhatsAppService implements OnModuleInit {
         },
       });
 
-      this.logger.log(
-        `Evolution instance created: ${instanceName} (status: ${status})`,
-      );
+      this.logSafe('log', 'whatsapp.evolution.instance_created', {
+        eventType: 'instance_created',
+        instanceRef: this.safeRef(instanceName, 'whatsapp-instance'),
+        status: this.safeStatus(status),
+      });
 
       return {
-        ...session,
+        ...this.publicAccount(session),
         qrCode,
         status,
       };
     } catch (err: any) {
-      this.logger.error(`Failed to create Evolution instance: ${err?.message}`);
+      this.logSafe('error', 'whatsapp.evolution.instance_create_failed', {
+        eventType: 'instance_create_failed',
+        instanceRef: this.safeRef(instanceName, 'whatsapp-instance'),
+        errorCategory: safeErrorCategory(err),
+      });
       await this.prisma.whatsAppSession.update({
         where: { id: session.id },
         data: { status: 'disconnected' },
       });
-      throw new BadRequestException(`Evolution instance creation failed: ${err?.message}`);
+      throw new BadRequestException('Evolution instance creation failed');
     }
   }
 
@@ -1640,8 +2197,18 @@ export class WhatsAppService implements OnModuleInit {
    * 前端通过此接口获取头像，用于在聊天界面显示
    */
   async getCustomerAvatar(conversationId: string, currentUser: any): Promise<{ avatarUrl: string | null }> {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
+    const companyId = this.requireActiveCompanyId(currentUser);
+    const role = await this.assertActiveMembership(currentUser, companyId);
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        id: conversationId,
+        companyId,
+        ...(
+          ['super_admin', 'company_admin'].includes(role)
+            ? {}
+            : { assignedUserId: currentUser.id }
+        ),
+      },
       include: {
         contactPoint: true,
         lead: { select: { whatsapp: true } },
@@ -1649,12 +2216,6 @@ export class WhatsAppService implements OnModuleInit {
     });
     if (!conversation) {
       throw new NotFoundException('Conversation not found');
-    }
-
-    // 权限检查
-    const companyIds = currentUser?.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(conversation.companyId)) {
-      throw new BadRequestException('No access to this conversation');
     }
 
     // 如果 ContactPoint 已缓存头像，直接返回
@@ -1744,13 +2305,25 @@ export class WhatsAppService implements OnModuleInit {
             where: { id: contactPointId },
             data: { avatarUrl },
           }).catch(() => {});
-          this.logger.log(`Avatar cached for conversation ${conversationId}: ${avatarUrl.substring(0, 60)}...`);
+          this.logSafe('log', 'whatsapp.avatar.cached', {
+            eventType: 'avatar_cached',
+            conversationRef: this.safeRef(conversationId, 'whatsapp-conversation'),
+            contentType: 'image',
+          });
           return;
         }
       }
-      this.logger.debug(`No avatar found for conversation ${conversationId} (tried ${jids.length} JIDs)`);
+      this.logSafe('debug', 'whatsapp.avatar.not_found', {
+        eventType: 'avatar_not_found',
+        conversationRef: this.safeRef(conversationId, 'whatsapp-conversation'),
+        count: jids.length,
+      });
     } catch (err: any) {
-      this.logger.debug(`fetchAndCacheAvatar failed: ${err?.message}`);
+      this.logSafe('debug', 'whatsapp.avatar.fetch_failed', {
+        eventType: 'avatar_fetch_failed',
+        conversationRef: this.safeRef(conversationId, 'whatsapp-conversation'),
+        errorCategory: safeErrorCategory(err),
+      });
     }
   }
 
@@ -1760,6 +2333,7 @@ export class WhatsAppService implements OnModuleInit {
   async getEvolutionQrCode(accountId: string, currentUser: any) {
     this.evolutionApi.assertEnabled();
     const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
 
     if (session.status === 'connected') {
       return { status: 'connected', qrCode: null, phoneNumber: session.phoneNumber };
@@ -1797,21 +2371,46 @@ export class WhatsAppService implements OnModuleInit {
     to: string,
     text: string,
     currentUser: any,
+    compliance?: WhatsAppOutboundContext,
   ) {
     this.evolutionApi.assertEnabled();
     const session = await this.getAccountOrFail(accountId, currentUser);
 
-    const result = await this.evolutionApi.sendTextMessage(
-      session.sessionId,
-      to,
-      text,
-    );
-
-    if (!result.success) {
-      throw new BadRequestException(`Send failed: ${result.error}`);
-    }
-
-    return result;
+    const execution = await this.outbound.execute({
+      companyId: session.companyId,
+      operatorUser: currentUser,
+      actorType: compliance?.actorType === 'AGENT' ? 'AGENT' : 'HUMAN',
+      channel: 'WHATSAPP',
+      actionType: compliance?.actionType || 'WHATSAPP_TEXT_EVOLUTION',
+      idempotencyKey: compliance?.idempotencyKey || '',
+      leadId: compliance?.leadId || '',
+      conversationId: compliance?.conversationId,
+      whatsappSessionId: session.id,
+      targetAddress: to,
+      body: text,
+      contentType: 'text',
+    }, async (_outboundArtifacts, envelope) => {
+      const result = await this.evolutionApi.sendTextMessage(
+        session.sessionId,
+        envelope.targetAddress,
+        envelope.body,
+        envelope.signal,
+      );
+      const receiptId = String(result?.messageId || '').trim();
+      if (!result.success) {
+        this.throwProviderFailure(result, 'Evolution text message');
+      }
+      if (!receiptId) throw new ServiceUnavailableException('Evolution returned no durable provider receipt');
+      return { provider: 'evolution', receiptId, acceptedAt: new Date() };
+    });
+    return {
+      success: true,
+      provider: 'evolution',
+      providerMessageId: execution.receipt.receiptId,
+      messageId: execution.receipt.receiptId,
+      acceptedAt: new Date(execution.receipt.acceptedAt || new Date()).toISOString(),
+      outboxId: execution.outboxId,
+    };
   }
 
   /**
@@ -1822,27 +2421,93 @@ export class WhatsAppService implements OnModuleInit {
     to: string,
     options: {
       type: 'image' | 'document' | 'video' | 'audio';
+      buffer?: Buffer;
+      base64?: string;
       url?: string;
       filename?: string;
       caption?: string;
       mimeType?: string;
     },
     currentUser: any,
+    compliance?: WhatsAppOutboundContext,
   ) {
     this.evolutionApi.assertEnabled();
-    const session = await this.getAccountOrFail(accountId, currentUser);
-
-    const result = await this.evolutionApi.sendMediaMessage(
-      session.sessionId,
-      to,
-      options,
-    );
-
-    if (!result.success) {
-      throw new BadRequestException(`Send media failed: ${result.error}`);
+    if (String(options.url || '').trim()) {
+      throw new BadRequestException(
+        'Evolution media URL transport is disabled until a trusted byte-upload transport is available',
+      );
     }
+    const session = await this.getAccountOrFail(accountId, currentUser);
+    const type = options.type;
+    const maxBytes = 15 * 1024 * 1024;
+    const rawBase64 = options.base64?.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '').trim();
+    const validBase64 = !!rawBase64
+      && rawBase64.length % 4 === 0
+      && /^[A-Za-z0-9+/]+={0,2}$/.test(rawBase64)
+      && !/=/.test(rawBase64.slice(0, -2));
+    const bytes = options.buffer || (validBase64 ? Buffer.from(rawBase64, 'base64') : null);
+    if (!options.buffer && !validBase64) {
+      throw new BadRequestException('Evolution media base64 payload is malformed');
+    }
+    if (!bytes || bytes.length === 0 || bytes.length > maxBytes) {
+      throw new BadRequestException('Evolution media must include a non-empty base64 payload up to 15 MB');
+    }
+    const mimeType = String(options.mimeType || 'application/octet-stream').trim().toLowerCase();
+    const filename = String(options.filename || (type === 'document' ? 'attachment.pdf' : 'attachment')).trim();
+    const dataUrl = `data:${mimeType};base64,${bytes.toString('base64')}`;
 
-    return result;
+    const execution = await this.outbound.execute({
+      companyId: session.companyId,
+      operatorUser: currentUser,
+      actorType: compliance?.actorType === 'AGENT' ? 'AGENT' : 'HUMAN',
+      channel: 'WHATSAPP',
+      actionType: compliance?.actionType || `WHATSAPP_${type.toUpperCase()}`,
+      idempotencyKey: compliance?.idempotencyKey || '',
+      leadId: compliance?.leadId || '',
+      conversationId: compliance?.conversationId,
+      whatsappSessionId: session.id,
+      targetAddress: to,
+      body: options.caption || '',
+      contentType: type,
+      artifacts: [{
+        sourceId: compliance?.artifactSourceId || `whatsapp-${type}`,
+        bytes,
+        mimeType,
+        filename,
+      }],
+    }, async (artifacts, envelope) => {
+      const artifact = artifacts[0];
+      const result = await this.evolutionApi.sendMediaMessage(
+        session.sessionId,
+        envelope.targetAddress,
+        {
+          type,
+          url: dataUrl,
+          filename: artifact?.filename || filename,
+          caption: envelope.body,
+          mimeType: artifact?.mimeType || mimeType,
+        },
+        envelope.signal,
+      );
+      const receiptId = String(result?.messageId || '').trim();
+      if (!result.success) this.throwProviderFailure(result, `Evolution ${type} message`);
+      if (!receiptId) throw new ServiceUnavailableException('Evolution returned no durable media receipt');
+      return {
+        provider: 'evolution',
+        receiptId,
+        acceptedAt: new Date(),
+        metadata: result.metadata,
+      };
+    });
+    return {
+      success: true,
+      provider: 'evolution',
+      providerMessageId: execution.receipt.receiptId,
+      messageId: execution.receipt.receiptId,
+      acceptedAt: new Date(execution.receipt.acceptedAt || new Date()).toISOString(),
+      outboxId: execution.outboxId,
+      status: 'accepted',
+    };
   }
 
   /**
@@ -1851,6 +2516,7 @@ export class WhatsAppService implements OnModuleInit {
   async disconnectEvolution(accountId: string, currentUser: any) {
     this.evolutionApi.assertEnabled();
     const session = await this.getAccountOrFail(accountId, currentUser);
+    await this.assertActiveAdmin(currentUser, session.companyId);
 
     await this.evolutionApi.logoutInstance(session.sessionId);
 
@@ -1859,7 +2525,241 @@ export class WhatsAppService implements OnModuleInit {
       data: { status: 'disconnected' },
     });
 
-    this.logger.log(`Evolution instance ${session.sessionId} disconnected`);
+    this.logSafe('log', 'whatsapp.evolution.instance_disconnected', {
+      eventType: 'instance_disconnected',
+      instanceRef: this.safeRef(session.sessionId, 'whatsapp-instance'),
+      status: 'disconnected',
+    });
+  }
+
+  private async assertActiveAdmin(currentUser: any, companyId: string) {
+    const role = await this.assertActiveMembership(currentUser, companyId);
+    if (
+      !['company_admin', 'super_admin'].includes(role)
+    ) {
+      throw new ForbiddenException('Company administrator role is required for account disconnect or deletion');
+    }
+  }
+
+  private async assertActiveMembership(currentUser: any, companyId: string) {
+    const activeCompanyId = this.requireActiveCompanyId(currentUser);
+    if (activeCompanyId !== companyId) {
+      throw new ForbiddenException('Target company is not the authenticated active company');
+    }
+    const relation = await this.prisma.userCompanyRelation.findFirst({
+      where: {
+        userId: currentUser.id,
+        companyId,
+        isActive: true,
+        user: { is: { isActive: true, deletedAt: null } },
+        company: { is: { isActive: true } },
+      },
+      include: { role: { select: { name: true } } },
+    });
+    const role = String(relation?.role?.name || '').trim();
+    if (!role) {
+      throw new ForbiddenException('Active company membership or role is no longer valid');
+    }
+    return role;
+  }
+
+  private requireActiveCompanyId(currentUser: any) {
+    const companyId = String(currentUser?.activeCompanyId || '').trim();
+    if (
+      !companyId
+      || (currentUser?.activeCompany?.id && currentUser.activeCompany.id !== companyId)
+      || !currentUser?.id
+    ) {
+      throw new ForbiddenException('An authenticated active company is required');
+    }
+    return companyId;
+  }
+
+  private safeAccountSelect() {
+    return {
+      id: true,
+      accountName: true,
+      phoneNumber: true,
+      status: true,
+      connectedAt: true,
+      disconnectedAt: true,
+      lastSeenAt: true,
+      sendLimitPerHour: true,
+      sendLimitDaily: true,
+      sendIntervalSeconds: true,
+      lastSentAt: true,
+      createdAt: true,
+      updatedAt: true,
+    };
+  }
+
+  private publicAccount(session: any) {
+    return {
+      id: session.id,
+      accountName: session.accountName,
+      phoneNumber: session.phoneNumber ?? null,
+      status: session.status,
+      connectedAt: session.connectedAt ?? null,
+      disconnectedAt: session.disconnectedAt ?? null,
+      lastSeenAt: session.lastSeenAt ?? null,
+      sendLimitPerHour: session.sendLimitPerHour,
+      sendLimitDaily: session.sendLimitDaily,
+      sendIntervalSeconds: session.sendIntervalSeconds,
+      lastSentAt: session.lastSentAt ?? null,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    };
+  }
+
+  /**
+   * R111 批次C：营销执行器复用 — 为成员（lead + whatsapp 触点）确保稳定的
+   * outbound 会话锚点（threadKey = whatsapp:<sessionDbId>:<externalThreadId>），
+   * 与入站/人工发送共用同一线程键约定，随后由 OutboundComplianceService 做
+   * 租户/触点/身份一致性校验（不绕过合规链）。
+   */
+  async ensureOutboundConversation(params: {
+    companyId: string;
+    whatsappSessionId: string;
+    leadId?: string | null;
+    contactPointId?: string | null;
+    phone: string;
+  }): Promise<{ conversationId: string; externalThreadId: string }> {
+    const phoneDigits = (params.phone || '').replace(/\D/g, '');
+    const externalThreadId = phoneDigits
+      ? `${phoneDigits}@s.whatsapp.net`
+      : params.phone;
+    const threadKey = `whatsapp:${params.whatsappSessionId}:${externalThreadId}`;
+    const hasTrustedPhone = /^\d{7,15}$/.test(phoneDigits);
+    const conversation = await this.prisma.conversation.upsert({
+      where: {
+        companyId_channel_threadKey: {
+          companyId: params.companyId,
+          channel: 'whatsapp',
+          threadKey,
+        },
+      },
+      create: {
+        companyId: params.companyId,
+        channel: 'whatsapp',
+        isGroup: false,
+        groupStatusSource: 'campaign_executor',
+        status: 'active',
+        whatsappSessionId: params.whatsappSessionId,
+        externalThreadId,
+        threadKey,
+        ...(hasTrustedPhone ? { leadId: params.leadId || null, contactPointId: params.contactPointId || null } : {}),
+      },
+      update: {
+        status: 'active',
+        ...(hasTrustedPhone && params.leadId ? { leadId: params.leadId } : {}),
+        ...(hasTrustedPhone && params.contactPointId ? { contactPointId: params.contactPointId } : {}),
+      },
+      select: { id: true },
+    });
+    return { conversationId: conversation.id, externalThreadId };
+  }
+
+  private async markTrustedInboundIdentity(
+    tx: any,
+    params: {
+      companyId: string;
+      sessionDbId: string;
+      leadId: string | null;
+      contactPointId: string | null;
+      externalId?: string;
+      direction: 'inbound' | 'outbound';
+      isDirect: boolean;
+      verificationMethod: 'baileys_inbound' | 'evolution_webhook';
+    },
+  ) {
+    if (
+      params.direction !== 'inbound'
+      || !params.isDirect
+      || !params.leadId
+      || !params.contactPointId
+      || !params.externalId
+    ) return;
+    const session = await tx.whatsAppSession.findFirst({
+      where: {
+        id: params.sessionDbId,
+        companyId: params.companyId,
+        status: 'connected',
+      },
+      select: { id: true },
+    });
+    const identity = session
+      ? await tx.externalIdentity.findFirst({
+          where: {
+            companyId: params.companyId,
+            provider: 'whatsapp',
+            externalId: params.externalId,
+            identityStatus: 'resolved',
+            leadId: params.leadId,
+            contactPointId: params.contactPointId,
+          },
+          select: { id: true },
+        })
+      : null;
+    if (!identity) return;
+    await tx.contactPoint.updateMany({
+      where: {
+        id: params.contactPointId,
+        companyId: params.companyId,
+        leadId: params.leadId,
+        type: 'whatsapp',
+      },
+      data: {
+        isVerified: true,
+        verifiedAt: new Date(),
+        verificationMethod: params.verificationMethod,
+      },
+    });
+  }
+
+  private throwProviderFailure(
+    result: { error?: string; deliveryOutcome?: string; providerAccepted?: boolean },
+    operation: string,
+  ): never {
+    if (result.deliveryOutcome === 'REJECTED' && result.providerAccepted === false) {
+      throw this.explicitProviderRejection(`${operation} provider rejected the request`);
+    }
+    throw new ServiceUnavailableException(`${operation} provider outcome is unknown`);
+  }
+
+  private explicitProviderRejection(message: string) {
+    const error: any = new ServiceUnavailableException(message);
+    error.providerDeliveryOutcome = 'REJECTED';
+    error.providerAccepted = false;
+    return error;
+  }
+
+  private detectMediaMime(
+    bytes: Buffer,
+    type: 'image' | 'document' | 'video' | 'audio',
+    declaredMime?: string,
+  ) {
+    let detected = '';
+    if (bytes.subarray(0, 5).toString('ascii') === '%PDF-') detected = 'application/pdf';
+    else if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) detected = 'image/png';
+    else if (bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) detected = 'image/jpeg';
+    else if (['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) detected = 'image/gif';
+    else if (
+      bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+      && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+    ) detected = 'image/webp';
+
+    const declared = String(declaredMime || '').trim().toLowerCase();
+    if (detected && declared && declared !== detected) {
+      throw new BadRequestException('Outbound media MIME does not match its bytes');
+    }
+    const resolved = detected || declared;
+    const allowed = type === 'document'
+      ? resolved === 'application/pdf' || resolved === 'application/octet-stream'
+      : resolved.startsWith(`${type}/`);
+    if (!resolved || !allowed) {
+      throw new BadRequestException('Outbound media bytes do not match the requested media type');
+    }
+    return resolved;
   }
 
   /**
@@ -1950,7 +2850,11 @@ export class WhatsAppService implements OnModuleInit {
       },
     });
 
-    this.logger.log(`QR code updated via webhook for ${instanceName}`);
+    this.logSafe('log', 'whatsapp.evolution.qr_updated', {
+      eventType: 'qr_updated',
+      instanceRef: this.safeRef(instanceName, 'whatsapp-instance'),
+      status: 'pending',
+    });
   }
 
   /**
@@ -1978,9 +2882,11 @@ export class WhatsAppService implements OnModuleInit {
       },
     });
 
-    this.logger.log(
-      `Connection status updated via webhook: ${instanceName} → ${status}`,
-    );
+    this.logSafe('log', 'whatsapp.evolution.connection_status_updated', {
+      eventType: 'connection_status_updated',
+      instanceRef: this.safeRef(instanceName, 'whatsapp-instance'),
+      status: this.safeStatus(status),
+    });
   }
 
   /**
@@ -2014,7 +2920,10 @@ export class WhatsAppService implements OnModuleInit {
     });
 
     if (!session) {
-      this.logger.warn(`No session found for instance: ${data.instanceName}`);
+      this.logSafe('warn', 'whatsapp.evolution.session_not_found', {
+        eventType: 'session_not_found',
+        instanceRef: this.safeRef(data.instanceName, 'whatsapp-instance'),
+      });
       if (expectedCompanyId) {
         throw new BadRequestException(
           `WhatsApp session ${data.instanceName} is not bound to selected company ${expectedCompanyId}`,
@@ -2038,6 +2947,9 @@ export class WhatsAppService implements OnModuleInit {
       externalMessageId,
     );
     const direction = data.direction === 'outbound' ? 'outbound' : 'inbound';
+    // Evolution pushName is display text, not a trusted identity. In
+    // particular, WhatsApp status strings must never become contactName.
+    const sanitizedPushName = sanitizeContactNameCandidate(data.pushName);
     const notificationSourceType = data.transportSource === 'electron_dom'
       ? 'whatsapp_electron'
       : 'whatsapp_evolution';
@@ -2054,7 +2966,11 @@ export class WhatsAppService implements OnModuleInit {
       },
     });
     if (alreadyIngested) {
-      this.logger.log(`[Evolution] Duplicate message acknowledged: ${externalMessageId}`);
+      this.logSafe('log', 'whatsapp.evolution.message_duplicate', {
+        eventType: 'message_duplicate',
+        messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+        direction,
+      });
       if (direction === 'inbound') {
         await this.enqueueOwnerWhatsappInbound({
           companyId,
@@ -2063,7 +2979,7 @@ export class WhatsAppService implements OnModuleInit {
           sourceId: alreadyIngested.id,
           conversationId: alreadyIngested.conversationId,
           leadId: alreadyIngested.conversation?.leadId || null,
-          subject: data.displayNameCandidate || data.pushName || 'WhatsApp new message',
+          subject: data.displayNameCandidate || sanitizedPushName || 'WhatsApp new message',
           preview: alreadyIngested.content,
         });
       }
@@ -2074,15 +2990,19 @@ export class WhatsAppService implements OnModuleInit {
     const receiverPhone = session.phoneNumber || '';
     const receiverName = session.accountName || '';
 
-    this.logger.log(
-      `[Evolution] Processing message from ${data.fromPhone}` +
-      (data.isGroup ? ` (group: ${data.groupJid})` : '') +
-      `: ${data.messageContent.substring(0, 100)}`,
-    );
+    this.logSafe('log', 'whatsapp.evolution.message_processing', {
+      eventType: 'message_processing',
+      messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+      phoneRef: this.safeRef(data.fromPhone, 'whatsapp-phone'),
+      groupRef: data.isGroup ? this.safeRef(data.groupJid, 'whatsapp-group') : undefined,
+      direction,
+      isGroup: data.isGroup === true,
+      contentType: this.safeContentType(data.mediaInfo?.type),
+    });
 
-    if (data.isGroup === true && !data.groupJid?.includes('@g.us')) {
+    if (data.isGroup === true && !/@(?:g\.us|broadcast)$/i.test(data.groupJid || '')) {
       throw new BadRequestException(
-        'WhatsApp group message requires a trusted @g.us group JID; retry after identity refresh',
+        'WhatsApp group or broadcast message requires a trusted @g.us group JID; broadcast messages require a trusted channel JID (@broadcast); retry after identity refresh',
       );
     }
 
@@ -2116,7 +3036,7 @@ export class WhatsAppService implements OnModuleInit {
           companyId,
           phoneDigits,
           externalId,
-          displayNameCandidate: data.displayNameCandidate || data.pushName || null,
+          displayNameCandidate: data.displayNameCandidate || sanitizedPushName || null,
           source: 'whatsapp_message',
         });
 
@@ -2134,6 +3054,18 @@ export class WhatsAppService implements OnModuleInit {
     let persisted: { conversationId: string; messageId: string };
     try {
       persisted = await this.prisma.$transaction(async (tx) => {
+        await this.markTrustedInboundIdentity(tx, {
+          companyId,
+          sessionDbId: session.id,
+          leadId,
+          contactPointId,
+          externalId,
+          direction,
+          isDirect: data.isGroup === false
+            && data.transportSource === 'evolution_webhook'
+            && /@(?:c\.us|s\.whatsapp\.net)$/i.test(String(externalId || '')),
+          verificationMethod: 'evolution_webhook',
+        });
     // 群消息按可信 groupJid 聚合且不关联 Lead；私聊有 leadId 时按 Lead 关联，
     // unresolved(LID) 时按 externalThreadId 聚合，contactPointId 可为 null。
         // Atomic upsert is the database-level race boundary. Two workers that
@@ -2188,14 +3120,14 @@ export class WhatsAppService implements OnModuleInit {
     });
 
     // 更新 Lead 的 pushName（如果有的话）— unresolved 时无 Lead,跳过
-    if (direction === 'inbound' && data.pushName && leadId) {
+    if (direction === 'inbound' && sanitizedPushName && leadId) {
       const lead = await tx.lead.findFirst({
-        where: { id: leadId },
+        where: { id: leadId, companyId },
       });
       if (lead && !lead.contactName) {
         await tx.lead.update({
-          where: { id: lead.id },
-          data: { contactName: data.pushName },
+          where: { id: lead.id, companyId },
+          data: { contactName: sanitizedPushName },
         });
       }
     }
@@ -2209,7 +3141,11 @@ export class WhatsAppService implements OnModuleInit {
     } catch (error) {
       const candidate = error as { code?: string; meta?: { target?: unknown } };
       if (candidate?.code === 'P2002' && String(candidate.meta?.target || '').includes('ingestionKey')) {
-        this.logger.log(`[Evolution] Concurrent duplicate acknowledged: ${externalMessageId}`);
+        this.logSafe('log', 'whatsapp.evolution.message_concurrent_duplicate', {
+          eventType: 'message_concurrent_duplicate',
+          messageRef: this.safeRef(externalMessageId, 'whatsapp-message'),
+          direction,
+        });
         if (direction === 'inbound') {
           const winner = await this.prisma.communicationMessage.findUnique({
             where: { ingestionKey },
@@ -2228,7 +3164,7 @@ export class WhatsAppService implements OnModuleInit {
               sourceId: winner.id,
               conversationId: winner.conversationId,
               leadId: winner.conversation?.leadId || null,
-              subject: data.displayNameCandidate || data.pushName || 'WhatsApp new message',
+              subject: data.displayNameCandidate || sanitizedPushName || 'WhatsApp new message',
               preview: winner.content,
             });
           }
@@ -2246,7 +3182,7 @@ export class WhatsAppService implements OnModuleInit {
         sourceId: persisted.messageId,
         conversationId: persisted.conversationId,
         leadId: leadId || null,
-        subject: data.displayNameCandidate || data.pushName || 'WhatsApp new message',
+        subject: data.displayNameCandidate || sanitizedPushName || 'WhatsApp new message',
         preview: data.messageContent,
       });
     }
@@ -2263,9 +3199,12 @@ export class WhatsAppService implements OnModuleInit {
       direction,
     });
 
-    this.logger.log(
-      `[Evolution] Message saved and SSE emitted: conversation=${persisted.conversationId}`,
-    );
+    this.logSafe('log', 'whatsapp.evolution.message_persisted', {
+      eventType: 'message_persisted',
+      conversationRef: this.safeRef(persisted.conversationId, 'whatsapp-conversation'),
+      direction,
+      contentType: this.safeContentType(data.mediaInfo?.type),
+    });
   }
 
   /**
@@ -2325,9 +3264,11 @@ export class WhatsAppService implements OnModuleInit {
       data: { deliveryStatus },
     });
 
-    this.logger.debug(
-      `Message status updated: ${messageId} → ${deliveryStatus}`,
-    );
+    this.logSafe('debug', 'whatsapp.evolution.message_status_updated', {
+      eventType: 'message_status_updated',
+      messageRef: this.safeRef(messageId, 'whatsapp-message'),
+      status: this.safeStatus(deliveryStatus),
+    });
   }
 
   /**

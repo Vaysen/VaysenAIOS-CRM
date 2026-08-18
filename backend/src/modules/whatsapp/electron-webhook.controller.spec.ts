@@ -32,7 +32,11 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
     chatPhone: '',
     isGroup: false,
   };
-  const currentUser = { companies: [{ id: 'company-1' }] };
+  const currentUser = {
+    activeCompanyId: 'company-1',
+    activeCompany: { id: 'company-1', name: 'company-1', role: 'sales_user' },
+    companies: [{ id: 'company-1', name: 'company-1', role: 'sales_user' }],
+  };
 
   it('不把“最后上线于…”转交为姓名候选', async () => {
     const { controller, whatsappService } = makeController();
@@ -60,15 +64,15 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
     const { controller, whatsappService } = makeController();
 
     await controller.handleNewMessage(
-      { ...basePayload, chatName: 'Sample Buyer' },
+      { ...basePayload, chatName: 'AcmeCorp' },
       currentUser,
       'company-1',
     );
 
     expect(whatsappService.handleEvolutionMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        pushName: 'Sample Buyer',
-        displayNameCandidate: 'Sample Buyer',
+        pushName: 'AcmeCorp',
+        displayNameCandidate: 'AcmeCorp',
         isGroup: null,
         groupStatusSource: undefined,
         phoneCandidate: null,
@@ -87,14 +91,23 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
     const { controller, whatsappService } = makeController();
 
     const action = controller.handleNewMessage(
-      { ...basePayload, chatName: 'Sample Buyer' },
-      { companies: [{ id: 'company-1' }, { id: 'company-2' }] },
+      { ...basePayload, chatName: 'AcmeCorp' },
+      {
+        ...currentUser,
+        companies: [
+          ...currentUser.companies,
+          { id: 'company-2', name: 'company-2', role: 'company_admin' },
+        ],
+      },
       undefined,
     );
 
     await expect(action).rejects.toMatchObject({
       status: 503,
-      response: { message: expect.stringContaining('X-Company-Id is required') },
+      response: {
+        code: 'WHATSAPP_ELECTRON_MESSAGE_FAILED',
+        message: 'WhatsApp message processing failed',
+      },
     });
     expect(whatsappService.ensureElectronSessionMapping).not.toHaveBeenCalled();
   });
@@ -105,16 +118,25 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
     const action = controller.handleNewMessage(
       {
         ...basePayload,
-        chatName: 'Sample Buyer',
+        chatName: 'AcmeCorp',
         selectedCompanyId: 'company-2',
       },
-      { companies: [{ id: 'company-1' }, { id: 'company-2' }] },
+      {
+        ...currentUser,
+        companies: [
+          ...currentUser.companies,
+          { id: 'company-2', name: 'company-2', role: 'company_admin' },
+        ],
+      },
       'company-1',
     );
 
     await expect(action).rejects.toMatchObject({
       status: 503,
-      response: { message: expect.stringContaining('company binding does not match') },
+      response: {
+        code: 'WHATSAPP_ELECTRON_MESSAGE_FAILED',
+        message: 'WhatsApp message processing failed',
+      },
     });
     expect(whatsappService.ensureElectronSessionMapping).not.toHaveBeenCalled();
   });
@@ -125,7 +147,7 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
     await controller.handleNewMessage(
       {
         ...basePayload,
-        chatName: 'Sample Buyer',
+        chatName: 'AcmeCorp',
         fromPhone: '19999999999',
         phoneCandidate: '18888888888',
         externalId: '8613800001234@c.us',
@@ -152,7 +174,7 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
       {
         ...basePayload,
         isOutgoing: true,
-        chatName: 'Sample Buyer',
+        chatName: 'AcmeCorp',
         chatPhone: '8613800001234',
         externalId: '8613800001234@c.us',
       },
@@ -222,12 +244,13 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
 
   it('消息处理失败时返回非 2xx 异常，允许 Electron outbox 重试', async () => {
     const { controller, whatsappService } = makeController();
+    const sentinel = 'provider raw error sentinel.customer@example.com +8613800012345 8613800012345@s.whatsapp.net token=secret /srv/customer/message.txt';
     whatsappService.handleEvolutionMessage.mockRejectedValueOnce(
-      new Error('database unavailable'),
+      new Error(sentinel),
     );
 
     const action = controller.handleNewMessage(
-      { ...basePayload, chatName: 'Sample Buyer' },
+      { ...basePayload, chatName: 'AcmeCorp' },
       currentUser,
       'company-1',
     );
@@ -237,19 +260,26 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
       status: 503,
       response: {
         status: 'error',
-        message: 'database unavailable',
+        code: 'WHATSAPP_ELECTRON_MESSAGE_FAILED',
+        message: 'WhatsApp message processing failed',
       },
     });
+    try {
+      await action;
+    } catch (error: any) {
+      expect(JSON.stringify(error.getResponse())).not.toContain(sentinel);
+    }
   });
 
   it('Electron session 映射创建失败时不得 200 丢弃消息', async () => {
     const { controller, whatsappService } = makeController();
+    const sentinel = 'mapping provider error sentinel.customer@example.com token=secret';
     whatsappService.ensureElectronSessionMapping.mockRejectedValueOnce(
-      new Error('mapping database unavailable'),
+      new Error(sentinel),
     );
 
     const action = controller.handleNewMessage(
-      { ...basePayload, chatName: 'Sample Buyer' },
+      { ...basePayload, chatName: 'AcmeCorp' },
       currentUser,
       'company-1',
     );
@@ -259,10 +289,60 @@ describe('ElectronWebhookController WhatsApp identity sanitization', () => {
       status: 503,
       response: {
         status: 'error',
-        message: 'mapping database unavailable',
+        code: 'WHATSAPP_ELECTRON_MESSAGE_FAILED',
+        message: 'WhatsApp message processing failed',
       },
     });
+    try {
+      await action;
+    } catch (error: any) {
+      expect(JSON.stringify(error.getResponse())).not.toContain(sentinel);
+    }
     expect(whatsappService.handleEvolutionMessage).not.toHaveBeenCalled();
+  });
+
+  it('状态 catch 返回稳定错误码，不暴露原始异常', async () => {
+    const { controller, whatsappService } = makeController();
+    const sentinel = 'status provider response sentinel.phone +8613800012345 token=secret';
+    whatsappService.ensureElectronSessionMapping.mockRejectedValueOnce(new Error(sentinel));
+
+    const error = await controller.handleStatusUpdate(
+      { accountId: 'account-1', status: 'logged_in', timestamp: Date.now() },
+      currentUser,
+      'company-1',
+    ).catch((failure) => failure);
+
+    expect(error).toMatchObject({
+      status: 503,
+      response: {
+        status: 'error',
+        code: 'WHATSAPP_ELECTRON_STATUS_FAILED',
+        message: 'WhatsApp status processing failed',
+      },
+    });
+    expect(JSON.stringify(error.getResponse())).not.toContain(sentinel);
+  });
+
+  it('联系人同步 catch 返回稳定错误码，不暴露原始异常', async () => {
+    const { controller, whatsappService } = makeController();
+    const sentinel = 'contacts provider response sentinel.customer@example.com /srv/customer/contacts.json';
+    whatsappService.syncContactsFromSnapshots.mockRejectedValueOnce(new Error(sentinel));
+
+    const error = await controller.handleContactsSync(
+      { accountId: 'account-1', contacts: [{ phone: '8613800012345' }], timestamp: Date.now() } as any,
+      currentUser,
+      'company-1',
+    ).catch((failure) => failure);
+
+    expect(error).toMatchObject({
+      status: 503,
+      response: {
+        status: 'error',
+        code: 'WHATSAPP_ELECTRON_CONTACTS_SYNC_FAILED',
+        message: 'WhatsApp contacts synchronization failed',
+      },
+    });
+    expect(JSON.stringify(error.getResponse())).not.toContain(sentinel);
   });
 
   it('状态回调会创建或修复同租户 Electron 映射', async () => {

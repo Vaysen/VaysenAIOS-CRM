@@ -4,6 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import api from '@/lib/api';
+import {
+  createManualSendIntentTracker,
+  runManualSendIntent,
+} from '@/lib/manual-send-intent';
+import { useAuthStore } from '@/store/authStore';
 import { ArrowLeft, Bot, Search, Send, Users, AlertTriangle } from 'lucide-react';
 import sanitizeHtml from 'sanitize-html';
 
@@ -93,6 +98,7 @@ function sanitizeEmailHtml(html: string): string {
 
 export default function SendEmailPage() {
   const searchParams = useSearchParams();
+  const { user: currentUser, activeCompanyId } = useAuthStore();
   const source = searchParams.get('source');
   const preselectedLeadId = searchParams.get('leadId');
   const isProspectSource = source === 'prospects';
@@ -130,6 +136,20 @@ export default function SendEmailPage() {
   const [result, setResult] = useState<any>(null);
   const [previewSubject, setPreviewSubject] = useState('');
   const [previewBody, setPreviewBody] = useState('');
+  const singleSendIntent = useMemo(
+    () => createManualSendIntentTracker('email-single-ui', {
+      userId: currentUser?.id,
+      activeCompanyId,
+    }),
+    [activeCompanyId, currentUser?.id],
+  );
+  const batchSendIntent = useMemo(
+    () => createManualSendIntentTracker('email-batch-ui', {
+      userId: currentUser?.id,
+      activeCompanyId,
+    }),
+    [activeCompanyId, currentUser?.id],
+  );
 
   // Materials pool
   const [materials, setMaterials] = useState<any[]>([]);
@@ -399,7 +419,7 @@ export default function SendEmailPage() {
     setError(null);
     try {
       if (sendMode === 'single') {
-        const res = await api.post('/emails/send-single', {
+        const payload = {
           leadId: selectedLeads[0],
           emailAccountId: selectedAccount,
           emailTemplateId: selectedTemplate,
@@ -408,10 +428,17 @@ export default function SendEmailPage() {
           subject: previewSubject || undefined,
           body: previewBody || undefined,
           outreachRound: Number(roundFilter || 0),
-        });
+        };
+        const res = await runManualSendIntent(
+          singleSendIntent,
+          payload,
+          (idempotencyKey) => api.post('/emails/send-single', payload, {
+            headers: { 'Idempotency-Key': idempotencyKey },
+          }),
+        );
         setResult({ type: 'single', data: res.data });
       } else {
-        const res = await api.post('/emails/send-batch', {
+        const payload = {
           leadIds: selectedLeads,
           emailAccountId: selectedAccount,
           emailTemplateId: selectedTemplate,
@@ -432,7 +459,14 @@ export default function SendEmailPage() {
             includeReplied,
           },
           sendIntervalSeconds: autoColdSend || forceSlowBatch ? Math.max(30, sendIntervalSeconds || 30) : 60,
-        });
+        };
+        const res = await runManualSendIntent(
+          batchSendIntent,
+          payload,
+          (idempotencyKey) => api.post('/emails/send-batch', payload, {
+            headers: { 'Idempotency-Key': idempotencyKey },
+          }),
+        );
         setResult({ type: 'batch', data: res.data });
       }
       localStorage.removeItem(CROSS_PAGE_KEY);

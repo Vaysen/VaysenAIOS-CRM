@@ -6,6 +6,20 @@ import { z } from 'zod';
 
 type CreatableAgentRunKind = Extract<AgentRunKind, 'READ_LEAD_SUMMARY' | 'DRAFT_FOLLOW_UP'>;
 export type AssistantBusinessStatus = 'PROCESSING' | 'SUCCEEDED' | 'BLOCKED' | 'FAILED';
+export type AssistantMode = 'ask' | 'insight' | 'draft' | 'action';
+export type AssistantIntent = 'ASK' | 'INSIGHT' | 'DRAFT' | 'ACTION';
+export type AssistantQualityStatus = 'PASSED' | 'RETRIED_PASSED' | 'DEGRADED';
+
+export interface AssistantResponseDiagnostics {
+  intent: AssistantIntent;
+  responseSource: 'deterministic_action' | 'openclaw_gateway' | 'zhipu' | 'zhipu_fallback' | 'quality_gate_fallback';
+  model: string | null;
+  latencyMs: number;
+  tools: string[];
+  approvalReceipt: string | null;
+  qualityStatus: AssistantQualityStatus;
+  qualityRetryCount: number;
+}
 
 export interface AssistantChatTurn {
   id: string;
@@ -27,6 +41,10 @@ export interface AssistantChatTurn {
     | 'OPENCLAW_TOOL_RESULT';
   agentRunId: string | null;
   toolReceipts: AssistantOpenClawToolReceipt[];
+  intent: AssistantIntent;
+  diagnostics: AssistantResponseDiagnostics | null;
+  /** 业务助理的思考过程（deepseek-reasoner 生成，展示在回复上方折叠区） */
+  thinking?: string | null;
 }
 
 export interface AssistantOpenClawToolReceipt {
@@ -104,9 +122,27 @@ export interface AssistantWhatsappTextProposal {
   };
 }
 
+export interface AssistantCustomerActionReviewProposal {
+  kind: 'CUSTOMER_ACTION_REVIEW';
+  status: 'REQUIRES_CONFIRMATION';
+  expiresAt: string;
+  instruction: string;
+  target: {
+    leadId: string;
+    name: string;
+  };
+  safety: {
+    automaticSend: false;
+    requiresHumanConfirmation: true;
+    externalSend: false;
+    execution: 'SIMULATION_ONLY';
+  };
+}
+
 export type AssistantActionProposal =
   | AssistantQuoteDeliveryProposal
-  | AssistantWhatsappTextProposal;
+  | AssistantWhatsappTextProposal
+  | AssistantCustomerActionReviewProposal;
 
 export interface AssistantPendingAction {
   id: string;
@@ -222,9 +258,27 @@ const assistantWhatsappTextProposalSchema = z
     }
   });
 
+const assistantCustomerActionReviewProposalSchema = z.strictObject({
+  kind: z.literal('CUSTOMER_ACTION_REVIEW'),
+  status: z.literal('REQUIRES_CONFIRMATION'),
+  expiresAt: isoDateSchema,
+  instruction: z.string().min(1).max(4_000),
+  target: z.strictObject({
+    leadId: z.string().uuid(),
+    name: z.string().min(1).max(256),
+  }),
+  safety: z.strictObject({
+    automaticSend: z.literal(false),
+    requiresHumanConfirmation: z.literal(true),
+    externalSend: z.literal(false),
+    execution: z.literal('SIMULATION_ONLY'),
+  }),
+});
+
 const assistantActionProposalSchema = z.union([
   assistantQuoteDeliveryProposalSchema,
   assistantWhatsappTextProposalSchema,
+  assistantCustomerActionReviewProposalSchema,
 ]);
 
 const assistantPendingActionSchema = z
@@ -279,6 +333,23 @@ const assistantOpenClawToolReceiptSchema = z.strictObject({
   completedAt: isoDateSchema.nullable(),
 });
 
+const assistantResponseDiagnosticsSchema = z.strictObject({
+  intent: z.enum(['ASK', 'INSIGHT', 'DRAFT', 'ACTION']),
+  responseSource: z.enum([
+    'deterministic_action',
+    'openclaw_gateway',
+    'zhipu',
+    'zhipu_fallback',
+    'quality_gate_fallback',
+  ]),
+  model: z.string().min(1).max(256).nullable(),
+  latencyMs: z.number().int().min(0).max(300_000),
+  tools: z.array(z.string().regex(/^crm\.[a-z_]+$/)).max(8),
+  approvalReceipt: z.string().min(1).max(160).nullable(),
+  qualityStatus: z.enum(['PASSED', 'RETRIED_PASSED', 'DEGRADED']),
+  qualityRetryCount: z.number().int().min(0).max(1),
+});
+
 const assistantChatTurnSchema = z
   .strictObject({
     id: z.string().uuid(),
@@ -304,8 +375,18 @@ const assistantChatTurnSchema = z
     ]),
     agentRunId: z.string().uuid().nullable(),
     toolReceipts: z.array(assistantOpenClawToolReceiptSchema).max(8),
+    intent: z.enum(['ASK', 'INSIGHT', 'DRAFT', 'ACTION']),
+    diagnostics: assistantResponseDiagnosticsSchema.nullable(),
+    thinking: z.string().nullable().optional(),
   })
   .superRefine((turn, context) => {
+    if (turn.diagnostics && turn.diagnostics.intent !== turn.intent) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['diagnostics', 'intent'],
+        message: 'diagnostic intent must match the response intent',
+      });
+    }
     const isOpenClawToolResult = turn.responseKind === 'OPENCLAW_TOOL_RESULT';
     if (isOpenClawToolResult && turn.toolReceipts.length === 0) {
       context.addIssue({
@@ -527,6 +608,8 @@ export async function sendAssistantChat(input: {
   companyId: string;
   threadId: string;
   message: string;
+  mode?: AssistantMode;
+  customerId?: string;
   pathname?: string;
   whatsapp?: {
     name: string;
@@ -537,10 +620,13 @@ export async function sendAssistantChat(input: {
   };
 }): Promise<AssistantChatTurn> {
   const requestId = input.requestId || createClientUuid();
-  const response = await api.post<unknown>('/agent-runs/assistant/chat', {
-    ...input,
-    requestId,
-  });
+  // OpenClaw 对话（含工具调用）可能耗时 20-60s+，超出全局 15s 超时会导致前端先断。
+  // 这里单独给 AI 业务助理对话 90s 超时，避免 outbox 锁死导致"无法收发消息"。
+  const response = await api.post<unknown>(
+    '/agent-runs/assistant/chat',
+    { ...input, requestId },
+    { timeout: 90000 },
+  );
   return parseAssistantChatTurn(response.data);
 }
 

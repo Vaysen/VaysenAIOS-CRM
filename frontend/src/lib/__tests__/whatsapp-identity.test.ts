@@ -3,6 +3,7 @@ import {
   findUniqueExactMatch,
   findLeadByTrustedWhatsAppIdentity,
   normalizeWhatsAppName,
+  normalizeWhatsAppE164,
   normalizeWhatsAppPhone,
   sanitizeWhatsAppDisplayName,
 } from '../whatsapp-identity';
@@ -13,26 +14,30 @@ describe('WhatsApp identity fail-closed helpers', () => {
     '正在输入…',
     'last seen yesterday at 10:00',
     'typing...',
+    'recording audio',
+    '\u5f55\u97f3\u4e2d',
     '在线',
   ])('拒绝状态文案: %s', (value) => {
     expect(sanitizeWhatsAppDisplayName(value)).toBeNull();
   });
 
   it('保留并规范真实姓名', () => {
-    expect(sanitizeWhatsAppDisplayName('  Sample Buyer  ')).toBe('Sample Buyer');
-    expect(normalizeWhatsAppName('  Sample Buyer  ')).toBe('sample buyer');
+    expect(sanitizeWhatsAppDisplayName('  AcmeCorp  ')).toBe('AcmeCorp');
+    expect(normalizeWhatsAppName('  AcmeCorp  ')).toBe('elvis-w');
   });
 
   it('号码只做完整规范化，不截取尾号', () => {
     expect(normalizeWhatsAppPhone('+86 153 0600 1234')).toBe('8615306001234');
     expect(normalizeWhatsAppPhone('0086 153 0600 1234')).toBe('8615306001234');
+    expect(normalizeWhatsAppE164('+86 133 6592 3697')).toBe('+8613365923697');
+    expect(normalizeWhatsAppE164('1234567890@lid')).toBeNull();
   });
 
   it('仅唯一精确命中时返回结果', () => {
-    const values = [{ name: 'sample buyer' }, { name: 'other' }];
-    expect(findUniqueExactMatch(values, 'sample buyer', (item) => item.name)).toEqual(values[0]);
-    expect(findUniqueExactMatch([...values, { name: 'sample buyer' }], 'sample buyer', (item) => item.name)).toBeUndefined();
-    expect(findUniqueExactMatch(values, 'sample', (item) => item.name)).toBeUndefined();
+    const values = [{ name: 'elvis-w' }, { name: 'other' }];
+    expect(findUniqueExactMatch(values, 'elvis-w', (item) => item.name)).toEqual(values[0]);
+    expect(findUniqueExactMatch([...values, { name: 'elvis-w' }], 'elvis-w', (item) => item.name)).toBeUndefined();
+    expect(findUniqueExactMatch(values, 'elvis', (item) => item.name)).toBeUndefined();
   });
 
   it('可信 WhatsApp ContactPoint 优先于旧字段中的重复号码', () => {

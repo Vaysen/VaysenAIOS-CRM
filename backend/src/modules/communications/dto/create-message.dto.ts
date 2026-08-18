@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsObject, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsObject, IsIn, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateMessageDto {
@@ -51,4 +51,10 @@ export class CreateMessageDto {
   @IsOptional()
   @IsString()
   receivedAt?: string;
+
+  @ApiPropertyOptional({ description: 'Canonical idempotency key for outbound provider delivery' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9._:/-]{7,199}$/)
+  idempotencyKey?: string;
 }

@@ -36,9 +36,11 @@ function normalizeServiceUrl(name: string, rawValue: string, requireRootPath = f
     throw new Error(`${name} must be a credential-free http(s) origin without query or fragment`);
   }
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.localhost')
+  const allowLocalStub = process.env.NODE_ENV === 'test'
+    && process.env.EVOLUTION_API_LOCAL_STUB === 'true';
+  if (!allowLocalStub && (hostname === 'localhost' || hostname.endsWith('.localhost')
     || hostname === '0.0.0.0' || hostname === '::' || hostname === '::1'
-    || hostname.startsWith('127.') || hostname.startsWith('::ffff:127.')) {
+    || hostname.startsWith('127.') || hostname.startsWith('::ffff:127.'))) {
     throw new Error(`${name} must not use a loopback or wildcard host`);
   }
   if (requireRootPath && url.pathname !== '/') {

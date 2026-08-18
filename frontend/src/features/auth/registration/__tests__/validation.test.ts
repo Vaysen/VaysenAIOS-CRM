@@ -41,12 +41,12 @@ describe('validation', () => {
       expect(validateField('password', '')).toBe('密码不能为空');
     });
 
-    it('password: 少于6位报错', () => {
-      expect(validateField('password', '12345')).toBe('密码至少6位');
+    it('password: 少于12位报错', () => {
+      expect(validateField('password', '12345678901')).toBe('密码至少12位');
     });
 
-    it('password: 6位通过', () => {
-      expect(validateField('password', '123456')).toBeUndefined();
+    it('password: 12位通过', () => {
+      expect(validateField('password', '123456789012')).toBeUndefined();
     });
 
     it('firstName: 空值报错', () => {
@@ -85,7 +85,7 @@ describe('validation', () => {
     it('全有效值返回无错误', () => {
       const values: RegistrationValues = {
         username: 'chris',
-        password: 'password123',
+        password: 'password1234',
         firstName: 'John',
         lastName: 'Smith',
         companyName: 'ABC Co',

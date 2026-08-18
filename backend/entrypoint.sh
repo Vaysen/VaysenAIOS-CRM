@@ -2,7 +2,7 @@
 set -e
 
 # =============================================================================
-# Vaysen AI CRM Docker Entrypoint — Production Startup
+# Vaysen Docker Entrypoint — Production Startup
 # =============================================================================
 # 1. Wait for PostgreSQL TCP port to be reachable
 # 2. Wait for PostgreSQL to accept authenticated connections

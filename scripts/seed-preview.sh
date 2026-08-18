@@ -1,5 +1,5 @@
 #!/bin/bash
-# Vaysen AI CRM — Preview Demo Data Seed
+# Vaysen Trade OS — Preview Demo Data Seed
 # Run: bash scripts/seed-preview.sh
 
 echo "=== Seeding preview demo data ==="

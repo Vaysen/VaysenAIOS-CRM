@@ -104,7 +104,7 @@ export default function EmailTemplatesPage() {
       const res = await api.post(`/email-templates/${template.id}/preview`, {
         variables: {
           contact_name: 'John Smith', company_name: 'ABC Foods Ltd', country: 'United States',
-          product_name: 'Macaroni Production Line', sender_name: 'David', sender_company: 'Example Trading Company',
+          product_name: 'Macaroni Production Line', sender_name: 'David', sender_company: 'Vaysen Packaging',
           website: 'https://example.com', pain_point: 'improve production efficiency', last_email_date: '2026-05-28',
         },
       });

@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsArray, IsObject } from 'class-validator';
+import { IsString, IsOptional, IsArray, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class SendMailDto {
@@ -31,5 +31,12 @@ export class SendMailDto {
   @ApiPropertyOptional({ description: 'Attachments' })
   @IsOptional()
   @IsArray()
-  attachments?: { filename: string; content?: string }[];
+  attachments?: { filename: string; content?: string; mimeType?: string; sourceId?: string }[];
+
+  @ApiPropertyOptional({ description: 'Canonical idempotency key; the HTTP Idempotency-Key header is preferred' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9._:/-]{7,199}$/)
+  idempotencyKey?: string;
+
 }

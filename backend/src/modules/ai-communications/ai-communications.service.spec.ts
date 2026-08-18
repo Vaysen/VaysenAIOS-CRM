@@ -35,7 +35,11 @@ describe('AiCommunicationsService translation cache', () => {
       getModel: jest.fn().mockReturnValue('glm-4.5-air'),
     };
     const service = new AiCommunicationsService(prisma, ai);
-    const user = { companies: [{ id: companyId }] };
+    const user = {
+      activeCompanyId: companyId,
+      activeCompany: { id: companyId, name: companyId, role: 'sales_user' },
+      companies: [{ id: companyId, name: companyId, role: 'sales_user' }],
+    };
 
     const first = await service.translateDraft('你好', user, 'en');
     const second = await service.translateDraft('你好', user, 'en');

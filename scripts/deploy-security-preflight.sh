@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vaysen AI CRM deployment filesystem security preflight.
+# Vaysen Pilot deployment filesystem security preflight.
 # Read-only: this script never changes ownership or permissions.
 
 set -euo pipefail
@@ -131,6 +131,29 @@ for file in "$PROJECT_DIR/backend/Dockerfile" "$PROJECT_DIR/backend/entrypoint.s
     check_not_writable_by_group_or_other "$file"
     check_immutable_bytes "$file"
 done
+
+for file in "$PROJECT_DIR/package.json" "$PROJECT_DIR/package-lock.json" \
+    "$PROJECT_DIR/backend/package.json" "$PROJECT_DIR/backend/package-lock.json" \
+    "$PROJECT_DIR/frontend/package.json" "$PROJECT_DIR/frontend/package-lock.json" \
+    "$PROJECT_DIR/electron/package.json" "$PROJECT_DIR/electron/package-lock.json" \
+    "$PROJECT_DIR/deploy/openclaw/plugins/vaysen-crm/package.json" \
+    "$PROJECT_DIR/deploy/openclaw/plugins/vaysen-crm/npm-shrinkwrap.json" \
+    "$PROJECT_DIR/scripts/verify-production-audit.mjs" \
+    "$PROJECT_DIR/security/npm-audit-exceptions.json"; do
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
+        fail "required production audit input missing or symlinked: $file"
+        continue
+    fi
+    check_identity "$file"
+    check_not_writable_by_group_or_other "$file"
+    check_immutable_bytes "$file"
+done
+
+if npm --prefix "$PROJECT_DIR" run verify:production-audits; then
+    ok "five independent live production dependency audits passed"
+else
+    fail "production dependency audit gate failed"
+fi
 
 # A writable helper/config anywhere in these deployment-owned trees can replace
 # a command that deploy.sh invokes or alter a bind mount. Check regular files;

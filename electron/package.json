@@ -1,11 +1,11 @@
 {
   "name": "vaysen-crm-desktop",
-  "version": "1.4.29",
-  "productName": "Vaysen AI CRM",
-  "description": "Vaysen AI CRM desktop client for self-hosted B2B sales operations",
+  "version": "1.4.52",
+  "productName": "Vaysen 外贸系统",
+  "description": "Vaysen Vaysen包装局域网外贸业务桌面客户端",
   "main": "dist/main/app.js",
-  "author": "Vaysen AI",
-  "license": "Apache-2.0",
+  "author": "Vaysen Packaging",
+  "license": "private",
   "engines": {
     "node": ">=20 <21",
     "npm": ">=10 <11"
@@ -23,6 +23,7 @@
     "dist": "npm run release:prepare && electron-builder --win",
     "pack": "npm run release:prepare && electron-builder --win --dir",
     "verify:update-chain": "node scripts/verify-update-chain.mjs",
+    "smoke:installer": "node scripts/installer-smoke-paths.test.mjs && node scripts/installer-smoke.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -44,5 +45,23 @@
     "ts-jest": "^29.4.11",
     "typescript": "^5.7.0",
     "wait-on": "^8.0.1"
+  },
+  "overrides": {
+    "@istanbuljs/load-nyc-config": {
+      "js-yaml": "3.15.1"
+    },
+    "app-builder-lib": {
+      "js-yaml": "4.3.1"
+    },
+    "builder-util": {
+      "js-yaml": "4.3.1"
+    },
+    "dmg-builder": {
+      "js-yaml": "4.3.1"
+    },
+    "electron-updater": {
+      "js-yaml": "4.3.1"
+    },
+    "fast-uri": "3.1.5"
   }
 }

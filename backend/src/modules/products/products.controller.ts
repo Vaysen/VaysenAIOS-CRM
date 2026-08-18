@@ -8,6 +8,10 @@ import { CreateCategoryDto, UpdateCategoryDto } from './dto/create-category.dto'
 import { CreateAttributeDto, UpdateAttributeDto } from './dto/create-attribute.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import {
+  CreateProductSpecDto,
+  UpdateProductSpecDto,
+} from './dto/product-spec.dto';
 
 @ApiTags('Products')
 @ApiBearerAuth()
@@ -130,7 +134,7 @@ export class ProductsController {
   addProductSpec(
     @CurrentUser() user: any,
     @Param('id') productId: string,
-    @Body() dto: any,
+    @Body() dto: CreateProductSpecDto,
   ) {
     return this.productsService.addProductSpec(user, productId, dto);
   }
@@ -141,7 +145,7 @@ export class ProductsController {
     @CurrentUser() user: any,
     @Param('id') productId: string,
     @Param('specId') specId: string,
-    @Body() dto: any,
+    @Body() dto: UpdateProductSpecDto,
   ) {
     return this.productsService.updateProductSpec(user, productId, specId, dto);
   }

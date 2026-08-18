@@ -15,10 +15,10 @@ const TYPEBOX_VERSION = '1.3.3';
 const TYPEBOX_INTEGRITY = 'sha512-URXGUE31PJDQC+PtRMJeLdF4kmmOdFoVPikPCtV2oOIhUpNpppEdIz7W8bH8cFYPYHdDpaRvqwdegMTmHliudg==';
 const QRCODE_INTEGRITY = 'sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==';
 const ZOD_INTEGRITY = 'sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==';
-const PRIVATE_CRM_INTEGRITY = 'sha512-fu6j3WS59SqYdJ6rcazF+fz4yrxSwb7UCXw7XRogJo0DBnE0PtNUtls8CsTU3jt47ugk9DbYa6tj8tBIAvQIJQ==';
-const PRIVATE_CRM_SHASUM = '1cdcf64ba32552e34b2ac8700f8a014fab53cd66';
-const PRIVATE_CRM_SHA256 = 'd7259621593500451537179caa31341a026e6f9a4181ca88a6a0879b211826ed';
-const PRIVATE_CRM_TREE_SHA256 = 'a7dbe8428e8c4d6bb492f792b0fde81fe759ccb141dcaefe5e6ee4bbbc60161d';
+const PRIVATE_CRM_INTEGRITY = 'sha512-hpI8KOB+A/Xc66V5kAA8Z74MsTcatFlUEnrg9QiV9r//UWPWtVu1IOz5KKG5YQXpQ2rGW+kXpYsIiZjWel8DjQ==';
+const PRIVATE_CRM_SHASUM = 'df125cf3c7a2f323fcc4328d9401bbbbdd04b41a';
+const PRIVATE_CRM_SHA256 = '1fadb55fa0be8cf451116e656cf8a5063348a2f37732e435a1d0b9ccc08c1e12';
+const PRIVATE_CRM_TREE_SHA256 = '12c25963cfe68631b1e363886bf7001f56c06dc4844b656a1f4a33a5333f8893';
 const EXPECTED_WORKSPACE = '/opt/vaysen-workspace';
 
 const sorted = (value) => [...value].sort();
@@ -234,16 +234,30 @@ export function validateProductionConfig(text) {
     'crm_start_background_research', 'crm_prepare_quote_delivery',
     'crm_whatsapp_messages_read', 'crm_whatsapp_send_text', 'crm_whatsapp_send_quote',
     'crm_email_messages_read', 'crm_email_send', 'crm_email_reply',
-    'browser', 'heartbeat_respond', 'tts',
+    'heartbeat_respond', 'tts',
   ];
   if (config?.tools?.profile !== 'coding'
     || Object.hasOwn(config?.tools ?? {}, 'allow')
     || !sameSet(config?.tools?.alsoAllow, expectedTools)) {
     issues.push('the business-supervisor agent must use the reviewed coding profile and exact tool extension set');
   }
-  const expectedDeniedTools = ['exec', 'process', 'gateway', 'nodes', 'message'];
+  const expectedDeniedTools = [
+    'exec', 'process', 'gateway', 'nodes', 'message', 'browser', 'browser-automation',
+  ];
   if (!sameSet(config?.tools?.deny, expectedDeniedTools)) {
     issues.push('tools.deny must keep the exact infrastructure-bypass boundary');
+  }
+  const exposedTools = [
+    ...(config?.tools?.allow ?? []),
+    ...(config?.tools?.alsoAllow ?? []),
+  ].map((tool) => String(tool).trim().toLowerCase());
+  if (exposedTools.some((tool) => (
+    tool === 'browser'
+    || tool === 'browser-automation'
+    || tool.startsWith('browser.')
+    || tool.startsWith('browser_')
+  ))) {
+    issues.push('production Supervisor must not expose general browser or browser-automation tools');
   }
   if (config?.tools?.elevated?.enabled !== false || config?.tools?.fs?.workspaceOnly !== true) issues.push('elevated/filesystem tool boundary changed');
   return issues;
@@ -290,6 +304,15 @@ export function validateProductionArtifacts(files) {
     || !files.prepare.includes('verify-host-contract.mjs "$TYPEBOX_VERSION"')
     || !files.audit.includes('verifyOpenClawHostContractFiles')) {
     issues.push('private CRM TypeBox pin must match the fail-closed OpenClaw host dependency/override contract');
+  }
+  if (privatePackage?.name !== '@vaysen/openclaw-crm-tools'
+    || privatePackage?.version !== '1.3.2'
+    || !files.readme.includes('`@vaysen/openclaw-crm-tools@1.3.2`')
+    || !files.readme.includes('21 个 `vaysen-crm` 工具')
+    || !files.readme.includes('OutboundComplianceService')
+    || !files.readme.includes('ExternalActionOutbox')
+    || !files.readme.includes('人工审批或短期授权')) {
+    issues.push('private CRM README must match the reviewed 1.3.2, 21-tool, human-gated Guard/Outbox contract');
   }
   const privateInstallConfig = JSON.parse(files.privateInstallConfig);
   const privateInstallPlugins = privateInstallConfig?.plugins;
@@ -401,7 +424,7 @@ export function validateProductionArtifacts(files) {
     issues.push('reviewed read-only workspace file contract is missing');
   }
   if (!/^# IDENTITY\.md — JY AI 业务助理$/m.test(files.workspace?.['IDENTITY.md'] ?? '')
-    || !/示例贸易公司（Example Trading Company）/.test(files.workspace?.['USER.md'] ?? '')
+    || !/Vaysen包装（Vaysen Packaging）/.test(files.workspace?.['USER.md'] ?? '')
     || !/不配置任何自主心跳任务/.test(files.workspace?.['HEARTBEAT.md'] ?? '')) {
     issues.push('reviewed workspace identity, owner context, or disabled-heartbeat policy is missing');
   }

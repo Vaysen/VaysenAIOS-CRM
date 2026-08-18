@@ -7,9 +7,13 @@ dist
 .env.*
 !.env.example
 test
+test/**
 __tests__
+**/__tests__/**
 *.spec.ts
+**/*.spec.ts
 *.e2e-spec.ts
+**/*.e2e-spec.ts
 uploads
 .customizer-assets
 .runtime

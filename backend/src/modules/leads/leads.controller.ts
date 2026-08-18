@@ -267,13 +267,13 @@ export class LeadsController {
   @ApiOperation({ summary: 'AI sales coach analysis for a lead' })
   @ApiResponse({ status: 201, description: 'AI analysis completed' })
   getAiCoach(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.aiCoachService.analyze(id, user.companies[0]?.id);
+    return this.aiCoachService.analyze(id, user);
   }
 
   @Post(':id/tags')
   @ApiOperation({ summary: 'Add tags to a lead' })
   addTags(@Param('id') id: string, @Body() dto: { tagIds: string[] }, @CurrentUser() user: any) {
-    return this.leadsService.addTagsToLead(id, dto.tagIds, user.id);
+    return this.leadsService.addTagsToLead(id, dto.tagIds, user);
   }
 
   @Delete(':id/tags/:tagId')

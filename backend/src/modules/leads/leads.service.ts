@@ -23,12 +23,19 @@ import {
   checkResourceAccess,
   applyDataIsolation,
   getAccessibleCompanyIds,
+  requireActiveCompany,
 } from '../../common/utils/data-isolation';
 import * as XLSX from 'xlsx';
 import OpenAI from 'openai';
 import { TagsService } from '../tags/tags.service';
 import { LanguageService } from '../../common/services/language.service';
 import { resolveBusinessContext } from '../../common/business-context';
+import {
+  emailAddressEvidenceHash,
+  normalizeVerifiedEmailAddress,
+  writeEmailVerificationEvidence,
+} from '../outbound/email-verification-evidence';
+import { requestTrustedProviderJson } from '../../common/http/trusted-provider-client';
 
 const VALID_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -546,8 +553,9 @@ export class LeadsService {
   }
 
   async findOne(id: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id },
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, companyId: activeCompany.id, deletedAt: null },
       include: {
         owner: { select: { id: true, firstName: true, lastName: true, email: true } },
         company: { select: { id: true, name: true, slug: true } },
@@ -598,10 +606,7 @@ export class LeadsService {
   }
 
   async create(dto: CreateLeadDto, currentUser: any) {
-    const companyId = dto.companyId || currentUser.companies[0]?.id;
-    if (!companyId) {
-      throw new ForbiddenException('No company associated');
-    }
+    const companyId = dto.companyId || requireActiveCompany(currentUser).id;
 
     await this.checkWriteAccess(currentUser, companyId);
 
@@ -728,8 +733,11 @@ export class LeadsService {
   }
 
   async update(id: string, dto: UpdateLeadDto, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id } });
-    if (!lead || lead.deletedAt) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) {
       throw new NotFoundException('Lead not found');
     }
 
@@ -752,7 +760,39 @@ export class LeadsService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.lead.findUnique({
+        where: { id },
+        select: { contactEmail: true },
+      });
+      if (!current) throw new NotFoundException('Lead not found');
+      const emailChanged = dto.contactEmail !== undefined
+        && normalizeVerifiedEmailAddress(dto.contactEmail)
+          !== normalizeVerifiedEmailAddress(current.contactEmail);
+      if (emailChanged) {
+        updateData.emailVerificationStatus = 'unverified';
+        updateData.emailVerificationReason = 'Email address changed; trusted re-verification is required';
+        updateData.emailVerifiedAddressHash = null;
+      }
       const l = await tx.lead.update({ where: { id }, data: updateData });
+      if (emailChanged) {
+        await tx.externalActionOutbox.updateMany({
+          where: {
+            companyId: lead.companyId,
+            channel: 'EMAIL',
+            targetType: 'lead',
+            targetId: id,
+            status: { in: ['PENDING', 'FAILED'] },
+          },
+          data: {
+            status: 'CANCELLED',
+            cancelledAt: new Date(),
+            completedAt: new Date(),
+            nextAttemptAt: null,
+            lastErrorCode: 'TARGET_EMAIL_CHANGED',
+            lastError: 'Recipient address changed after this action was reserved',
+          },
+        });
+      }
 
       const ownerChanged = dto.ownerUserId !== undefined && dto.ownerUserId !== lead.ownerUserId;
 
@@ -818,8 +858,11 @@ export class LeadsService {
 
   /** 手动更新客户语言 */
   async updateLanguage(id: string, language: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id } });
-    if (!lead || lead.deletedAt) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) {
       throw new NotFoundException('Lead not found');
     }
     await this.checkLeadAccess(currentUser, lead);
@@ -836,8 +879,11 @@ export class LeadsService {
   }
 
   async remove(id: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id } });
-    if (!lead || lead.deletedAt) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) {
       throw new NotFoundException('Lead not found');
     }
 
@@ -876,8 +922,11 @@ export class LeadsService {
   }
 
   async updateStatus(id: string, dto: UpdateLeadStatusDto, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id } });
-    if (!lead || lead.deletedAt) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) {
       throw new NotFoundException('Lead not found');
     }
 
@@ -941,8 +990,9 @@ export class LeadsService {
   }
 
   async deepResearch(id: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id },
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, companyId: activeCompany.id, deletedAt: null },
       include: {
         company: true,
         owner: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -1384,11 +1434,11 @@ Rules:
 
     // Company scope: always use the active workspace. Admins can see all users inside
     // that workspace, but should not see other industry workspaces by default.
-    const companyIds = getAccessibleCompanyIds(currentUser);
-    where.companyId = { in: companyIds };
+    const activeCompany = requireActiveCompany(currentUser);
+    where.companyId = activeCompany.id;
 
     // Sub-account isolation: non-admin sees only own leads
-    where.ownerUserId = hasFullAccess(currentUser)
+    where.ownerUserId = hasFullAccess(currentUser, activeCompany.id)
       ? (query.ownerUserId || undefined)
       : currentUser.id;
 
@@ -1552,9 +1602,7 @@ Rules:
   }
 
   private getDefaultCompanyId(currentUser: CurrentUser) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company context found');
-    return companyId;
+    return requireActiveCompany(currentUser).id;
   }
 
   private parseExternalLeadMarkdown(content: string) {
@@ -1714,13 +1762,13 @@ Rules:
   }
 
   private async checkLeadAccess(currentUser: CurrentUser, lead: any) {
-    if (hasFullAccess(currentUser)) return;
-
     // Company scope check
-    const userCompanyIds = getAccessibleCompanyIds(currentUser);
-    if (!userCompanyIds.includes(lead.companyId)) {
+    const activeCompany = requireActiveCompany(currentUser);
+    if (activeCompany.id !== lead.companyId) {
       throw new ForbiddenException('Cannot access leads from another company');
     }
+
+    if (hasFullAccess(currentUser, lead.companyId)) return;
 
     // Sub-account isolation: non-admin can only access own leads
     if (lead.ownerUserId && lead.ownerUserId !== currentUser.id) {
@@ -1729,7 +1777,10 @@ Rules:
   }
 
   private async checkWriteAccess(currentUser: CurrentUser, companyId: string) {
-    if (hasFullAccess(currentUser)) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) {
@@ -1742,7 +1793,10 @@ Rules:
   }
 
   private async checkManagerAccess(currentUser: CurrentUser, companyId: string) {
-    if (hasFullAccess(currentUser)) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) {
@@ -1761,7 +1815,7 @@ Rules:
   async verifyLeadEmail(currentUser: any, leadId: string) {
     const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
     if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
-    await this.checkWriteAccess(currentUser, lead.companyId);
+    await this.assertActiveCompanyAdmin(currentUser, lead.companyId);
     await this.verifyNewLeadEmail(lead.id, lead.contactEmail || '', lead.website || lead.websiteDomain || undefined);
     const updated = await this.prisma.lead.findUnique({
       where: { id: lead.id },
@@ -1777,8 +1831,8 @@ Rules:
     dateRange?: string;
     sourceTypes?: string[];
   }) {
-    const companyId = this.getDefaultCompanyId(currentUser);
-    await this.checkManagerAccess(currentUser, companyId);
+    const companyId = String(currentUser?.activeCompanyId || '').trim();
+    await this.assertActiveCompanyAdmin(currentUser, companyId);
     const range = this.resolveExternalPoolRange(dto.dateRange, dto.date);
     const sourceTypes = dto.sourceTypes?.length ? dto.sourceTypes : EXTERNAL_POOL_SOURCE_TYPES;
     const where: any = {
@@ -1802,6 +1856,7 @@ Rules:
         website: true,
         websiteDomain: true,
         emailVerificationStatus: true,
+        emailVerifiedAddressHash: true,
       },
       take: 1000,
       orderBy: [{ collectedAt: 'desc' }, { createdAt: 'desc' }],
@@ -1825,7 +1880,10 @@ Rules:
         }
         continue;
       }
-      if (VERIFIED_EMAIL_STATUSES.has(lead.emailVerificationStatus)) {
+      if (
+        VERIFIED_EMAIL_STATUSES.has(lead.emailVerificationStatus)
+        && lead.emailVerifiedAddressHash === emailAddressEvidenceHash(lead.contactEmail)
+      ) {
         alreadyVerified += 1;
         results.push({ id: lead.id, status: lead.emailVerificationStatus });
         continue;
@@ -1849,51 +1907,48 @@ Rules:
     const [localPart, domain] = contactEmail.toLowerCase().split('@');
     const mailbox = localPart.split(/[.+_-]/)[0];
     if (VERIFY_PLACEHOLDER_DOMAINS.has(domain) || VERIFY_PLACEHOLDER_LOCALS.has(localPart) || /^(john|jane)([._-]?doe)?\d*$/.test(localPart) || /^test\d*$/.test(localPart)) {
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { emailVerificationStatus: 'rejected', emailVerificationReason: 'Placeholder email is not a real customer mailbox' },
-      });
+      await this.writeEmailVerification(
+        leadId, contactEmail, 'rejected',
+        'Placeholder email is not a real customer mailbox',
+      );
       return;
     }
 
     const reacherResult = await this.verifyWithReacher(contactEmail.toLowerCase());
     if (reacherResult === true) {
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { emailVerificationStatus: 'smtp_verified', emailVerificationReason: 'Reacher accepted the mailbox as reachable' },
-      });
+      await this.writeEmailVerification(
+        leadId, contactEmail, 'smtp_verified',
+        'Reacher accepted the mailbox as reachable', true,
+      );
       return;
     }
     if (reacherResult === false) {
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { emailVerificationStatus: 'rejected', emailVerificationReason: 'Reacher rejected the mailbox' },
-      });
+      await this.writeEmailVerification(
+        leadId, contactEmail, 'rejected', 'Reacher rejected the mailbox',
+      );
       return;
     }
 
     if (VERIFY_FREE_DOMAINS.has(domain)) {
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { emailVerificationStatus: 'rejected', emailVerificationReason: 'Free mailbox not allowed for cold outreach' },
-      });
+      await this.writeEmailVerification(
+        leadId, contactEmail, 'rejected', 'Free mailbox not allowed for cold outreach',
+      );
       return;
     }
 
     if (VERIFY_BLOCKED_MAILBOXES.has(mailbox)) {
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { emailVerificationStatus: 'rejected', emailVerificationReason: `Blocked mailbox "${mailbox}" is not suitable for cold outreach` },
-      });
+      await this.writeEmailVerification(
+        leadId, contactEmail, 'rejected',
+        `Blocked mailbox "${mailbox}" is not suitable for cold outreach`,
+      );
       return;
     }
 
     const hasMx = await this.hasMxRecord(domain);
     if (!hasMx) {
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { emailVerificationStatus: 'rejected', emailVerificationReason: 'Email domain has no MX record' },
-      });
+      await this.writeEmailVerification(
+        leadId, contactEmail, 'rejected', 'Email domain has no MX record',
+      );
       return;
     }
 
@@ -1901,25 +1956,60 @@ Rules:
     const domainMatches = websiteDomain && (domain === websiteDomain || domain.endsWith('.' + websiteDomain));
     const isBusinessMailbox = VERIFY_BUSINESS_MAILBOXES.has(mailbox);
 
-    const status = domainMatches || isBusinessMailbox ? 'official_page_verified' : 'mx_domain_verified';
+    const status = 'mx_domain_verified';
     const reason = domainMatches
-      ? 'Auto verified: email domain matches lead website and MX exists'
+      ? 'MX exists and matches the user-supplied website; trusted mailbox proof is still required'
       : isBusinessMailbox
-        ? `Auto verified: business mailbox "${mailbox}" with valid MX`
-        : 'Auto verified: MX exists, mailbox role needs manual review';
+        ? `Business mailbox "${mailbox}" has MX, but trusted mailbox proof is still required`
+        : 'MX exists, mailbox role needs manual review';
 
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      data: { emailVerificationStatus: status, emailVerificationReason: reason },
+    await this.writeEmailVerification(leadId, contactEmail, status, reason);
+  }
+
+  private async writeEmailVerification(
+    leadId: string,
+    expectedEmail: string,
+    status: string,
+    reason: string,
+    trustedEvidence = false,
+  ) {
+    return writeEmailVerificationEvidence(this.prisma, {
+      leadId,
+      expectedEmail,
+      status,
+      reason,
+      trustedEvidence,
     });
+  }
+
+  private async assertActiveCompanyAdmin(currentUser: any, companyId: string) {
+    if (
+      !companyId
+      || currentUser?.activeCompanyId !== companyId
+      || (currentUser?.activeCompany?.id && currentUser.activeCompany.id !== companyId)
+      || !currentUser?.id
+    ) {
+      throw new ForbiddenException('An authenticated active company is required');
+    }
+    const relation = await this.prisma.userCompanyRelation.findFirst({
+      where: {
+        userId: currentUser.id,
+        companyId,
+        isActive: true,
+        user: { isActive: true, deletedAt: null },
+        company: { isActive: true },
+      },
+      include: { role: { select: { name: true } } },
+    });
+    if (!['company_admin', 'super_admin'].includes(String(relation?.role?.name || ''))) {
+      throw new ForbiddenException('Only an active company administrator may reverify email addresses');
+    }
   }
 
   private async verifyWithReacher(email: string): Promise<boolean | null> {
     const apiUrl = process.env.REACHER_API_URL;
     if (!apiUrl) return null;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
     try {
       const baseUrl = apiUrl.replace(/\/$/, '');
       const endpoints = baseUrl.endsWith('/check_email')
@@ -1927,14 +2017,16 @@ Rules:
         : [`${baseUrl}/v0/check_email`, `${baseUrl}/v1/check_email`];
       for (const endpoint of endpoints) {
         try {
-          const response = await fetch(endpoint, {
+          const response = await requestTrustedProviderJson(endpoint, {
+            provider: 'reacher',
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ to_email: email }),
-            signal: controller.signal,
+            timeoutMs: 10_000,
+            maxResponseBytes: 128 * 1024,
           });
           if (!response.ok) continue;
-          const data: any = await response.json().catch(() => null);
+          const data: any = response.data;
           const status = String(data?.is_reachable || data?.status || data?.result || '').toLowerCase();
           if (data?.is_reachable === 'safe' || data?.is_reachable === true || status === 'safe' || status === 'valid' || status === 'reachable') return true;
           if (data?.is_reachable === 'invalid' || data?.is_reachable === false || status === 'invalid' || status === 'rejected' || status === 'unreachable') return false;
@@ -1945,8 +2037,6 @@ Rules:
       return null;
     } catch {
       return null;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -2005,24 +2095,43 @@ Rules:
 
     // ========== Tag Management ==========
 
-  async addTagsToLead(leadId: string, tagIds: string[], userId: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
-    return this.tagsService.addTagsToLead(leadId, tagIds, userId);
+  async addTagsToLead(leadId: string, tagIds: string[], currentUser: any) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
+    await this.checkLeadAccess(currentUser, lead);
+    await this.checkWriteAccess(currentUser, lead.companyId);
+    return this.tagsService.addTagsToLead(
+      leadId,
+      tagIds,
+      currentUser.id,
+      lead.companyId,
+    );
   }
 
   async removeTagFromLead(leadId: string, tagId: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
-    if (!hasFullAccess(currentUser) && lead.ownerUserId !== currentUser.id) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
+    if (
+      !hasFullAccess(currentUser, lead.companyId)
+      && lead.ownerUserId !== currentUser.id
+    ) {
       throw new ForbiddenException('You can only modify tags on your own leads');
     }
-    return this.tagsService.removeTagFromLead(leadId, tagId);
+    return this.tagsService.removeTagFromLead(leadId, tagId, lead.companyId);
   }
 
   async pinLead(leadId: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
     await this.checkLeadAccess(currentUser, lead);
 
     await this.prisma.leadPin.upsert({
@@ -2034,6 +2143,13 @@ Rules:
   }
 
   async unpinLead(leadId: string, currentUser: any) {
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId: activeCompany.id, deletedAt: null },
+      select: { id: true, companyId: true, ownerUserId: true },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
+    await this.checkLeadAccess(currentUser, lead);
     await this.prisma.leadPin.deleteMany({ where: { leadId, userId: currentUser.id } });
     return { pinned: false };
   }
@@ -2054,7 +2170,12 @@ Rules:
       if (highConf) tagIds.push(highConf.id);
     }
     if (tagIds.length > 0 && userId) {
-      await this.tagsService.addTagsToLead(leadId, [...new Set(tagIds)], userId);
+      await this.tagsService.addTagsToLead(
+        leadId,
+        [...new Set(tagIds)],
+        userId,
+        companyId,
+      );
     }
   }
 

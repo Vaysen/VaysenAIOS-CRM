@@ -23,6 +23,6 @@ Get-CimInstance Win32_Process |
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
   }
 
-Write-Host "Stopped Vaysen AI CRM backend/frontend processes." -ForegroundColor Green
+Write-Host "Stopped Vaysen backend/frontend processes." -ForegroundColor Green
 Write-Host "Docker services are still running. To stop them too:" -ForegroundColor Yellow
 Write-Host "docker compose -f docker-compose.infra.local.yml down" -ForegroundColor Cyan

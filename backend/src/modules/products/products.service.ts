@@ -1,18 +1,35 @@
-import { Injectable, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/create-category.dto';
 import { CreateAttributeDto, UpdateAttributeDto } from './dto/create-attribute.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import usdPriceCatalog from './data/usd-price-catalog.json';
+import { requireActiveCompany } from '../../common/utils/data-isolation';
+import {
+  CreateProductSpecDto,
+  UpdateProductSpecDto,
+} from './dto/product-spec.dto';
 
 @Injectable()
 export class ProductsService {
   constructor(private prisma: PrismaService) {}
 
   private getCompanyId(user: any) {
-    const companyId = user.currentCompany?.id || user.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company context');
-    return companyId;
+    return requireActiveCompany(user).id;
+  }
+
+  private requireTenantManager(user: any) {
+    const active = requireActiveCompany(user);
+    if (!['super_admin', 'company_admin', 'sales_manager'].includes(active.role)) {
+      throw new ForbiddenException('A tenant manager role is required');
+    }
+    return active.id;
   }
 
   // ========== Category ==========
@@ -29,7 +46,7 @@ export class ProductsService {
   }
 
   async createCategory(user: any, dto: CreateCategoryDto) {
-    const companyId = this.getCompanyId(user);
+    const companyId = this.requireTenantManager(user);
 
     const existing = await this.prisma.productCategory.findUnique({
       where: { companyId_name: { companyId, name: dto.name } },
@@ -48,6 +65,7 @@ export class ProductsService {
   }
 
   async updateCategory(user: any, id: string, dto: UpdateCategoryDto) {
+    this.requireTenantManager(user);
     const category = await this.getCategoryOrThrow(user, id);
     return this.prisma.productCategory.update({
       where: { id: category.id },
@@ -57,6 +75,7 @@ export class ProductsService {
   }
 
   async deleteCategory(user: any, id: string) {
+    this.requireTenantManager(user);
     const category = await this.getCategoryOrThrow(user, id);
     const productCount = await this.prisma.product.count({ where: { categoryId: id } });
     if (productCount > 0) {
@@ -68,6 +87,7 @@ export class ProductsService {
   // ========== Attribute Template ==========
 
   async createAttribute(user: any, categoryId: string, dto: CreateAttributeDto) {
+    this.requireTenantManager(user);
     await this.getCategoryOrThrow(user, categoryId);
 
     const existing = await this.prisma.attributeTemplate.findUnique({
@@ -89,6 +109,7 @@ export class ProductsService {
   }
 
   async updateAttribute(user: any, categoryId: string, attrId: string, dto: UpdateAttributeDto) {
+    this.requireTenantManager(user);
     await this.getCategoryOrThrow(user, categoryId);
     const attr = await this.prisma.attributeTemplate.findFirst({
       where: { id: attrId, categoryId },
@@ -102,6 +123,7 @@ export class ProductsService {
   }
 
   async deleteAttribute(user: any, categoryId: string, attrId: string) {
+    this.requireTenantManager(user);
     await this.getCategoryOrThrow(user, categoryId);
     const attr = await this.prisma.attributeTemplate.findFirst({
       where: { id: attrId, categoryId },
@@ -118,7 +140,11 @@ export class ProductsService {
 
     const page = query.page || 1;
     const limit = query.limit || 20;
-    const where: any = { companyId, isActive: true };
+    const where: any = {
+      companyId,
+      isActive: true,
+      category: { companyId },
+    };
 
     if (query.categoryId) where.categoryId = query.categoryId;
     if (query.productType) where.productType = query.productType;
@@ -154,7 +180,7 @@ export class ProductsService {
   async getProduct(user: any, id: string) {
     const companyId = this.getCompanyId(user);
     const product = await this.prisma.product.findFirst({
-      where: { id, companyId },
+      where: { id, companyId, category: { companyId } },
       include: {
         category: {
           include: { attributeTemplates: { orderBy: { sortOrder: 'asc' } } },
@@ -171,7 +197,11 @@ export class ProductsService {
    */
   async searchProductSpecs(user: any, query: { q?: string; categoryId?: string }) {
     const companyId = this.getCompanyId(user);
-    const where: any = { companyId, isActive: true };
+    const where: any = {
+      companyId,
+      isActive: true,
+      category: { companyId },
+    };
 
     if (query.categoryId) where.categoryId = query.categoryId;
     if (query.q) {
@@ -242,7 +272,8 @@ export class ProductsService {
 
   // ========== Product Spec ==========
 
-  async addProductSpec(user: any, productId: string, dto: any) {
+  async addProductSpec(user: any, productId: string, dto: CreateProductSpecDto) {
+    this.requireTenantManager(user);
     await this.getProduct(user, productId);
     return this.prisma.productSpec.create({
       data: {
@@ -266,22 +297,61 @@ export class ProductsService {
     });
   }
 
-  async updateProductSpec(user: any, productId: string, specId: string, dto: any) {
+  async updateProductSpec(
+    user: any,
+    productId: string,
+    specId: string,
+    dto: UpdateProductSpecDto,
+  ) {
+    this.requireTenantManager(user);
     await this.getProduct(user, productId);
+    const forbiddenField = ['id', 'productId', 'isActive'].find((field) =>
+      Object.prototype.hasOwnProperty.call(dto, field),
+    );
+    if (forbiddenField) {
+      throw new BadRequestException(
+        `Product spec field cannot be updated: ${forbiddenField}`,
+      );
+    }
     const spec = await this.prisma.productSpec.findFirst({ where: { id: specId, productId } });
     if (!spec) throw new NotFoundException('规格不存在');
-    return this.prisma.productSpec.update({ where: { id: specId }, data: dto });
+    const data: any = {};
+    const allowedFields: Array<keyof UpdateProductSpecDto> = [
+      'specCode', 'size', 'widthCm', 'lengthCm', 'gussetCm',
+      'thicknessCm', 'unitPrice', 'moq', 'packPerBundle',
+      'bundleWeightKg', 'cartonSize', 'cartonLengthCm',
+      'cartonWidthCm', 'cartonHeightCm',
+    ];
+    for (const field of allowedFields) {
+      if (dto[field] !== undefined) data[field] = dto[field];
+    }
+    const result = await this.prisma.productSpec.updateMany({
+      where: { id: specId, productId },
+      data,
+    });
+    if (result.count !== 1) throw new NotFoundException('Product spec not found');
+    return this.prisma.productSpec.findFirst({
+      where: { id: specId, productId },
+    });
   }
 
   async deleteProductSpec(user: any, productId: string, specId: string) {
+    this.requireTenantManager(user);
     await this.getProduct(user, productId);
     const spec = await this.prisma.productSpec.findFirst({ where: { id: specId, productId } });
     if (!spec) throw new NotFoundException('规格不存在');
-    return this.prisma.productSpec.update({ where: { id: specId }, data: { isActive: false } });
+    const result = await this.prisma.productSpec.updateMany({
+      where: { id: specId, productId },
+      data: { isActive: false },
+    });
+    if (result.count !== 1) throw new NotFoundException('Product spec not found');
+    return this.prisma.productSpec.findFirst({
+      where: { id: specId, productId },
+    });
   }
 
   async createProduct(user: any, dto: CreateProductDto) {
-    const companyId = this.getCompanyId(user);
+    const companyId = this.requireTenantManager(user);
 
     let categoryId = dto.categoryId;
 
@@ -299,6 +369,8 @@ export class ProductsService {
     }
 
     if (!categoryId) throw new NotFoundException('请选择产品品类');
+
+    await this.getCategoryOrThrow(user, categoryId);
 
     const existingSku = await this.prisma.product.findUnique({
       where: { companyId_sku: { companyId, sku: dto.sku } },
@@ -330,9 +402,13 @@ export class ProductsService {
   }
 
   async updateProduct(user: any, id: string, dto: UpdateProductDto) {
+    this.requireTenantManager(user);
     const product = await this.getProduct(user, id);
 
     let categoryId = dto.categoryId ?? product.categoryId;
+    if (dto.categoryId) {
+      await this.getCategoryOrThrow(user, dto.categoryId);
+    }
 
     if (!dto.categoryId && dto.categoryName) {
       let cat = await this.prisma.productCategory.findUnique({
@@ -362,6 +438,7 @@ export class ProductsService {
   }
 
   async deleteProduct(user: any, id: string) {
+    this.requireTenantManager(user);
     await this.getProduct(user, id);
     return this.prisma.product.update({
       where: { id },

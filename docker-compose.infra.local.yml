@@ -44,7 +44,7 @@ services:
     container_name: vaysen-ai-crm-searxng-local
     environment:
       BASE_URL: http://localhost:18888/
-      INSTANCE_NAME: Vaysen AI CRM Local Search
+      INSTANCE_NAME: Vaysen Local Search
     ports:
       - "127.0.0.1:18888:8080"
     volumes:
@@ -64,7 +64,7 @@ services:
       N8N_ENCRYPTION_KEY: vaysen-crm-local-n8n-change-me
       ZHIPU_BASE_URL: https://open.bigmodel.cn/api/paas/v4
       ZHIPU_MODEL: glm-4-flash-250414
-      VAYSEN_CRM_API_BASE_URL: http://host.docker.internal:4000/api
+      VAYSEN_API_BASE_URL: http://host.docker.internal:4000/api
       REACHER_API_URL: http://reacher:8080
     ports:
       - "0.0.0.0:5678:5678"

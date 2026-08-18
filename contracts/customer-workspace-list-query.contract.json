@@ -1,0 +1,21 @@
+{
+  "uiRequest": {
+    "search": "  Acme Packaging  ",
+    "filter": "new_messages",
+    "sort": "recent_contact",
+    "page": 2,
+    "limit": 75
+  },
+  "backendQuery": {
+    "search": "Acme Packaging",
+    "view": "new_messages",
+    "sortBy": "lastContactedAt",
+    "sortOrder": "desc",
+    "page": 2,
+    "pageSize": 50
+  },
+  "responseFixture": {
+    "id": "lead-contract-1",
+    "displayName": "Acme Packaging"
+  }
+}

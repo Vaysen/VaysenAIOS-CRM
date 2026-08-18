@@ -8,7 +8,7 @@ const PROBE_CACHE_TTL_MS = 5_000;
 // audited business tool. Twelve seconds was shorter than that real two-tool
 // path on the LAN and caused a false fallback after both tools had executed.
 const OPENCLAW_CHAT_TIMEOUT_MS = 45_000;
-const WECHAT_OWNER_ACCOUNT_ID = 'vaysen-owner';
+const WECHAT_OWNER_ACCOUNT_ID = 'vaysen-crm-owner';
 const WECHAT_STATUSES = new Set<OpenClawWechatStatus>([
   'NOT_INSTALLED',
   'UNBOUND',
@@ -59,6 +59,11 @@ export interface OpenClawChatResult {
   model?: string;
   reason: 'success' | 'disabled' | 'not_ready' | 'timeout' | 'gateway_error' | 'invalid_response';
   responseSource?: 'openclaw_gateway';
+}
+
+export interface OpenClawToolInvokeResult {
+  success: boolean;
+  reason: 'success' | 'disabled' | 'not_ready' | 'gateway_error' | 'invalid_response';
 }
 
 export interface OpenClawWechatLoginResult {
@@ -243,6 +248,44 @@ export class OpenClawGatewayClient {
       const timeout = error instanceof Error && error.name === 'AbortError';
       this.logger.warn(`OpenClaw chat failed: ${timeout ? 'GATEWAY_TIMEOUT' : 'GATEWAY_ERROR'}`);
       return { success: false, reason: timeout ? 'timeout' : 'gateway_error' };
+    }
+  }
+
+  /**
+   * Invoke the fixed read-only work-brief plugin through OpenClaw's
+   * authenticated gateway. The caller still treats the broker-persisted
+   * receipt as the authority; a 200 response alone is never completion.
+   */
+  async invokeWorkBrief(sessionDigest: string): Promise<OpenClawToolInvokeResult> {
+    if (!this.isEnabled()) return { success: false, reason: 'disabled' };
+    if (!/^[a-f0-9]{64}$/.test(sessionDigest)) {
+      return { success: false, reason: 'invalid_response' };
+    }
+    const probe = await this.probe();
+    if (!probe.gatewayReady || !probe.adapterReady) {
+      return { success: false, reason: 'not_ready' };
+    }
+
+    try {
+      const value = this.asRecord(await this.requestJson('POST', '/tools/invoke', {
+        name: 'crm_work_brief',
+        agentId: 'vaysen-crm',
+        // tools/invoke resolves the target agent from its canonical session
+        // key (it does not consume the chat endpoint's agent header). The CRM
+        // plugin then validates this exact wrapper and passes only the inner
+        // vaysen-crm:<digest> key to the HMAC broker.
+        sessionKey: `agent:vaysen-crm:vaysen-crm:${sessionDigest}`,
+        idempotencyKey: sessionDigest,
+        args: {},
+      }, OPENCLAW_CHAT_TIMEOUT_MS, {
+        'x-openclaw-message-channel': 'webchat',
+      }));
+      return value.ok === true
+        ? { success: true, reason: 'success' }
+        : { success: false, reason: 'invalid_response' };
+    } catch {
+      this.logger.warn('OpenClaw fixed work-brief invocation failed: GATEWAY_ERROR');
+      return { success: false, reason: 'gateway_error' };
     }
   }
 

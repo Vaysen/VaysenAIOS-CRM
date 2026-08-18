@@ -4,6 +4,10 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '../../common/utils/data-isolation';
 import { QueryTimelineDto } from './dto/query-timeline.dto';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { UpdateActivityDto } from './dto/update-activity.dto';
@@ -275,25 +279,24 @@ export class TimelineService {
   // ========== Access Control ==========
 
   private async checkLeadAccess(leadId: string, currentUser: any) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.deletedAt) throw new NotFoundException('Lead not found');
+    const activeCompany = requireActiveCompany(currentUser);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, companyId: activeCompany.id, deletedAt: null },
+    });
+    if (!lead) throw new NotFoundException('Lead not found');
     this.checkCompanyAccess(currentUser, lead.companyId);
 
-    const isOnlySalesUser = currentUser.companies?.every(
-      (c: any) => c.role === 'sales_user',
-    );
+    const isOnlySalesUser = activeCompany.role === 'sales_user';
     if (isOnlySalesUser && lead.ownerUserId !== currentUser.id) {
       throw new ForbiddenException('You can only access your own leads');
     }
   }
 
   private buildCompanyWhere(currentUser: any): any {
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
+    const activeCompany = requireActiveCompany(currentUser);
+    const isFullAccess = hasFullAccess(currentUser, activeCompany.id);
 
-    const where: any = { companyId: { in: companyIds }, deletedAt: null };
+    const where: any = { companyId: activeCompany.id, deletedAt: null };
 
     if (!isFullAccess) {
       where.userId = currentUser.id;
@@ -303,22 +306,16 @@ export class TimelineService {
   }
 
   private checkCompanyAccess(currentUser: any, companyId: string) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
-
-    const userCompanyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!userCompanyIds.includes(companyId)) {
+    if (requireActiveCompany(currentUser).id !== companyId) {
       throw new ForbiddenException('Cannot access activities from another company');
     }
   }
 
   private checkWriteAccess(currentUser: any, companyId: string) {
-    const isFullAccess = currentUser.companies?.some(
-      (c: any) => ['super_admin', 'company_admin'].includes(c.role),
-    );
-    if (isFullAccess) return;
+    if (requireActiveCompany(currentUser).id !== companyId) {
+      throw new ForbiddenException('Company is outside the active request context');
+    }
+    if (hasFullAccess(currentUser, companyId)) return;
 
     const company = currentUser.companies?.find((c: any) => c.id === companyId);
     if (!company) throw new ForbiddenException('Not a member of this company');

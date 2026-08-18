@@ -6,9 +6,11 @@ describe('buildHealthPayload', () => {
       RELEASE_COMMIT: '0123456789abcdef0123456789abcdef01234567',
       RELEASE_COMMIT_SHORT: '01234567',
       RELEASE_TAG: 'task-116-v0.1',
+      RELEASE_VERSION: '1.4.29',
       BUILD_REVISION: '0123456789abcdef0123456789abcdef01234567',
     })).toEqual({
       status: 'ok',
+      serverVersion: '1.4.29',
       release: {
         commit: '0123456789abcdef0123456789abcdef01234567',
         commitShort: '01234567',
@@ -33,6 +35,7 @@ describe('buildHealthPayload', () => {
       buildCommit: 'unknown',
       matchesBuild: false,
     });
+    expect(buildHealthPayload({ RELEASE_VERSION: '<script>alert(1)</script>' }).serverVersion).toBe('unknown');
   });
 
   it('detects a runtime revision that does not match the built image', () => {

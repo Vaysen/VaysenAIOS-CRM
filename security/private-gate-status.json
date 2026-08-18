@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "baseline": "30df27ccaf1daf6274e683086d4973925bce744a",
+  "evidenceScope": "PF-EF semantic port candidate; this is not release evidence",
+  "sourceCandidate": "codex/private-forward-approved-e-f",
+  "integrationParent": "30df27ccaf1daf6274e683086d4973925bce744a",
+  "integrationValidation": {
+    "state": "pf-ef-port-candidate",
+    "releaseApproved": false,
+    "privateSecurityContracts": "12/12 evaluator and sanitizer tests passed; Prisma ledger and drift contracts passed",
+    "prismaMigrations": "24 ordered migrations through 20260729033000_email_dispatch_request_idempotency passed",
+    "releaseManifest": "blocked: the checked-in R78 manifest intentionally describes the historical 18-migration release and fails closed against this 24-migration candidate",
+    "migrationRehearsal": "blocked: the historical verified-direct backfill rehearsal does not prove the full 18-to-24 forward migration path",
+    "remainingWork": "Independent PF-EF review, disposable PostgreSQL 15 empty/restore/drift/continuous-apply rehearsal, Docker compose/image validation, and a new final release manifest are required before release approval"
+  },
+  "reviewedAt": "2026-07-29",
+  "runtimeContracts": {
+    "node20": "20.18.0",
+    "npm": "10.8.2",
+    "openclawNode": "22.22.0",
+    "postgres": "15",
+    "python": "3.11"
+  },
+  "localGates": [
+    {
+      "command": "npm --workspace backend run prisma:generate; prisma validate",
+      "runtime": "node-20.18.0/npm-10.8.2/prisma-5.22.0",
+      "status": "passed",
+      "result": "24-migration schema generated and validated"
+    },
+    {
+      "command": "npm run verify:private-security-contracts",
+      "runtime": "node-20.18.0/npm-10.8.2",
+      "status": "passed",
+      "result": "12/12 evaluator and sanitizer tests; 24 ordered migrations; intentional drift exit code 2"
+    },
+    {
+      "command": "npm --workspace backend test -- --runInBand <PF-E four suites>",
+      "runtime": "node-20.18.0/npm-10.8.2",
+      "status": "passed",
+      "result": "4/4 suites, 85/85 tests"
+    },
+    {
+      "command": "npm --workspace backend test -- --runInBand <email security, outbound access, processor, SMTP, assignee, tenant matrix>",
+      "runtime": "node-20.18.0/npm-10.8.2",
+      "status": "passed",
+      "result": "6/6 suites, 38/38 tests"
+    },
+    {
+      "command": "npm --workspace frontend run test:run -- manual-send-intent active-company-membership",
+      "runtime": "node-20.18.0/npm-10.8.2",
+      "status": "passed",
+      "result": "2/2 files, 55/55 tests; manual-send-intent 51/51"
+    },
+    {
+      "command": "npm --workspace backend run typecheck; npm --workspace frontend run typecheck; npm --workspace backend run build",
+      "runtime": "node-20.18.0/npm-10.8.2",
+      "status": "passed",
+      "result": "backend and frontend typechecks passed; Nest production build passed"
+    },
+    {
+      "command": "node --test runtime-link, OpenClaw production/probe, and vaysen-crm plugin suites",
+      "runtime": "node-22.22.0",
+      "status": "passed",
+      "result": "166 tests discovered; 165 passed and one upstream-tgz fixture explicitly skipped"
+    },
+    {
+      "command": "validate-openclaw-production; assert-no-published-host-ports; static compose service/worker count",
+      "runtime": "node-20.18.0",
+      "status": "passed",
+      "result": "Vaysen 21-tool/HMAC/owner-notify/OpenClaw contracts passed; no-host-port contract 4/4; 16 services and 6 workers retained"
+    }
+  ],
+  "requiredExternalGates": [
+    {
+      "command": "DATABASE_URL=<empty-pg15> RESTORED_DATABASE_URL=<restored-pg15> bash scripts/verify-pg15-migration-gate.sh",
+      "reason": "Requires two disposable PostgreSQL 15 databases; no production database or credentials may be used.",
+      "owner": "team:vaysen-release"
+    },
+    {
+      "command": "docker compose -f docker-compose.prod.yml config && docker compose build",
+      "reason": "Docker CLI/daemon is unavailable locally; static compose validation does not replace image build and runtime inspection.",
+      "owner": "team:vaysen-release"
+    },
+    {
+      "command": "generate and validate a new release manifest after independent approval",
+      "reason": "The historical R78 manifest correctly fails against the 24-migration candidate and must not be rewritten as candidate evidence.",
+      "owner": "team:vaysen-release"
+    },
+    {
+      "command": "run a current-ledger restore/migrate/no-op/rollback rehearsal",
+      "reason": "The historical verified-direct backfill script remains intentionally scoped to its old migration and cannot attest the 18-to-24 path.",
+      "owner": "team:vaysen-release"
+    },
+    {
+      "command": "OPENCLAW_E2E_REQUIRE_WECHAT_BOUND=true bash scripts/openclaw-real-scene-test.sh",
+      "reason": "Requires authorized staging provider, owner Weixin binding, and real receipts; it must never run in an offline source gate.",
+      "owner": "team:vaysen-openclaw"
+    }
+  ]
+}

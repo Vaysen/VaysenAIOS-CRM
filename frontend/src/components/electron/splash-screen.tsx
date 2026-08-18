@@ -19,7 +19,7 @@ const DEFAULT_VERSION = '1.0.0';
  * 应用启动时的全屏加载画面。
  *
  * - 深色背景 (#0f172a)
- * - 中央显示 “Vaysen AI CRM” logo 文字 + 旋转加载圈
+ * - 中央显示 “Vaysen” logo 文字 + 旋转加载圈
  * - 底部显示版本号与加载状态文字
  * - duration（默认 3 秒）后自动淡出并卸载
  */
@@ -63,7 +63,7 @@ export function SplashScreen({
       style={{ backgroundColor: '#0f172a' }}
     >
       <div className="flex flex-col items-center gap-5">
-        <h1 className="text-5xl font-bold tracking-tight text-white">Vaysen AI CRM</h1>
+        <h1 className="text-5xl font-bold tracking-tight text-white">Vaysen</h1>
         <p className="text-sm font-medium text-slate-400">外贸系统</p>
         <LoaderCircle className="h-8 w-8 animate-spin text-sky-400" />
       </div>

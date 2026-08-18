@@ -1,0 +1,22 @@
+﻿{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "<DEEPSEEK_API_KEY>",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash"
+  },
+  "permissions": {
+    "allow": [
+      { "tool": "WebSearch", "description": "AI customer research" },
+      { "tool": "WebFetch", "description": "Website data gathering" },
+      { "tool": "Bash", "description": "Build and deployment" },
+      { "tool": "Read", "description": "Read project files" },
+      { "tool": "Write", "description": "Write code" },
+      { "tool": "Edit", "description": "Edit code" },
+      { "tool": "PowerShell", "description": "Windows commands" }
+    ]
+  }
+}

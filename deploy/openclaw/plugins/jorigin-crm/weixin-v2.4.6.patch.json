@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 1,
+  "patchId": "vaysen-weixin-in-app-qr-owner-digest-6",
+  "packageName": "@tencent-weixin/openclaw-weixin",
+  "version": "2.4.6",
+  "upstream": {
+    "sha1": "c7744c5b2d0232703c886b2f4e71681b0170695d",
+    "sha256": "ef1c3600ca2fc0ee9076c1327af1e0d5d2e8e19fbb61e9f56c961fcde0bd07f6",
+    "integrity": "sha512-qw9k3PLTiMWGNjjsknHgcTManH1w4j+Ji1ArWIaYLKCq3aFRsVwcqnPi127bvOoVMJGW4dbyJ8NECEMgoO+iRw=="
+  },
+  "patched": {
+    "sha1": "c13881a517533b1b223543b77f7186ff556882fd",
+    "sha256": "15cde2b9926263ab5cfba21f2b935c710bc01dd983611e3dee673a052fa203d6",
+    "integrity": "sha512-WarnJ65LzlqhSluRnY4c/SvnnKnZTNhIEMXZEih+iQRDe4iZsVznsp3EySB+ADBdsa6XSH4MfhyijFLgiTPyhQ==",
+    "treeSha256": "7f2d15c5e1d665ee7b3e7b1fc9885b915854e960d7f82ac97a512939eb2664b1"
+  },
+  "files": {
+    "package.json": {
+      "beforeSha256": "c6a85212021231fdc463080e70e8c5e3a995d2b8351f7450e6d4ffca01356a03",
+      "afterSha256": "1cb015cd4a891f4f98267de8a5de02ac8c260c4249d2e00c6a1fd3b06d3d8a46",
+      "replacements": [
+        {
+          "search": "\"zod\": \"^4.3.6\"",
+          "replace": "\"zod\": \"4.3.6\""
+        }
+      ]
+    },
+    "src/channel.ts": {
+      "beforeSha256": "6eb9f5f0b1e854901a7c312ff0acd26e108ada358895a59e67129a8804894122",
+      "afterSha256": "b11cfc228cb93739a3b3504e9e3adaa5c6c9642525a150b63b4331d69cc28d04",
+      "replacements": [
+        {
+          "search": "import path from \"node:path\";",
+          "replace": "import { createHash } from \"node:crypto\";\nimport path from \"node:path\";"
+        },
+        {
+          "search": "  id: \"openclaw-weixin\",\n  meta:",
+          "replace": "  id: \"openclaw-weixin\",\n  gatewayMethods: [\"web.login.start\", \"web.login.wait\"],\n  meta:"
+        },
+        {
+          "search": "const normalizedId = normalizeAccountId(result.accountId);",
+          "replace": "const normalizedId = normalizeAccountId(params.accountId || result.accountId);"
+        },
+        {
+          "search": "        } catch (err) {\n          logger.error(`loginWithQrWait: failed to save account data err=${String(err)}`);\n        }",
+          "replace": "        } catch {\n          logger.error(\"loginWithQrWait: failed to persist account data\");\n          throw new Error(\"Weixin account persistence failed\");\n        }"
+        },
+        {
+          "search": "      return {\n        connected: result.connected,\n        message: result.message,\n        accountId: result.accountId,\n      } as { connected: boolean; message: string };",
+          "replace": "      const connected = result.connected || result.alreadyConnected === true;\n      const ownerPeerId = result.connected\n        ? result.userId?.trim()\n        : result.alreadyConnected && params.accountId\n          ? loadWeixinAccount(params.accountId)?.userId?.trim()\n          : \"\";\n      if (connected && !ownerPeerId) {\n        throw new Error(\"Weixin login completed without a stable owner identity\");\n      }\n      return {\n        connected,\n        message: result.message,\n        ownerPeerDigest: ownerPeerId\n          ? createHash(\"sha256\").update(ownerPeerId, \"utf8\").digest(\"hex\")\n          : undefined,\n      } as { connected: boolean; message: string; ownerPeerDigest?: string };"
+        }
+      ]
+    },
+    "dist/src/channel.js": {
+      "beforeSha256": "c9cd41df44109c347c3fcd617b4e5c32c09de36b693fd1f01b30ea0b3ba57bb5",
+      "afterSha256": "d9599362c48b7358f89e95ca1113d611253164ec823e21984e04e5e4b72673fb",
+      "replacements": [
+        {
+          "search": "import path from \"node:path\";",
+          "replace": "import { createHash } from \"node:crypto\";\nimport path from \"node:path\";"
+        },
+        {
+          "search": "    id: \"openclaw-weixin\",\n    meta:",
+          "replace": "    id: \"openclaw-weixin\",\n    gatewayMethods: [\"web.login.start\", \"web.login.wait\"],\n    meta:"
+        },
+        {
+          "search": "const normalizedId = normalizeAccountId(result.accountId);",
+          "replace": "const normalizedId = normalizeAccountId(params.accountId || result.accountId);"
+        },
+        {
+          "search": "                catch (err) {\n                    logger.error(`loginWithQrWait: failed to save account data err=${String(err)}`);\n                }",
+          "replace": "                catch {\n                    logger.error(\"loginWithQrWait: failed to persist account data\");\n                    throw new Error(\"Weixin account persistence failed\");\n                }"
+        },
+        {
+          "search": "            return {\n                connected: result.connected,\n                message: result.message,\n                accountId: result.accountId,\n            };",
+          "replace": "            const connected = result.connected || result.alreadyConnected === true;\n            const ownerPeerId = result.connected\n                ? result.userId?.trim()\n                : result.alreadyConnected && params.accountId\n                    ? loadWeixinAccount(params.accountId)?.userId?.trim()\n                    : \"\";\n            if (connected && !ownerPeerId) {\n                throw new Error(\"Weixin login completed without a stable owner identity\");\n            }\n            return {\n                connected,\n                message: result.message,\n                ownerPeerDigest: ownerPeerId\n                    ? createHash(\"sha256\").update(ownerPeerId, \"utf8\").digest(\"hex\")\n                    : undefined,\n            };"
+        }
+      ]
+    },
+    "src/messaging/inbound.ts": {
+      "beforeSha256": "db05bb337b3c3099977ca208795cd5d1195383f06b453fdc913084c37505765d",
+      "afterSha256": "23ac4219989db0bd813f64e99cb773c3c13cdc9874da255e6592513da5a996b3",
+      "replacements": [
+        {
+          "search": "  From: string;\n  To: string;",
+          "replace": "  From: string;\n  /** Stable sender identity propagated to OpenClaw tool context. */\n  SenderId: string;\n  To: string;"
+        },
+        {
+          "search": "  /** Whether the sender is authorized to execute slash commands. */\n  CommandAuthorized?: boolean;",
+          "replace": "  /** Whether the sender is authorized to execute slash commands. */\n  CommandAuthorized?: boolean;\n  /** Exact paired owner identity; populated only after direct-message authorization. */\n  OwnerAllowFrom?: string[];"
+        },
+        {
+          "search": "    From: from_user_id,\n    To: from_user_id,",
+          "replace": "    From: from_user_id,\n    SenderId: from_user_id,\n    To: from_user_id,"
+        }
+      ]
+    },
+    "dist/src/messaging/inbound.js": {
+      "beforeSha256": "e02ebaf13517ed712760b1e5d948cad1bef4d3f22cfb5ca6d216e05b1f83068a",
+      "afterSha256": "50e4fbe90df4e2e7d5a2d7fc5bf00b41da0cbf97df49c2d1a7d29b9aa114766e",
+      "replacements": [
+        {
+          "search": "        From: from_user_id,\n        To: from_user_id,",
+          "replace": "        From: from_user_id,\n        SenderId: from_user_id,\n        To: from_user_id,"
+        }
+      ]
+    },
+    "src/messaging/process-message.ts": {
+      "beforeSha256": "c128393c09f49c16cf14da83cbaf4cb5f345f6c98ac819517d4b1c73d6d8eaba",
+      "afterSha256": "faba8f35f287cffea07a77fb853714fc2f9fa711bd8cd271e120fa5ed84d3aa6",
+      "replacements": [
+        {
+          "search": "import { isDebugMode } from \"./debug-mode.js\";",
+          "replace": "import { isDirectWeixinInbound, recordWeixinAcceptanceRejection } from \"../security/acceptance-evidence.js\";\nimport { isDebugMode } from \"./debug-mode.js\";"
+        },
+        {
+          "search": "): Promise<void> {\n  if (!deps?.channelRuntime) {",
+          "replace": "): Promise<void> {\n  // Defense in depth: reject groups and malformed group markers before slash\n  // commands, authorization, routing, session writes, dispatch, or tool calls.\n  if (!isDirectWeixinInbound(full)) {\n    try {\n      recordWeixinAcceptanceRejection(full, \"GROUP_REJECTED\");\n    } catch {\n      logger.error(\"[weixin] failed to persist sanitized group rejection evidence\");\n    }\n    logger.info(\"[weixin] dropping group or malformed inbound before command/auth/routing\");\n    return;\n  }\n\n  if (!deps?.channelRuntime) {"
+        },
+        {
+          "search": "  if (textBody.startsWith(\"/\")) {\n    const slashResult = await handleSlashCommand(textBody, {\n      to: full.from_user_id ?? \"\",\n      contextToken: full.context_token,\n      baseUrl: deps.baseUrl,\n      token: deps.token,\n      accountId: deps.accountId,\n      log: deps.log,\n      errLog: deps.errLog,\n    }, receivedAt, full.create_time_ms);\n    if (slashResult.handled) {\n      logger.info(`[weixin] Slash command handled, skipping AI pipeline`);\n      return;\n    }\n  }\n\n",
+          "replace": ""
+        },
+        {
+          "search": "isGroup: false,",
+          "replace": "isGroup: Boolean(full.group_id),",
+          "expectedOccurrences": 2
+        },
+        {
+          "search": "  const senderId = full.from_user_id ?? \"\";",
+          "replace": "  const senderId = full.from_user_id ?? \"\";\n  const frameworkOwnerIds = readFrameworkAllowFromList(deps.accountId);\n  const fallbackOwnerId = loadWeixinAccount(deps.accountId)?.userId?.trim();\n  const trustedOwnerIds = frameworkOwnerIds.length > 0\n    ? frameworkOwnerIds\n    : fallbackOwnerId\n      ? [fallbackOwnerId]\n      : [];"
+        },
+        {
+          "search": "      readAllowFromStore: async () => {\n        const fromStore = readFrameworkAllowFromList(deps.accountId);\n        if (fromStore.length > 0) return fromStore;\n        const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();\n        return uid ? [uid] : [];\n      },",
+          "replace": "      readAllowFromStore: async () => trustedOwnerIds,"
+        },
+        {
+          "search": "  if (directDmOutcome === \"disabled\" || directDmOutcome === \"unauthorized\") {\n    logger.info(",
+          "replace": "  if (directDmOutcome === \"disabled\" || directDmOutcome === \"unauthorized\") {\n    try {\n      recordWeixinAcceptanceRejection(full, \"NON_OWNER_REJECTED\");\n    } catch {\n      logger.error(\"[weixin] failed to persist sanitized non-owner rejection evidence\");\n    }\n    logger.info("
+        },
+        {
+          "search": "  ctx.CommandAuthorized = commandAuthorized;",
+          "replace": "  if (!senderId || !trustedOwnerIds.includes(senderId)) {\n    try {\n      recordWeixinAcceptanceRejection(full, \"NON_OWNER_REJECTED\");\n    } catch {\n      logger.error(\"[weixin] failed to persist sanitized non-owner rejection evidence\");\n    }\n    logger.info(\"[weixin] dropping direct sender without an explicit paired-owner identity\");\n    return;\n  }\n  ctx.OwnerAllowFrom = [senderId];\n\n  if (textBody.startsWith(\"/\")) {\n    const slashResult = await handleSlashCommand(textBody, {\n      to: full.from_user_id ?? \"\",\n      contextToken: full.context_token,\n      baseUrl: deps.baseUrl,\n      token: deps.token,\n      accountId: deps.accountId,\n      log: deps.log,\n      errLog: deps.errLog,\n    }, receivedAt, full.create_time_ms);\n    if (slashResult.handled) {\n      logger.info(`[weixin] Slash command handled, skipping AI pipeline`);\n      return;\n    }\n  }\n\n  ctx.CommandAuthorized = commandAuthorized;"
+        },
+        {
+          "search": "peer: { kind: \"direct\", id: ctx.To },",
+          "replace": "peer: { kind: full.group_id ? \"group\" : \"direct\", id: ctx.To },"
+        }
+      ]
+    },
+    "dist/src/messaging/process-message.js": {
+      "beforeSha256": "f90d69c4047578c774d7949a7bdfe173cc00f0370c86a62e3f73883d7008d8dc",
+      "afterSha256": "3135ec598b0bf66e93900433a37dcb829844c847ef7c59afb4d86acc85deef3b",
+      "replacements": [
+        {
+          "search": "import { isDebugMode } from \"./debug-mode.js\";",
+          "replace": "import { isDirectWeixinInbound, recordWeixinAcceptanceRejection } from \"../security/acceptance-evidence.js\";\nimport { isDebugMode } from \"./debug-mode.js\";"
+        },
+        {
+          "search": "export async function processOneMessage(full, deps) {\n    if (!deps?.channelRuntime) {",
+          "replace": "export async function processOneMessage(full, deps) {\n    // Defense in depth: reject groups and malformed group markers before slash\n    // commands, authorization, routing, session writes, dispatch, or tool calls.\n    if (!isDirectWeixinInbound(full)) {\n        try {\n            recordWeixinAcceptanceRejection(full, \"GROUP_REJECTED\");\n        }\n        catch {\n            logger.error(\"[weixin] failed to persist sanitized group rejection evidence\");\n        }\n        logger.info(\"[weixin] dropping group or malformed inbound before command/auth/routing\");\n        return;\n    }\n    if (!deps?.channelRuntime) {"
+        },
+        {
+          "search": "    if (textBody.startsWith(\"/\")) {\n        const slashResult = await handleSlashCommand(textBody, {\n            to: full.from_user_id ?? \"\",\n            contextToken: full.context_token,\n            baseUrl: deps.baseUrl,\n            token: deps.token,\n            accountId: deps.accountId,\n            log: deps.log,\n            errLog: deps.errLog,\n        }, receivedAt, full.create_time_ms);\n        if (slashResult.handled) {\n            logger.info(`[weixin] Slash command handled, skipping AI pipeline`);\n            return;\n        }\n    }\n",
+          "replace": ""
+        },
+        {
+          "search": "isGroup: false,",
+          "replace": "isGroup: Boolean(full.group_id),",
+          "expectedOccurrences": 2
+        },
+        {
+          "search": "    const senderId = full.from_user_id ?? \"\";",
+          "replace": "    const senderId = full.from_user_id ?? \"\";\n    const frameworkOwnerIds = readFrameworkAllowFromList(deps.accountId);\n    const fallbackOwnerId = loadWeixinAccount(deps.accountId)?.userId?.trim();\n    const trustedOwnerIds = frameworkOwnerIds.length > 0\n        ? frameworkOwnerIds\n        : fallbackOwnerId\n            ? [fallbackOwnerId]\n            : [];"
+        },
+        {
+          "search": "        readAllowFromStore: async () => {\n            const fromStore = readFrameworkAllowFromList(deps.accountId);\n            if (fromStore.length > 0)\n                return fromStore;\n            const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();\n            return uid ? [uid] : [];\n        },",
+          "replace": "        readAllowFromStore: async () => trustedOwnerIds,"
+        },
+        {
+          "search": "    if (directDmOutcome === \"disabled\" || directDmOutcome === \"unauthorized\") {\n        logger.info(",
+          "replace": "    if (directDmOutcome === \"disabled\" || directDmOutcome === \"unauthorized\") {\n        try {\n            recordWeixinAcceptanceRejection(full, \"NON_OWNER_REJECTED\");\n        }\n        catch {\n            logger.error(\"[weixin] failed to persist sanitized non-owner rejection evidence\");\n        }\n        logger.info("
+        },
+        {
+          "search": "    ctx.CommandAuthorized = commandAuthorized;",
+          "replace": "    if (!senderId || !trustedOwnerIds.includes(senderId)) {\n        try {\n            recordWeixinAcceptanceRejection(full, \"NON_OWNER_REJECTED\");\n        }\n        catch {\n            logger.error(\"[weixin] failed to persist sanitized non-owner rejection evidence\");\n        }\n        logger.info(\"[weixin] dropping direct sender without an explicit paired-owner identity\");\n        return;\n    }\n    ctx.OwnerAllowFrom = [senderId];\n    if (textBody.startsWith(\"/\")) {\n        const slashResult = await handleSlashCommand(textBody, {\n            to: full.from_user_id ?? \"\",\n            contextToken: full.context_token,\n            baseUrl: deps.baseUrl,\n            token: deps.token,\n            accountId: deps.accountId,\n            log: deps.log,\n            errLog: deps.errLog,\n        }, receivedAt, full.create_time_ms);\n        if (slashResult.handled) {\n            logger.info(`[weixin] Slash command handled, skipping AI pipeline`);\n            return;\n        }\n    }\n    ctx.CommandAuthorized = commandAuthorized;"
+        },
+        {
+          "search": "peer: { kind: \"direct\", id: ctx.To },",
+          "replace": "peer: { kind: full.group_id ? \"group\" : \"direct\", id: ctx.To },"
+        }
+      ]
+    },
+    "src/monitor/monitor.ts": {
+      "beforeSha256": "4cf6c899fe9f467698c83f2fd098399fb5c07a4f5e9c2e301cd6ba9f7c78ac54",
+      "afterSha256": "cf3cb01b46bf3d75aa7d5fe2555d5f6be0c7d648dff666cae5b3560d2e9472c8",
+      "replacements": [
+        {
+          "search": "import { processOneMessage } from \"../messaging/process-message.js\";",
+          "replace": "import { processOneMessage } from \"../messaging/process-message.js\";\nimport { isDirectWeixinInbound, recordWeixinAcceptanceRejection } from \"../security/acceptance-evidence.js\";"
+        },
+        {
+          "search": "      for (const full of list) {\n        aLog.info(",
+          "replace": "      for (const full of list) {\n        // Reject group traffic before status, per-user config, authorization, routing, or dispatch.\n        if (!isDirectWeixinInbound(full)) {\n          try {\n            recordWeixinAcceptanceRejection(full, \"GROUP_REJECTED\");\n          } catch {\n            aLog.error(\"failed to persist sanitized group rejection evidence\");\n          }\n          aLog.info(\"dropping group or malformed inbound at monitor boundary\");\n          continue;\n        }\n        aLog.info("
+        }
+      ]
+    },
+    "dist/src/monitor/monitor.js": {
+      "beforeSha256": "a8aaf7bc6709b0b7187b6ea776c497349edaaf516cf7eed2d2159fb5061bfeac",
+      "afterSha256": "fdbd8be13a6eebf94fca8462918d767c741da67fe21b36a1a5b7fddcdd06e5a9",
+      "replacements": [
+        {
+          "search": "import { processOneMessage } from \"../messaging/process-message.js\";",
+          "replace": "import { processOneMessage } from \"../messaging/process-message.js\";\nimport { isDirectWeixinInbound, recordWeixinAcceptanceRejection } from \"../security/acceptance-evidence.js\";"
+        },
+        {
+          "search": "            for (const full of list) {\n                aLog.info(",
+          "replace": "            for (const full of list) {\n                // Reject group traffic before status, per-user config, authorization, routing, or dispatch.\n                if (!isDirectWeixinInbound(full)) {\n                    try {\n                        recordWeixinAcceptanceRejection(full, \"GROUP_REJECTED\");\n                    }\n                    catch {\n                        aLog.error(\"failed to persist sanitized group rejection evidence\");\n                    }\n                    aLog.info(\"dropping group or malformed inbound at monitor boundary\");\n                    continue;\n                }\n                aLog.info("
+        }
+      ]
+    }
+  },
+  "addFiles": {
+    "src/security/acceptance-evidence.ts": {
+      "sourceFile": "weixin-patch-files/src/security/acceptance-evidence.ts",
+      "sha256": "95f487c472b6b4f5249d74c6fef45199fa96135d78afcaa12fc3a0e785784ac5"
+    },
+    "dist/src/security/acceptance-evidence.js": {
+      "sourceFile": "weixin-patch-files/dist/src/security/acceptance-evidence.js",
+      "sha256": "9f93a5490049b1bc50e4989e5f064adbc9e0e2f8ed90fbfc7baf0e19f13cab22"
+    }
+  }
+}

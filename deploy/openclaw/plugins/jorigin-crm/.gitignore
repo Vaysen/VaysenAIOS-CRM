@@ -1,0 +1,6 @@
+# The repository ignores generated dist/ trees globally. This private
+# OpenClaw plugin is shipped as reviewed runtime JavaScript, so its two
+# allowlisted runtime files must remain part of the release source.
+!dist/
+!dist/index.js
+!dist/runtime.js

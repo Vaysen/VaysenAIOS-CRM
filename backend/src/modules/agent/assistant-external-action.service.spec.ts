@@ -1,4 +1,4 @@
-import { AssistantActionState, AssistantGrantStatus } from '@prisma/client';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { AssistantExternalActionService } from './assistant-external-action.service';
 
 const COMPANY_ID = '11111111-1111-4111-8111-111111111111';
@@ -39,13 +39,7 @@ function harness() {
     },
     $transaction: jest.fn((callback: any) => callback(prisma)),
   };
-  const permissions: any = {
-    getProfile: jest.fn().mockResolvedValue({
-      preset: 'SUPERVISOR',
-      thresholds: { maxDailyExternalSends: 50 },
-    }),
-  };
-  const service = new AssistantExternalActionService(prisma, permissions);
+  const service = new AssistantExternalActionService();
   const user: any = {
     id: 'admin-1',
     companies: [{ id: COMPANY_ID, role: 'company_admin' }],
@@ -63,74 +57,18 @@ const request = {
 };
 
 describe('AssistantExternalActionService', () => {
-  it('atomically consumes an exact one-use grant before returning a send permit', async () => {
+  it('fails closed before creating a desktop permit until execution uses ExternalActionOutbox', async () => {
     const { service, prisma, user } = harness();
 
-    const result = await service.authorizeWhatsappTextSend(request, user);
-
-    expect(result).toEqual(expect.objectContaining({
-      status: 'CLAIMED',
-      actionId: 'action-1',
-      targetPhone: '14155550100',
-      textDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
-    }));
-    expect(prisma.assistantTemporaryGrant.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        capability: 'crm.message.send',
-        status: AssistantGrantStatus.CONSUMED,
-        maxUses: 1,
-        useCount: 1,
-        consumedAt: expect.any(Date),
-      }),
-    });
-    expect(prisma.assistantBusinessAction.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        state: AssistantActionState.CLAIMED,
-        targetId: CONVERSATION_ID,
-        approvalId: 'grant-1',
-      }),
-    });
-  });
-
-  it('rejects a renderer phone that differs from the CRM conversation identity', async () => {
-    const { service, prisma, user } = harness();
-    await expect(service.authorizeWhatsappTextSend({
-      ...request,
-      targetPhone: '+1 415 555 0199',
-    }, user)).rejects.toThrow('does not match');
+    await expect(service.authorizeWhatsappTextSend(request, user))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(prisma.assistantTemporaryGrant.create).not.toHaveBeenCalled();
-  });
-
-  it('requires an administrator and an explicit confirmation', async () => {
-    const { service, user } = harness();
-    await expect(service.authorizeWhatsappTextSend({ ...request, confirmed: false }, user))
-      .rejects.toThrow('Explicit human confirmation');
-    await expect(service.authorizeWhatsappTextSend(request, {
-      ...user,
-      companies: [{ id: COMPANY_ID, role: 'sales_user' }],
-    })).rejects.toThrow('administrator confirmation');
-  });
-
-  it('records a claimed desktop send exactly once and never reopens it', async () => {
-    const { service, user } = harness();
-    const permit = await service.authorizeWhatsappTextSend(request, user);
-
-    const completed: any = await service.completeWhatsappTextSend(
-      permit.actionId,
+    expect(prisma.assistantBusinessAction.create).not.toHaveBeenCalled();
+    await expect(service.completeWhatsappTextSend(
+      'legacy-action-1',
       { outcome: 'SUCCEEDED', code: 'CLICK_DISPATCHED' },
       user,
-    );
-    expect(completed.state).toBe(AssistantActionState.SUCCEEDED);
-    expect(completed.receipt).toEqual(expect.objectContaining({
-      source: 'electron-whatsapp-preload',
-      code: 'CLICK_DISPATCHED',
-    }));
-
-    const retry: any = await service.completeWhatsappTextSend(
-      permit.actionId,
-      { outcome: 'SUCCEEDED', code: 'CLICK_DISPATCHED' },
-      user,
-    );
-    expect(retry.state).toBe(AssistantActionState.SUCCEEDED);
+    )).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(prisma.assistantBusinessAction.updateMany).not.toHaveBeenCalled();
   });
 });

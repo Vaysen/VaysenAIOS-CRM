@@ -2,7 +2,7 @@ import type { RegistrationValues } from './types';
 
 export const REGISTRATION_LIMITS = {
   usernameMinLength: 3,
-  passwordMinLength: 6,
+  passwordMinLength: 12,
 } as const;
 
 export function normalizeRegistrationValues(

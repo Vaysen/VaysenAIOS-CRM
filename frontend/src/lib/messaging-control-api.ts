@@ -257,6 +257,7 @@ export async function sendBusinessEmail(input: {
   text: string;
   leadId?: string;
   conversationId?: string;
+  idempotencyKey: string;
 }): Promise<EmailDeliveryReceipt> {
   const response = await api.post<unknown>('/business-mail/send', {
     emailAccountId: input.emailAccountId,
@@ -265,6 +266,8 @@ export async function sendBusinessEmail(input: {
     html: plainTextToSafeHtml(input.text),
     ...(input.leadId ? { leadId: input.leadId } : {}),
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+  }, {
+    headers: { 'Idempotency-Key': input.idempotencyKey },
   });
   return parseEmailDeliveryReceipt(response.data);
 }

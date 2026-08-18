@@ -2,44 +2,95 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { ConversationSidebar } from './conversation-sidebar';
 import { CustomerCard } from './customer-card';
 import { AiAssistantPanel } from './ai-assistant-panel';
-import { mockConversations, getMockConversationDetail } from './mock-data';
 import type { ConversationDetail, ConversationSummary } from './types';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/authStore';
 import { CheckCheck, Check, MoreHorizontal, Sparkles, FileText, ChevronDown, UserPlus, Archive, RotateCcw, Paperclip, X, MessageCircle } from 'lucide-react';
 import { QuotePIForm } from './quote-pi-popup';
 import { subscribeAssistantEmailDraft } from '@/lib/assistant-draft-events';
+import { createClientUuid } from '@/lib/client-id';
+import { cn } from '@/lib/utils';
+import { getRuntimeApiBaseUrl } from '@/lib/runtime-config';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
-const BACKEND_URL = API_BASE.replace(/\/api$/, '');
 function fileUrl(url: string): string {
   if (!url) return '';
   if (url.startsWith('http')) return url;
-  return `${BACKEND_URL}${url}`;
+  return `${getRuntimeApiBaseUrl().replace(/\/api$/, '')}${url}`;
+}
+
+function normalizeConversationPhoneForMatch(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw.includes('@')) return raw.toLowerCase();
+  const digits = raw.replace(/[^\d+]/g, '');
+  return digits.startsWith('00') ? `+${digits.slice(2)}` : digits;
+}
+
+function matchesConversationFilters(
+  conversation: ConversationSummary | ConversationDetail,
+  filters: { leadId: string | null; phone: string | null; channel: string | null; sessionId: string | null },
+): boolean {
+  if (filters.leadId !== null && conversation.lead?.id !== filters.leadId) return false;
+  if (filters.channel !== null && conversation.channel !== filters.channel) return false;
+  if (filters.sessionId !== null && conversation.whatsappSessionId !== filters.sessionId) return false;
+  if (filters.phone !== null) {
+    const wantedPhone = normalizeConversationPhoneForMatch(filters.phone);
+    const candidates = [
+      conversation.contactPoint?.normalizedValue,
+      conversation.contactPoint?.originalValue,
+      conversation.lead?.contactPhone,
+      conversation.lead?.whatsapp,
+    ];
+    if (!wantedPhone || !candidates.some((candidate) => normalizeConversationPhoneForMatch(candidate) === wantedPhone)) return false;
+  }
+  return true;
+}
+
+function extractConversationItems(payload: unknown): ConversationSummary[] {
+  if (Array.isArray(payload)) return payload as ConversationSummary[];
+  if (!payload || typeof payload !== 'object') return [];
+  const value = payload as { data?: unknown; items?: unknown };
+  if (Array.isArray(value.data)) return value.data as ConversationSummary[];
+  if (Array.isArray(value.items)) return value.items as ConversationSummary[];
+  if (value.data && typeof value.data === 'object') {
+    const nested = value.data as { items?: unknown; data?: unknown };
+    if (Array.isArray(nested.items)) return nested.items as ConversationSummary[];
+    if (Array.isArray(nested.data)) return nested.data as ConversationSummary[];
+  }
+  return [];
 }
 
 export function CommunicationWorkbench() {
+  const messageActionRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const currentUser = useAuthStore((s) => s.user);
   const searchParams = useSearchParams();
   const channelFilter = searchParams.get('channel');
   const sessionIdFilter = searchParams.get('sessionId');
+  const leadIdFilter = searchParams.get('leadId');
+  const phoneFilter = searchParams.get('phone');
+  const [retryToken, setRetryToken] = useState(0);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const selectedIdRef = useRef<string | null>(null);
 
   const loadConversations = useCallback(async () => {
-    try {
-      const params: any = { limit: 50 };
-      if (channelFilter) params.channel = channelFilter;
-      const res = await api.get('/communications/conversations', { params });
-      if (res.data?.data?.length > 0) setConversations(res.data.data);
-      else setConversations([]);
-    } catch (err) {
-      console.error('[CommunicationWorkbench] loadConversations failed:', err);
-    }
-  }, [channelFilter]);
+    const params: any = { limit: 50 };
+    if (channelFilter !== null) params.channel = channelFilter;
+    if (leadIdFilter !== null) params.leadId = leadIdFilter;
+    if (phoneFilter !== null) params.phone = phoneFilter;
+    if (sessionIdFilter !== null) params.sessionId = sessionIdFilter;
+    const res = await api.get('/communications/conversations', { params });
+    const items = extractConversationItems(res.data);
+    const filters = { leadId: leadIdFilter, phone: phoneFilter, channel: channelFilter, sessionId: sessionIdFilter };
+    const filteredItems = (leadIdFilter !== null || phoneFilter !== null || channelFilter !== null || sessionIdFilter !== null)
+      ? items.filter((item: ConversationSummary) => matchesConversationFilters(item, filters))
+      : items;
+    setConversations(filteredItems);
+    return filteredItems as ConversationSummary[];
+  }, [channelFilter, leadIdFilter, phoneFilter, sessionIdFilter]);
 
   const refreshConversationDetail = useCallback(async (id: string) => {
     try {
@@ -54,6 +105,7 @@ export function CommunicationWorkbench() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [failedSend, setFailedSend] = useState<{ content: string; attachment?: any } | null>(null);
   const [draft, setDraftState] = useState('');
   const [customerAvatar, setCustomerAvatar] = useState<string | null>(null);
   const avatarCacheRef = useRef<Record<string, string | null>>({});
@@ -62,6 +114,11 @@ export function CommunicationWorkbench() {
   const [assignMenuOpen, setAssignMenuOpen] = useState(false);
   const [teamUsers, setTeamUsers] = useState<any[]>([]);
   const [quoteFormType, setQuoteFormType] = useState<'quote' | 'pi' | 'sample' | null>(null);
+  const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
+  const customerPanelRef = useRef<HTMLElement>(null);
+  const customerPanelTriggerRef = useRef<HTMLButtonElement>(null);
+  const customerPanelCloseRef = useRef<HTMLButtonElement>(null);
+  const customerPanelPreviousFocusRef = useRef<HTMLElement | null>(null);
 
   const translateTimerRef = useRef<any>(null);
   const translateCtrlRef = useRef<AbortController | null>(null);
@@ -82,6 +139,57 @@ export function CommunicationWorkbench() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  const openCustomerPanel = useCallback(() => {
+    customerPanelPreviousFocusRef.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+      ? document.activeElement
+      : customerPanelTriggerRef.current;
+    setCustomerPanelOpen(true);
+  }, []);
+
+  const closeCustomerPanel = useCallback(() => {
+    setCustomerPanelOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!customerPanelOpen) {
+      if (customerPanelPreviousFocusRef.current) {
+        customerPanelPreviousFocusRef.current.focus();
+        customerPanelPreviousFocusRef.current = null;
+      }
+      return;
+    }
+    const panel = customerPanelRef.current;
+    if (!panel) return;
+    const focusable = () => Array.from(panel.querySelectorAll<HTMLElement>(
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+    ));
+    const frame = window.requestAnimationFrame(() => customerPanelCloseRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCustomerPanel();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [closeCustomerPanel, customerPanelOpen]);
 
   const setDraft = useCallback((text: string) => {
     setDraftState(text);
@@ -116,23 +224,76 @@ export function CommunicationWorkbench() {
       setLoading(true); setError(null);
       try {
         const params: any = { limit: 50 };
-        if (channelFilter) params.channel = channelFilter;
+        if (channelFilter !== null) params.channel = channelFilter;
+        if (leadIdFilter !== null) params.leadId = leadIdFilter;
+        if (phoneFilter !== null) params.phone = phoneFilter;
+        if (sessionIdFilter !== null) params.sessionId = sessionIdFilter;
         const res = await api.get('/communications/conversations', { params });
         if (!cancelled) {
-          if (res.data?.data?.length > 0) setConversations(res.data.data);
-          else setConversations([]);
+           setConversations(extractConversationItems(res.data));
         }
       } catch (err: any) {
         if (!cancelled) {
+          setConversations([]);
           if (err?.response?.status === 401) setError('请先登录');
-          else if (process.env.NODE_ENV === 'development') setConversations(mockConversations);
-          else setError('加载失败');
+          else setError('会话加载失败，请检查网络后重试');
         }
       } finally { if (!cancelled) setLoading(false); }
     }
+    if (leadIdFilter !== null || phoneFilter !== null || channelFilter !== null || sessionIdFilter !== null) {
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
     load();
     return () => { cancelled = true; };
-  }, [channelFilter, loadConversations]);
+  }, [channelFilter, leadIdFilter, phoneFilter, sessionIdFilter, loadConversations, retryToken]);
+
+  useEffect(() => {
+    if (leadIdFilter === null && phoneFilter === null && channelFilter === null && sessionIdFilter === null) return;
+    let cancelled = false;
+    async function loadTarget() {
+      setLoading(true);
+      setConversations([]);
+      setSelectedId(null);
+      setDetail(null);
+      setError(null);
+      try {
+        let targetSummary: ConversationSummary | null = null;
+        let targetDetail: ConversationDetail | null = null;
+        const listRes = await api.get('/communications/conversations', {
+          params: { leadId: leadIdFilter ?? undefined, phone: phoneFilter ?? undefined, channel: channelFilter ?? undefined, sessionId: sessionIdFilter ?? undefined, limit: 50 },
+        });
+         const items = extractConversationItems(listRes.data);
+        targetSummary = items.find((item: ConversationSummary) => matchesConversationFilters(item, { leadId: leadIdFilter, phone: phoneFilter, channel: channelFilter, sessionId: sessionIdFilter })) || null;
+        if (!targetSummary) throw new Error('未找到匹配会话');
+        const detailRes = await api.get(`/communications/conversations/${targetSummary.id}`, {
+          params: { leadId: leadIdFilter ?? undefined, phone: phoneFilter ?? undefined, channel: channelFilter ?? undefined, sessionId: sessionIdFilter ?? undefined },
+        });
+        targetDetail = detailRes.data?.data || detailRes.data;
+        if (!targetDetail?.id || !matchesConversationFilters(targetDetail, { leadId: leadIdFilter, phone: phoneFilter, channel: channelFilter, sessionId: sessionIdFilter })) {
+          throw new Error('未找到匹配会话');
+        }
+        if (!cancelled) {
+          setConversations([targetSummary]);
+          setSelectedId(targetSummary.id);
+          selectedIdRef.current = targetSummary.id;
+          setDetail(targetDetail);
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setConversations([]);
+          setSelectedId(null);
+          selectedIdRef.current = null;
+          setDetail(null);
+          setError(`未找到匹配会话：${error?.message || '请返回客户详情检查通信记录'}`);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void loadTarget();
+    return () => { cancelled = true; };
+  }, [channelFilter, leadIdFilter, phoneFilter, sessionIdFilter, retryToken]);
 
   // ═══════════════════════════════════════════════════════════
   // 实时消息监听 — 纯轮询方案（最可靠，不依赖 SSE/WebSocket）
@@ -181,10 +342,18 @@ export function CommunicationWorkbench() {
       pollCount++;
       try {
         const params: any = { limit: 50 };
-        if (channelFilter) params.channel = channelFilter;
+        if (channelFilter !== null) params.channel = channelFilter;
+        if (leadIdFilter !== null) params.leadId = leadIdFilter;
+        if (phoneFilter !== null) params.phone = phoneFilter;
+        if (sessionIdFilter !== null) params.sessionId = sessionIdFilter;
         const res = await api.get('/communications/conversations', { params });
-        if (!active || !res.data?.data) return;
-        const newConvs: ConversationSummary[] = res.data.data;
+         if (!active) return;
+        const filters = { leadId: leadIdFilter, phone: phoneFilter, channel: channelFilter, sessionId: sessionIdFilter };
+         const newConvs: ConversationSummary[] = extractConversationItems(res.data).filter((conv) =>
+          leadIdFilter !== null || phoneFilter !== null || channelFilter !== null || sessionIdFilter !== null
+            ? matchesConversationFilters(conv, filters)
+            : true,
+        );
 
         // 检测新消息
         if (initialized) {
@@ -294,7 +463,7 @@ export function CommunicationWorkbench() {
           setCustomerAvatar(cachedAvatar);
         }
       }
-      api.patch(`/communications/conversations/${id}/read`).catch((error) => { console.error('[Frontend] background operation failed:', error); });
+      void Promise.resolve(api.patch(`/communications/conversations/${id}/read`)).catch((error) => { console.error('[Frontend] background operation failed:', error); });
       setConversations(prev => prev.map(c => c.id === id ? { ...c, unreadCount: 0 } : c));
 
       // 异步获取客户头像（不阻塞会话加载）— 仅当没有缓存时
@@ -305,12 +474,9 @@ export function CommunicationWorkbench() {
           setCustomerAvatar(url);
         }).catch((error) => { console.error('[Frontend] background operation failed:', error); });
       }
-    } catch {
-      // Fallback: use mock detail only when API fails
-      if (process.env.NODE_ENV === 'development') {
-        const mock = getMockConversationDetail(id);
-        if (mock) setDetail(mock);
-      }
+    } catch (error) {
+      setError('会话加载失败，请重试');
+      console.error('[CommunicationWorkbench] conversation detail failed:', error);
     }
   }, []);
 
@@ -333,7 +499,18 @@ export function CommunicationWorkbench() {
           size: attachment.size,
         };
       }
-      await api.post(`/communications/conversations/${selectedId}/messages`, payload);
+      const fingerprint = JSON.stringify({ selectedId, payload });
+      if (messageActionRef.current?.fingerprint !== fingerprint) {
+        messageActionRef.current = {
+          fingerprint,
+          key: `whatsapp-ui:${createClientUuid()}`,
+        };
+      }
+      const response = await api.post(`/communications/conversations/${selectedId}/messages`, payload, {
+        headers: { 'Idempotency-Key': messageActionRef.current.key },
+      });
+      messageActionRef.current = null;
+      setFailedSend(null);
       const now = new Date().toISOString();
       // 媒体消息的预览文本
       const previewText = attachment
@@ -345,13 +522,17 @@ export function CommunicationWorkbench() {
           ))
         : content;
       setDetail((prev: any) => prev ? {
-        ...prev, messages: [...prev.messages, { id: `msg-${Date.now()}`, direction: 'outbound', content: content || '', contentType: attachment ? attachment.mediaType : 'text', attachmentsMeta: attachment ? payload.attachmentsMeta : null, fromAddress: 'whatsapp-session', sentAt: now, createdAt: now }],
+        ...prev, messages: [...prev.messages, { id: response.data?.id || `msg-${Date.now()}`, direction: 'outbound', content: content || '', contentType: attachment ? attachment.mediaType : 'text', attachmentsMeta: attachment ? payload.attachmentsMeta : null, fromAddress: 'whatsapp-session', externalMessageId: response.data?.externalMessageId || response.data?.providerMessageId, deliveryStatus: response.data?.deliveryStatus || 'sent', sentAt: now, createdAt: now }],
         lastMessageAt: now, lastMessagePreview: previewText.substring(0, 200),
       } : prev);
       // 刷新会话列表以更新最后消息
-      loadConversations();
+      void loadConversations().catch((error) => {
+        console.error('[CommunicationWorkbench] refresh after send failed:', error);
+      });
     } catch (err: any) {
       const errMsg = err?.response?.data?.message || err?.message || '发送失败，请检查网络连接';
+      const isUnknown = err?.response?.status === 409 || /unknown|reconcile|未确认|对账/i.test(String(errMsg));
+      setFailedSend(isUnknown ? null : { content, attachment });
       setError(`发送失败: ${errMsg}`);
       alert(`消息发送失败：${errMsg}`);
     }
@@ -407,7 +588,7 @@ export function CommunicationWorkbench() {
 
   // 自动滚动到最新消息
   useEffect(() => {
-    if (messagesEndRef.current) {
+    if (messagesEndRef.current && typeof messagesEndRef.current.scrollIntoView === 'function') {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
   }, [detail?.messages, selectedId]);
@@ -476,7 +657,7 @@ export function CommunicationWorkbench() {
   const statusColor = (s: string) => s === 'active' ? 'bg-green-100 text-green-700' : s === 'archived' ? 'bg-gray-100 text-gray-500' : 'bg-red-50 text-red-600';
 
   return (
-    <div className="flex flex-col lg:flex-row h-full w-full overflow-hidden relative">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden relative lg:flex-row">
       {isOffline && (
         <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-4 py-1.5 flex items-center gap-2 text-[11px] text-amber-700">
           <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
@@ -515,7 +696,7 @@ export function CommunicationWorkbench() {
           50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
         }
       `}</style>
-      <div className="w-full lg:w-[260px] shrink-0 h-[40vh] lg:h-full border-b lg:border-b-0 lg:border-r overflow-hidden">
+      <div className="w-full shrink-0 overflow-hidden border-b lg:h-full lg:w-[260px] lg:border-b-0 lg:border-r">
         <ConversationSidebar conversations={conversations} selectedId={selectedId} onSelect={handleSelect} />
       </div>
 
@@ -523,13 +704,26 @@ export function CommunicationWorkbench() {
         {loading ? (
           <div className="flex-1 flex items-center justify-center"><p className="text-sm text-gray-400">加载中...</p></div>
         ) : error && !detail ? (
-          <div className="flex-1 flex items-center justify-center"><p className="text-sm text-red-500">{error}</p></div>
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
+            <p className="text-sm text-red-600">{error}</p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button type="button" onClick={() => setRetryToken((token) => token + 1)} className="rounded border px-3 py-1.5 text-xs font-medium hover:bg-gray-50">
+                重试
+              </button>
+              {leadIdFilter && (
+                <Link href={`/customers/${encodeURIComponent(leadIdFilter)}`} className="rounded border px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-50">
+                  返回客户详情
+                </Link>
+              )}
+            </div>
+          </div>
         ) : detail ? (
           <>
             {/* 错误提示条 */}
             {error && (
               <div className="shrink-0 bg-red-50 border-b border-red-200 px-4 py-2 flex items-center justify-between text-sm text-red-700">
                 <span>{error}</span>
+                {failedSend && <button data-testid="whatsapp-send-retry" onClick={() => { const retry = failedSend; setError(null); void handleSend(retry.content, retry.attachment); }} className="ml-3 rounded border border-red-300 px-2 py-1 text-xs font-medium hover:bg-red-100">重试</button>}
                 <button onClick={() => setError(null)} className="text-red-500 hover:text-red-700">
                   <X className="w-4 h-4" />
                 </button>
@@ -587,6 +781,15 @@ export function CommunicationWorkbench() {
                 <span className="font-semibold text-gray-900">{(detail as any).subject || '会话'}</span>
               )}
               <div className="flex-1" />
+              <button
+                type="button"
+                ref={customerPanelTriggerRef}
+                onClick={openCustomerPanel}
+                className="inline-flex shrink-0 items-center gap-1 rounded border border-gray-200 px-2 py-1 text-[10px] text-gray-600 hover:border-blue-300 hover:text-blue-700 lg:hidden"
+                aria-label="打开客户资料抽屉"
+              >
+                客户资料
+              </button>
 
               {/* 实时监听状态指示器 */}
               {pollingActive && !isOffline && (
@@ -631,7 +834,7 @@ export function CommunicationWorkbench() {
 
               <div className="relative">
                 <button onClick={() => { setStatusMenuOpen(!statusMenuOpen); setAssignMenuOpen(false); }}
-                  className="text-gray-400 hover:text-gray-600 p-0.5">
+                  className="p-0.5 text-gray-400 hover:text-gray-600" aria-label="会话更多操作">
                   <MoreHorizontal className="w-3.5 h-3.5" />
                 </button>
                 {statusMenuOpen && (
@@ -733,7 +936,8 @@ export function CommunicationWorkbench() {
                         {msg.content}
                       </p>
                     )}
-                    <span className={`text-[10px] mt-1 flex items-center gap-1 ${msg.direction==='inbound'?'text-gray-400':'text-blue-200'}`}>
+                    <span data-testid={msg.direction === 'outbound' ? `whatsapp-delivery-${msg.id}` : undefined} className={`text-[10px] mt-1 flex items-center gap-1 ${msg.direction==='inbound'?'text-gray-400':'text-blue-200'}`}>
+                      {msg.direction === 'outbound' && <span>{(msg as any).deliveryStatus === 'sent' ? 'sent' : (msg as any).deliveryStatus || 'sending'}</span>}
                       {(msg as any).readAt && msg.direction === 'outbound' && <CheckCheck className="w-3 h-3" />}
                       {!(msg as any).readAt && msg.direction === 'outbound' && <Check className="w-3 h-3" />}
                       {msg.receivedAt?new Date(msg.receivedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):msg.sentAt?new Date(msg.sentAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):''}
@@ -782,6 +986,7 @@ export function CommunicationWorkbench() {
               <input
                 ref={fileInputRef}
                 type="file"
+                data-testid="whatsapp-attachment-input"
                 className="hidden"
                 onChange={handleFileSelect}
                 accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar"
@@ -796,11 +1001,12 @@ export function CommunicationWorkbench() {
                   {uploading ? <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /> : <Paperclip className="w-4 h-4" />}
                 </button>
                 <div className="flex-1 min-w-0">
-                  <input value={draft} onChange={(e)=>setDraft(e.target.value)} onKeyDown={handleDraftKeyDown}
+                  <input value={draft} onChange={(e)=>setDraft(e.target.value)} onKeyDown={handleDraftKeyDown} data-testid="whatsapp-draft-input"
                     placeholder={pendingAttachment ? "添加说明文字（可选）..." : "输入回复... (Enter 发送, / 快捷回复, 中文自动翻译英文)"}
                     className="w-full border rounded px-3 py-2 text-sm outline-none focus:border-blue-300" />
                 </div>
                 <button onClick={()=>{handleSend(draft, pendingAttachment||undefined); setDraftState(''); setPendingAttachment(null);}} disabled={(!draft.trim()&&!pendingAttachment)||sending}
+                  data-testid="whatsapp-send-button"
                   className="px-5 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-40 shrink-0">
                   {sending?'...':'发送'}
                 </button>
@@ -825,9 +1031,40 @@ export function CommunicationWorkbench() {
         )}
       </div>
 
-      <div className="hidden lg:block w-[360px] shrink-0 border-l bg-white overflow-y-auto overflow-x-hidden">
+      {customerPanelOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 top-16 z-30 bg-black/20 lg:hidden"
+          onClick={closeCustomerPanel}
+          aria-label="关闭客户资料抽屉"
+        />
+      )}
+      <aside
+        ref={customerPanelRef}
+        className={cn(
+          'fixed bottom-0 right-0 top-16 z-40 w-[min(360px,calc(100vw-2rem))] overflow-y-auto overflow-x-hidden border-l bg-white shadow-2xl',
+          customerPanelOpen ? 'block' : 'hidden',
+          'lg:static lg:z-auto lg:block lg:w-[360px] lg:shadow-none',
+        )}
+        aria-label="客户资料抽屉"
+        role={customerPanelOpen ? 'dialog' : undefined}
+        aria-modal={customerPanelOpen ? true : undefined}
+        aria-labelledby={customerPanelOpen ? 'customer-panel-title' : undefined}
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-2 lg:hidden">
+          <span id="customer-panel-title" className="text-sm font-semibold text-gray-800">客户资料</span>
+          <button
+            type="button"
+            ref={customerPanelCloseRef}
+            onClick={closeCustomerPanel}
+            className="rounded p-1 text-gray-500 hover:bg-gray-100"
+            aria-label="关闭客户资料抽屉"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
         {detail ? <CustomerCard conversation={detail} onOpenQuoteForm={setQuoteFormType} /> : null}
-      </div>
+      </aside>
     </div>
   );
 }

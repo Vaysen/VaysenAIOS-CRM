@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
-Write-Host "== Vaysen AI CRM local install ==" -ForegroundColor Cyan
+Write-Host "== Vaysen local install ==" -ForegroundColor Cyan
 
 function Require-Command($Name, $Hint) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {

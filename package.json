@@ -1,8 +1,7 @@
 {
   "name": "vaysen-ai-crm",
   "private": true,
-  "license": "Apache-2.0",
-  "description": "Vaysen AI CRM - 外贸 B2B 智能客户开发 CRM",
+  "description": "Vaysen Pilot - 外贸 B2B 智能客户开发 CRM",
   "workspaces": [
     "backend",
     "frontend"
@@ -34,11 +33,44 @@
     "install:all": "npm ci && cd electron && npm ci",
     "verify:baseline": "node scripts/verify-baseline.mjs",
     "verify:node-engines": "node scripts/verify-node-engine-contract.mjs",
-    "verify:public-release": "node scripts/verify-public-release.mjs"
+    "verify:production-audit:root": "node scripts/verify-production-audit.mjs --scope root",
+    "verify:production-audit:backend": "node scripts/verify-production-audit.mjs --scope backend",
+    "verify:production-audit:frontend": "node scripts/verify-production-audit.mjs --scope frontend",
+    "verify:production-audit:electron": "node scripts/verify-production-audit.mjs --scope electron",
+    "verify:production-audit:openclaw": "node scripts/verify-production-audit.mjs --scope openclaw",
+    "verify:production-audits": "npm run verify:production-audit:root && npm run verify:production-audit:backend && npm run verify:production-audit:frontend && npm run verify:production-audit:electron && npm run verify:production-audit:openclaw",
+    "verify:prisma-contracts": "node scripts/verify-prisma-migrations.mjs && node scripts/verify-prisma-drift-contract.mjs",
+    "verify:private-security-contracts": "node --test scripts/verify-production-audit.test.mjs scripts/sanitize-evidence-log.test.mjs && npm run verify:prisma-contracts",
+    "verify:frontend-build-contract:logged": "node scripts/run-frontend-build-contract-with-log.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "4.3.1",
     "semver": "7.7.4"
+  },
+  "overrides": {
+    "@eslint/eslintrc": {
+      "js-yaml": "4.3.1"
+    },
+    "@istanbuljs/load-nyc-config": {
+      "js-yaml": "3.15.1"
+    },
+    "@nestjs/swagger": {
+      "js-yaml": "4.3.1"
+    },
+    "brace-expansion@2": "2.1.4",
+    "cosmiconfig": {
+      "js-yaml": "4.3.1"
+    },
+    "eslint": {
+      "js-yaml": "4.3.1"
+    },
+    "ip-address": "10.4.0",
+    "nanoid": "3.3.18",
+    "vaysen-crm-backend": {
+      "mailparser": {
+        "linkify-it": "5.0.2"
+      }
+    }
   }
 }

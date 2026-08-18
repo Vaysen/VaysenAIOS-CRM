@@ -2,6 +2,7 @@
 /release/
 /release-acceptance/
 /release-*/
+/artifacts/
 
 # 运行时密钥与服务器数据不得进入独立部署仓库。
 /**/.env
@@ -13,8 +14,6 @@
 /**/*.dump
 /*.dump
 /**/data/
-!/backend/src/modules/products/data/
-!/backend/src/modules/products/data/usd-price-catalog.json
 /**/uploads/
 /research-output/
 
@@ -32,18 +31,6 @@
 /frontend/test-results/
 /**/coverage/
 *.log
-
-# Local editor/browser automation and secret-scanner output.
-/.playwright-cli/
-/.idea/
-/.vscode/
-/.DS_Store
-*.pem
-*.pfx
-*.p12
-*.key
-*.sqlite
-*.sqlite3
 
 # Electron 品牌资源是发布输入，不是可重建 build 产物。
 !/electron/build/

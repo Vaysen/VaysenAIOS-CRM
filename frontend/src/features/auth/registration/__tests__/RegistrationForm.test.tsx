@@ -38,7 +38,7 @@ describe('RegistrationForm (FF-005)', () => {
     expect(await screen.findByText('用户名至少3个字符')).toBeInTheDocument();
   });
 
-  it('密码少于6位显示错误', async () => {
+  it('密码少于12位显示错误', async () => {
     const user = userEvent.setup();
     render(<RegistrationForm onSubmit={vi.fn()} />);
 
@@ -48,7 +48,7 @@ describe('RegistrationForm (FF-005)', () => {
     await user.type(screen.getByLabelText(/^姓/), 'Smith');
     await user.click(screen.getByRole('button', { name: /注册/ }));
 
-    expect(await screen.findByText('密码至少6位')).toBeInTheDocument();
+    expect(await screen.findByText('密码至少12位')).toBeInTheDocument();
   });
 
   it('有效提交调用 onSubmit 并显示成功', async () => {
@@ -60,14 +60,14 @@ describe('RegistrationForm (FF-005)', () => {
     await user.type(screen.getByLabelText(/^名/), 'John');
     await user.type(screen.getByLabelText(/^姓/), 'Smith');
     await user.type(screen.getByLabelText(/用户名/), 'chris');
-    await user.type(screen.getByLabelText(/密码/), 'password123');
+    await user.type(screen.getByLabelText(/密码/), 'password1234');
     await user.click(screen.getByRole('button', { name: /注册/ }));
 
     await vi.waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           username: 'chris',
-          password: 'password123',
+          password: 'password1234',
           firstName: 'John',
           lastName: 'Smith',
         }),
@@ -85,7 +85,7 @@ describe('RegistrationForm (FF-005)', () => {
     await user.type(screen.getByLabelText(/^名/), 'John');
     await user.type(screen.getByLabelText(/^姓/), 'Smith');
     await user.type(screen.getByLabelText(/用户名/), 'chris');
-    await user.type(screen.getByLabelText(/密码/), 'password123');
+    await user.type(screen.getByLabelText(/密码/), 'password1234');
     await user.click(screen.getByRole('button', { name: /注册/ }));
 
     expect(await screen.findByText('用户名已存在')).toBeInTheDocument();
@@ -102,7 +102,7 @@ describe('RegistrationForm (FF-005)', () => {
     await user.type(screen.getByLabelText(/^名/), 'John');
     await user.type(screen.getByLabelText(/^姓/), 'Smith');
     await user.type(screen.getByLabelText(/用户名/), 'chris');
-    await user.type(screen.getByLabelText(/密码/), 'password123');
+    await user.type(screen.getByLabelText(/密码/), 'password1234');
     await user.click(screen.getByRole('button', { name: /注册/ }));
 
     await vi.waitFor(() => {

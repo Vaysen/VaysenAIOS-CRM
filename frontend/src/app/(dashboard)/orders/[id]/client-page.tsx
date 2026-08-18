@@ -5,7 +5,8 @@ import Link from 'next/link';
 import api from '@/lib/api';
 import { useRuntimeRouteParam } from '@/lib/use-runtime-route-param';
 import { Card } from '@/components/ui/card';
-import { ArrowLeft, Package, Truck, CheckCircle, Clock, Filter, FileText } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
+import { formatOrderAmount, type OrderDetail, type OrderHistoryResponse } from '@/types/order';
 
 const STAGES = ['won','sampling','production','qc','shipping','payment','completed','after_sales'];
 const STAGE_LABELS: Record<string,string> = {
@@ -14,8 +15,8 @@ const STAGE_LABELS: Record<string,string> = {
 
 export default function OrderDetailPage() {
   const id = useRuntimeRouteParam('id');
-  const [order, setOrder] = useState<any>(null);
-  const [history, setHistory] = useState<any>(null);
+  const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [history, setHistory] = useState<OrderHistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -24,14 +25,14 @@ export default function OrderDetailPage() {
     let c = false;
     async function load() {
       try {
-        const [orderRes] = await Promise.allSettled([api.get(`/orders/${id}`)]);
+        const [orderRes] = await Promise.allSettled([api.get<OrderDetail>(`/orders/${id}`)]);
         if (c) return;
         if (orderRes.status === 'fulfilled') {
           const o = orderRes.value.data;
           setOrder(o);
           // Load customer history if lead linked
           if (o.leadId) {
-            api.get(`/orders/lead/${o.leadId}/history`).then(r => setHistory(r.data)).catch((error) => { console.error('[Frontend] background operation failed:', error); });
+            api.get<OrderHistoryResponse>(`/orders/lead/${o.leadId}/history`).then(r => setHistory(r.data)).catch((error) => { console.error('[Frontend] background operation failed:', error); });
           }
         } else { setError('加载失败'); }
       } catch (error) { console.error('[Frontend] operation failed:', error); } finally { if (!c) setLoading(false); }
@@ -40,11 +41,12 @@ export default function OrderDetailPage() {
     return () => { c = true; };
   }, [id]);
 
-  const fields = order?.outputContent ? (() => { try { return JSON.parse(order.outputContent); } catch { return {}; } })() : {};
-
   const changeStage = async (stage: string) => {
     setUpdating(true);
-    try { await api.patch(`/orders/${id}/stage`, { stage }); setOrder({...order, outputContent: JSON.stringify({...fields, stage})}); }
+    try {
+      const res = await api.patch<OrderDetail>(`/orders/${id}/stage`, { stage });
+      setOrder(res.data);
+    }
     catch (error) { console.error('[Frontend] operation failed:', error); }
     finally { setUpdating(false); }
   };
@@ -57,26 +59,27 @@ export default function OrderDetailPage() {
       <div className="flex items-center gap-3">
         <Link href="/orders" className="text-gray-400 hover:text-gray-600"><ArrowLeft className="w-4 h-4" /></Link>
         <div>
-          <h1 className="text-xl font-bold">{fields.referenceNo || '订单'}</h1>
-          <p className="text-sm text-gray-500">{fields.lead?.companyName || '未关联'} · {STAGE_LABELS[fields.stage] || fields.stage}</p>
+          {order.opportunity && <p className="mb-1 text-xs text-blue-600">商机：{order.opportunity.name} · {order.opportunity.stage}</p>}
+          <h1 className="text-xl font-bold">{order.orderNo || '订单'}</h1>
+          <p className="text-sm text-gray-500">{order.lead?.companyName || '未关联'} · {STAGE_LABELS[order.stage] || order.stage}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="p-4">
           <h3 className="text-sm font-semibold mb-2">客户信息</h3>
-          <p className="text-sm font-medium">{fields.lead?.companyName || '—'}</p>
-          <p className="text-xs text-gray-500">{fields.lead?.contactName} · {fields.lead?.country}</p>
+          <p className="text-sm font-medium">{order.lead?.companyName || '—'}</p>
+          <p className="text-xs text-gray-500">{order.lead?.contactName || '-'} · {order.lead?.country || '-'}</p>
           {order.leadId && <Link href={`/customers/${order.leadId}`} className="text-xs text-blue-600 hover:underline mt-1 inline-block">查看客户 →</Link>}
         </Card>
         <Card className="p-4">
           <h3 className="text-sm font-semibold mb-2">订单金额</h3>
-          <p className="text-2xl font-bold">${fields.quote?.totalAmount?.toLocaleString() || '—'}</p>
-          <p className="text-xs text-gray-500">{fields.quote?.lineItems?.length || 0} 项产品</p>
+          <p className="text-2xl font-bold">{formatOrderAmount(order.totalAmount, order.currency)}</p>
+          <p className="text-xs text-gray-500">{order.quote?.itemCount || 0} 项产品</p>
         </Card>
         <Card className="p-4">
           <h3 className="text-sm font-semibold mb-2">阶段</h3>
-          <select value={fields.stage || 'won'} onChange={(e) => changeStage(e.target.value)} disabled={updating} className="w-full border rounded px-2 py-1.5 text-sm">
+          <select value={order.stage || 'won'} onChange={(e) => changeStage(e.target.value)} disabled={updating} className="w-full border rounded px-2 py-1.5 text-sm">
             {STAGES.map(s => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
           </select>
         </Card>
@@ -86,21 +89,11 @@ export default function OrderDetailPage() {
         <Card className="p-4">
           <h3 className="text-sm font-semibold mb-3">客户订单历史</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            {[{ label:'订单总数', v:history.stats?.totalOrders },
-              { label:'累计金额', v:`$${(history.stats?.totalAmount||0).toLocaleString()}` }].map(m =>
+            {[{ label:'订单总数', v:history.stats.totalOrders },
+              { label:'累计金额', v:formatOrderAmount(history.stats.totalAmount, order.currency) }].map(m =>
               <div key={m.label} className="bg-gray-50 rounded p-2.5 text-center"><p className="text-[10px] text-gray-500">{m.label}</p><p className="text-sm font-bold">{m.v}</p></div>
             )}
           </div>
-          {history.stats?.topProducts?.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-gray-600 mb-1">常购产品</p>
-              <div className="flex flex-wrap gap-1">
-                {history.stats.topProducts.map(([name, count]: [string, number]) => (
-                  <span key={name} className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">{name} ×{count}</span>
-                ))}
-              </div>
-            </div>
-          )}
         </Card>
       )}
     </div>

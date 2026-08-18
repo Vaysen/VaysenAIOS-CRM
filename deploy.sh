@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vaysen AI CRM fail-closed production deployment.
+# Vaysen Pilot fail-closed production deployment.
 
 set -euo pipefail
 umask 077
@@ -92,6 +92,9 @@ CURRENT_HEAD="$(git -C "$PROJECT_DIR" rev-parse --verify HEAD)" \
 PREVIOUS_TAG="$PREVIOUS_RELEASE_TAG"
 [ "$PREVIOUS_TAG" != "$RELEASE_TAG" ] \
     || fail "PREVIOUS_RELEASE_TAG must differ from RELEASE_TAG"
+PREVIOUS_RUNTIME_BASELINE="${PREVIOUS_RUNTIME_BASELINE:-$PROJECT_DIR/security/release-runtime-baselines/${PREVIOUS_TAG}.json}"
+[ -f "$PREVIOUS_RUNTIME_BASELINE" ] && [ ! -L "$PREVIOUS_RUNTIME_BASELINE" ] \
+    || fail "previous runtime image baseline is missing or symlinked: $PREVIOUS_RUNTIME_BASELINE"
 [ "$(git -C "$PROJECT_DIR" cat-file -t "refs/tags/$PREVIOUS_TAG" 2>/dev/null || true)" = "tag" ] \
     || fail "previous rollback anchor is not an annotated tag: $PREVIOUS_TAG"
 PREVIOUS_COMMIT="$(git -C "$PROJECT_DIR" rev-parse --verify "${PREVIOUS_TAG}^{}" 2>/dev/null || true)"
@@ -165,6 +168,7 @@ step "[3/9] Validate Compose model"
 compose config -q || fail "docker compose config validation failed"
 BACKUP_DIR="$BACKUP_DIR" RELEASES_DIR="$RELEASES_DIR" \
     bash scripts/rollback.sh --check-app --rev "$PREVIOUS_TAG" \
+        --runtime-baseline "$PREVIOUS_RUNTIME_BASELINE" \
     || fail "previous release is not rollback-ready"
 
 run_openclaw_e2e_auth_gate() {
@@ -234,12 +238,16 @@ if [ -n "$IMAGE_REUSE_SOURCE_TAG" ]; then
         --release-tag "$RELEASE_TAG" \
         || fail "candidate image reuse failed closed"
 else
-    compose build || fail "candidate image build failed"
+    # R103 changes only the Node application images. Keep the reviewed
+    # python-service and all third-party infrastructure on their running R101
+    # image/config; rebuilding or re-anchoring unrelated services is forbidden.
+    compose build backend frontend worker-email-compose \
+        || fail "candidate backend/frontend/backend-worker image build failed"
 fi
 compose pull openclaw-gateway || fail "digest-pinned OpenClaw image pull failed"
 docker image inspect "$OPENCLAW_IMAGE" >/dev/null 2>&1 \
     || fail "reviewed OpenClaw image is missing after pull: $OPENCLAW_IMAGE"
-for image in backend frontend backend-worker python-service; do
+for image in backend frontend backend-worker; do
     image_ref="vaysen-crm-${image}:${RELEASE_COMMIT_SHORT}"
     docker image inspect "$image_ref" >/dev/null 2>&1 \
         || fail "candidate image is missing: $image_ref"
@@ -396,6 +404,7 @@ QUIESCED_DB_BACKUP="$(printf '%s\n' "$QUIESCED_DB_OUTPUT" | sed -n 's/^backupFil
 [ -n "$QUIESCED_DB_BACKUP" ] || fail "database backup script returned no verified archive path"
 BACKUP_DIR="$BACKUP_DIR" RELEASES_DIR="$RELEASES_DIR" \
     bash scripts/rollback.sh --check --rev "$PREVIOUS_TAG" \
+        --runtime-baseline "$PREVIOUS_RUNTIME_BASELINE" \
         --db-backup "$QUIESCED_DB_BACKUP" --runtime-backup "$RUNTIME_BACKUP" \
     || fail "verified data and previous release are not jointly rollback-ready"
 
@@ -413,10 +422,11 @@ automatic_rollback_on_failure() {
     if [ "$status" -ne 0 ] && [ "$POST_CUTOVER_ACTIVE" -eq 1 ]; then
         printf '[DEPLOY RECOVERY] candidate verification failed; restoring %s with verified data snapshots\n' "$PREVIOUS_TAG" >&2
         if ! printf 'ROLLBACK\n' | bash scripts/rollback.sh \
-            --db-backup "$QUIESCED_DB_BACKUP" --runtime-backup "$RUNTIME_BACKUP" --rev "$PREVIOUS_TAG"; then
+            --db-backup "$QUIESCED_DB_BACKUP" --runtime-backup "$RUNTIME_BACKUP" \
+            --rev "$PREVIOUS_TAG" --runtime-baseline "$PREVIOUS_RUNTIME_BASELINE"; then
             printf '[DEPLOY RECOVERY ERROR] automatic rollback failed. Run exactly:\n' >&2
-            printf "  printf 'ROLLBACK\\n' | bash scripts/rollback.sh --db-backup %q --runtime-backup %q --rev %q\n" \
-                "$QUIESCED_DB_BACKUP" "$RUNTIME_BACKUP" "$PREVIOUS_TAG" >&2
+            printf "  printf 'ROLLBACK\\n' | bash scripts/rollback.sh --db-backup %q --runtime-backup %q --rev %q --runtime-baseline %q\n" \
+                "$QUIESCED_DB_BACKUP" "$RUNTIME_BACKUP" "$PREVIOUS_TAG" "$PREVIOUS_RUNTIME_BASELINE" >&2
         fi
     fi
     exit "$status"
@@ -468,10 +478,12 @@ printf '[DEPLOY] production migration completed in %ss (limit %ss)\n' \
 # The bounded one-off migration above is the only production migration owner.
 # Keep all six workers, frontend, n8n and OpenClaw stopped until backend reports
 # healthy, so no candidate process observes a partial enum/DDL transition.
-compose up -d --no-build --wait --wait-timeout "${MAX_WAIT_SECONDS:-180}" \
-    postgres redis python-service backend \
+compose up -d --no-build --no-deps --wait --wait-timeout "${MAX_WAIT_SECONDS:-180}" \
+    backend \
     || fail "candidate backend migration/startup did not become healthy before dependent services"
-compose up -d --no-build || fail "candidate startup failed"
+compose up -d --no-build --no-deps --wait --wait-timeout "${MAX_WAIT_SECONDS:-180}" \
+    frontend openclaw-gateway nginx "${WORKERS[@]}" \
+    || fail "candidate frontend/backend-worker/OpenClaw/edge startup failed"
 
 wait_service() {
     local service="$1" require_health="$2" waited=0 container state health

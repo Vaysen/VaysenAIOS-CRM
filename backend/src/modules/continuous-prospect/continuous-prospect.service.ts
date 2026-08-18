@@ -5,6 +5,12 @@ import { v4 as uuid } from 'uuid';
 import { randomCategoryAcrossAllLayers, formatTaskTitle, ALL_LAYERS, randomTargetCountry } from '../search/prospect-categories';
 import * as dns from 'dns/promises';
 import { isLegacyBusinessText, productFocusKeywords, resolveBusinessContext } from '@/common/business-context';
+import {
+  SafeEgressError,
+  redactEgressUrl,
+  safeInternetFetcher,
+} from '@/common/security/safe-egress-fetcher';
+import { searchTrustedSearxng } from '@/common/http/trusted-searxng-client';
 
 type EvidenceProspect = {
   title: string;
@@ -405,17 +411,7 @@ export class ContinuousProspectService {
     for (const query of queries) {
       try {
         const base = process.env.SEARXNG_URL || process.env.SEARXNG_BASE_URL || 'http://127.0.0.1:8080';
-        const url = `${base.replace(/\/$/, '')}/search?q=${encodeURIComponent(query)}&format=json&language=en`;
-        const resp = await Promise.race([
-          fetch(url, {
-          headers: { 'User-Agent': 'Vaysen AI CRM/2.0' },
-          signal: AbortSignal.timeout(10000),
-          }),
-          new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('SearXNG timeout')), 15000)),
-        ]) as Response;
-        if (!resp.ok) continue;
-        const data = await resp.json();
-        const rows = Array.isArray(data.results) ? data.results : [];
+        const rows = await searchTrustedSearxng(query, batchSize * 3, { baseUrl: base });
         for (const item of rows) {
           const itemUrl = item.url || '';
           if (!itemUrl || !/^https?:\/\//i.test(itemUrl)) continue;
@@ -424,7 +420,7 @@ export class ContinuousProspectService {
           allCandidates.push({
             title: String(item.title || '').replace(/<[^>]*>/g, ''),
             url: itemUrl,
-            snippet: String(item.content || item.snippet || '').replace(/<[^>]*>/g, ''),
+            snippet: String(item.snippet || '').replace(/<[^>]*>/g, ''),
           });
         }
       } catch {
@@ -624,13 +620,19 @@ export class ContinuousProspectService {
   }
 
   private async fetchText(url: string): Promise<string> {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 8000);
     try {
-      const r = await fetch(url, { signal: c.signal, headers: { 'User-Agent': 'Vaysen AI CRM/2.0' } });
-      return r.ok ? await r.text() : '';
-    } catch { return ''; }
-    finally { clearTimeout(t); }
+      const response = await safeInternetFetcher.fetch(url, {
+        connectTimeoutMs: 3000,
+        totalTimeoutMs: 8000,
+        maxResponseBytes: 512 * 1024,
+        allowedContentTypes: ['text/html', 'text/plain', 'application/xhtml+xml'],
+      });
+      return response.status >= 200 && response.status < 300 ? response.text() : '';
+    } catch (error) {
+      const code = error instanceof SafeEgressError ? error.code : 'EGRESS_REQUEST_FAILED';
+      this.logger.warn(`Candidate page fetch rejected code=${code} target=${redactEgressUrl(url)}`);
+      return '';
+    }
   }
 
   private stripHtml(v: string): string {
@@ -663,18 +665,11 @@ export class ContinuousProspectService {
     // Delegates to SearXNG (which uses Clash proxy to reach real search engines)
     try {
       const base = process.env.SEARXNG_URL || process.env.SEARXNG_BASE_URL || 'http://127.0.0.1:8080';
-      const url = `${base.replace(/\/$/, '')}/search?q=${encodeURIComponent(query)}&format=json&language=en`;
-      const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Vaysen AI CRM/2.0' },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!resp.ok) return [];
-      const data = await resp.json();
-      const rows = Array.isArray(data.results) ? data.results : [];
+      const rows = await searchTrustedSearxng(query, max, { baseUrl: base });
       return rows.slice(0, max).map((item: any) => ({
         title: String(item.title || '').replace(/<[^>]*>/g, ''),
         url: item.url || '',
-        snippet: String(item.content || item.snippet || '').replace(/<[^>]*>/g, ''),
+        snippet: String(item.snippet || '').replace(/<[^>]*>/g, ''),
       })).filter((item: any) => item.url && /^https?:\/\//i.test(item.url));
     } catch {
       return [];

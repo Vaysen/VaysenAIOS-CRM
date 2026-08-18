@@ -36,4 +36,35 @@ export class AnalyticsController {
   getEmailTrends(@CurrentUser() user: any, @Query() query: any) {
     return this.analyticsService.getEmailTrends(user, query);
   }
+
+  // ---------------------------------------------------------- R111 批次D
+
+  @Get('engagement-trends')
+  @ApiOperation({ summary: '邮件互动率趋势（每日 sent/opened/clicked/replied 及率）' })
+  @ApiQuery({ name: 'days', required: false, description: '相对天数，默认 30' })
+  @ApiQuery({ name: 'startDate', required: false, description: '自定义范围起始日期' })
+  @ApiQuery({ name: 'endDate', required: false, description: '自定义范围结束日期' })
+  @ApiQuery({ name: 'ownerUserId', required: false, description: '按销售负责人过滤，仅管理员' })
+  getEngagementTrends(@CurrentUser() user: any, @Query() query: any) {
+    return this.analyticsService.getEngagementTrends(user, query);
+  }
+
+  @Get('mail-center-trends')
+  @ApiOperation({ summary: '邮件中心收发信日趋势（inbound/outbound）' })
+  @ApiQuery({ name: 'days', required: false, description: '相对天数，默认 7' })
+  getMailCenterTrends(@CurrentUser() user: any, @Query() query: any) {
+    return this.analyticsService.getMailCenterTrends(user, query);
+  }
+
+  @Get('sources')
+  @ApiOperation({ summary: '询盘来源分布（Lead groupBy sourceType）' })
+  getSources(@CurrentUser() user: any) {
+    return this.analyticsService.getSources(user);
+  }
+
+  @Get('whatsapp-stats')
+  @ApiOperation({ summary: 'WhatsApp 聚合统计（会话/消息/已读/未读）' })
+  getWhatsappStats(@CurrentUser() user: any) {
+    return this.analyticsService.getWhatsappStats(user);
+  }
 }

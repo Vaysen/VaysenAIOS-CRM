@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@/common/prisma/prisma.service';
-import { DataGathererService } from './data-gatherer.service';
+import { createResearchEvidenceError, DataGathererService } from './data-gatherer.service';
 import { ResearchAgentResult, ResearchExecutionOptions } from './research-agent.types';
 
 @Injectable()
@@ -22,10 +22,10 @@ export class ContactDiscoveryAgent {
     );
 
     if (!gathered?.html || !gathered?.json) {
-      throw new Error(gathered?.error || '联系人深挖采集失败，未获得可核验的公开证据。');
+      throw createResearchEvidenceError();
     }
 
-    const title = `${lead.companyName} - 联系人深挖报告`;
+    const title = `${lead.companyName} - 联系方式发现报告`;
     const reportId = await this.archiveReport(
       lead.id, lead.companyId, 'contacts', title, gathered.html, gathered.json, userId, options.agentRunId,
     );

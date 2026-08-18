@@ -13,6 +13,8 @@ export const IPC_CHANNELS = {
   AUTH_GET_TOKEN: 'auth:get-token',
   AUTH_SET_TOKEN: 'auth:set-token',
   AUTH_CLEAR_TOKEN: 'auth:clear-token',
+  AUTH_REFRESH_SESSION: 'auth:refresh-session',
+  AUTH_LOGOUT_SESSION: 'auth:logout-session',
   AUTH_GET_COMPANY: 'auth:get-company',
   AUTH_SET_COMPANY: 'auth:set-company',
 
@@ -50,6 +52,7 @@ export const IPC_CHANNELS = {
   // === 运行时配置（首次配置页 / 解耦局域网地址）===
   APP_CONFIG_GET: 'app:config-get',   // 渲染进程 → 主进程：读取运行时配置（API/更新地址）
   APP_CONFIG_SET: 'app:config-set',   // 渲染进程 → 主进程：写入运行时配置
+  APP_CHECK_CONNECTION: 'app:check-connection', // 渲染进程 → 主进程：探测候选 LAN 后端
   APP_NEED_RESTART: 'app:need-restart', // 主进程 → 渲染进程：配置已变更，需要重启（axios 在模块加载时固化）
   APP_CONFIG_INVALID: 'app:config-invalid', // 主进程 → 渲染进程：env/持久化配置非法，引导进入配置页（v1.2b 红线 #5）
 

@@ -1,22 +1,22 @@
 import { Injectable, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '@/common/prisma/prisma.service';
+import { requireActiveCompany } from '@/common/utils/data-isolation';
 
 @Injectable()
 export class TagsService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(currentUser: any) {
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
+    const companyId = requireActiveCompany(currentUser).id;
     const tags = await this.prisma.tag.findMany({
-      where: { companyId: { in: companyIds } },
+      where: { companyId },
       orderBy: [{ category: 'asc' }, { displayName: 'asc' }],
     });
     return { data: tags };
   }
 
   async create(dto: { name: string; color?: string }, currentUser: any) {
-    const companyId = currentUser.companies?.[0]?.id;
-    if (!companyId) throw new ForbiddenException('No company associated');
+    const companyId = this.requireTenantManager(currentUser);
 
     const name = dto.name.trim();
     if (!name) throw new ForbiddenException('Tag name is required');
@@ -40,34 +40,57 @@ export class TagsService {
   }
 
   async remove(id: string, currentUser: any) {
-    const tag = await this.prisma.tag.findUnique({ where: { id } });
+    const companyId = this.requireTenantManager(currentUser);
+    const tag = await this.prisma.tag.findFirst({ where: { id, companyId } });
     if (!tag) throw new NotFoundException('Tag not found');
     if (tag.isSystem) throw new ForbiddenException('Cannot delete system tags');
-
-    const companyIds = currentUser.companies?.map((c: any) => c.id) || [];
-    if (!companyIds.includes(tag.companyId)) throw new ForbiddenException('Cannot delete tags from another company');
 
     await this.prisma.tag.delete({ where: { id } });
     return { message: 'Tag deleted' };
   }
 
-  async addTagsToLead(leadId: string, tagIds: string[], userId: string) {
+  async addTagsToLead(
+    leadId: string,
+    tagIds: string[],
+    userId: string,
+    companyId: string,
+  ) {
+    const tags = await this.prisma.tag.findMany({
+      where: { id: { in: tagIds }, companyId },
+      select: { id: true },
+    });
+    if (tags.length !== new Set(tagIds).size) {
+      throw new ForbiddenException('One or more tags are outside the active company');
+    }
     const data = tagIds.map((tagId) => ({ leadId, tagId, createdBy: userId }));
     await this.prisma.leadTag.createMany({ data, skipDuplicates: true });
     return { message: 'Tags added' };
   }
 
-  async removeTagFromLead(leadId: string, tagId: string) {
+  async removeTagFromLead(leadId: string, tagId: string, companyId: string) {
+    const tag = await this.prisma.tag.findFirst({
+      where: { id: tagId, companyId },
+      select: { id: true },
+    });
+    if (!tag) throw new NotFoundException('Tag not found');
     await this.prisma.leadTag.deleteMany({ where: { leadId, tagId } });
     return { message: 'Tag removed' };
   }
 
-  async syncLeadTags(leadId: string, tagIds: string[], userId: string) {
+  async syncLeadTags(leadId: string, tagIds: string[], userId: string, companyId: string) {
     // Remove all existing tags for this lead
     await this.prisma.leadTag.deleteMany({ where: { leadId } });
     // Add new tags
     if (tagIds.length > 0) {
-      await this.addTagsToLead(leadId, tagIds, userId);
+      await this.addTagsToLead(leadId, tagIds, userId, companyId);
     }
+  }
+
+  private requireTenantManager(currentUser: any) {
+    const active = requireActiveCompany(currentUser);
+    if (!['super_admin', 'company_admin', 'sales_manager'].includes(active.role)) {
+      throw new ForbiddenException('A tenant manager role is required');
+    }
+    return active.id;
   }
 }

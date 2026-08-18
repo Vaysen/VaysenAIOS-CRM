@@ -1,4 +1,11 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
@@ -24,6 +31,14 @@ import { QUEUES } from '@/common/queues/queue-names';
 import { createAiClient } from '@/common/ai/ai-client.util';
 import { CreateSearchTaskDto } from './dto/create-search-task.dto';
 import { isLegacyBusinessText, productFocusKeywords, resolveBusinessContext } from '@/common/business-context';
+import { writeEmailVerificationEvidence } from '../outbound/email-verification-evidence';
+import {
+  SafeEgressError,
+  redactEgressUrl,
+  safeInternetFetcher,
+} from '@/common/security/safe-egress-fetcher';
+import { searchTrustedSearxng } from '@/common/http/trusted-searxng-client';
+import { requestTrustedProviderJson } from '@/common/http/trusted-provider-client';
 
 type EvidencePage = {
   url: string;
@@ -530,6 +545,10 @@ export class SearchService {
 
       verified += 1;
       try {
+        const verifiedEmail = result.email;
+        if (!verifiedEmail) {
+          throw new ConflictException('Verified search result has no canonical email');
+        }
         const convertedResult: any = await this.convertToLead(row.id, companyId, userId, true);
         const newLeadId = convertedResult?.id;
         if (newLeadId) {
@@ -538,10 +557,14 @@ export class SearchService {
             data: {
               ownerUserId: null,
               reviewStatus: 'approved',
-              emailVerificationStatus: verificationStatus === 'smtp_verified' ? 'smtp_verified' : 'mx_domain_verified',
-              emailVerificationReason: result.verification?.reason || 'Verified from manual review batch',
             },
           });
+          await this.applySearchEmailEvidence(
+            newLeadId,
+            verifiedEmail,
+            result.verification,
+            result.verification?.reason || 'Verified from manual review batch',
+          );
           converted += 1;
           details.push({ id: row.id, status: 'converted', email: result.email });
           continue;
@@ -936,7 +959,10 @@ companyName, website, country, reason, contactEmail, contactRole, similarityType
         youtubeUrl: analysis.youtube || null,
         tiktokUrl: analysis.tiktok || null,
         otherSocialLinks: socialLinks.length ? socialLinks : undefined,
-        emailVerificationStatus: emailStatus,
+        // Fail closed until the exact-address CAS writer below binds trusted
+        // Reacher evidence. A crash between create and CAS leaves an
+        // unverified lead rather than a falsely sendable one.
+        emailVerificationStatus: 'unverified',
         emailVerificationReason: emailVerification.reason || analysis.emailSource || null,
         confidenceScore: analysis.confidenceScore || null,
         industry: analysis.industryCategory || null,
@@ -953,6 +979,13 @@ companyName, website, country, reason, contactEmail, contactRole, similarityType
         ownerUserId: userId,
       },
     });
+
+    await this.applySearchEmailEvidence(
+      lead.id,
+      analysis.contactEmail || '',
+      emailVerification,
+      emailVerification.reason || analysis.emailSource || 'Search email verification',
+    );
 
     await this.addContactsFromAnalysis(companyId, lead.id, analysis);
 
@@ -1918,11 +1951,7 @@ Use empty string for unknown text fields, 0 for unknown year, false for unknown 
 
   private async searxngSearch(query: string, limit: number) {
     const base = process.env.SEARXNG_URL || process.env.SEARXNG_BASE_URL || 'http://127.0.0.1:8080';
-    const url = `${base.replace(/\/$/, '')}/search?q=${encodeURIComponent(query)}&format=json&language=en`;
-    const text = await this.fetchText(url);
-    if (!text) return [];
-    const data = JSON.parse(text);
-    const rows = Array.isArray(data.results) ? data.results : [];
+    const rows = await searchTrustedSearxng(query, limit, { baseUrl: base });
     return rows.slice(0, limit).map((item: any) => ({
       title: this.stripHtml(item.title || ''),
       url: item.url || '',
@@ -2162,19 +2191,18 @@ Return:
   }
 
   private async fetchText(url: string) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
     try {
-      const res = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; Vaysen AI CRM/1.0; B2B research bot)',
-        },
+      const response = await safeInternetFetcher.fetch(url, {
+        connectTimeoutMs: 2500,
+        totalTimeoutMs: 5000,
+        maxResponseBytes: 512 * 1024,
+        allowedContentTypes: ['text/html', 'text/plain', 'application/xhtml+xml'],
       });
-      if (!res.ok) return '';
-      return await res.text();
-    } finally {
-      clearTimeout(timer);
+      return response.status >= 200 && response.status < 300 ? response.text() : '';
+    } catch (error) {
+      const code = error instanceof SafeEgressError ? error.code : 'EGRESS_REQUEST_FAILED';
+      this.logger.warn(`Candidate page fetch rejected code=${code} target=${redactEgressUrl(url)}`);
+      return '';
     }
   }
 
@@ -2537,12 +2565,27 @@ Return:
     return { status: 'failed', method: 'mx', reason: 'Domain has no MX records', checkedAt: new Date().toISOString() };
   }
 
+  private async applySearchEmailEvidence(
+    leadId: string,
+    expectedEmail: string,
+    verification: { status?: string; method?: string } | null | undefined,
+    reason: string,
+  ) {
+    const trustedReacher = verification?.status === 'smtp_verified'
+      && verification?.method === 'reacher';
+    return writeEmailVerificationEvidence(this.prisma, {
+      leadId,
+      expectedEmail,
+      status: trustedReacher ? 'smtp_verified' : 'unverified',
+      reason,
+      trustedEvidence: trustedReacher,
+    });
+  }
+
   private async verifyWithReacher(email: string): Promise<boolean | null> {
     const apiUrl = process.env.REACHER_API_URL;
     if (!apiUrl) return null;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
     try {
       const baseUrl = apiUrl.replace(/\/$/, '');
       const endpoints = baseUrl.endsWith('/check_email')
@@ -2553,14 +2596,16 @@ Return:
 
       let data: any = null;
       for (const endpoint of endpoints) {
-        const res = await fetch(endpoint, {
+        const res = await requestTrustedProviderJson(endpoint, {
+          provider: 'reacher',
           method: 'POST',
-          signal: controller.signal,
           headers,
           body: JSON.stringify({ to_email: email }),
+          timeoutMs: 10_000,
+          maxResponseBytes: 128 * 1024,
         });
         if (!res.ok) continue;
-        data = await res.json();
+        data = res.data;
         break;
       }
       if (!data) return null;
@@ -2572,8 +2617,6 @@ Return:
       return null;
     } catch {
       return null;
-    } finally {
-      clearTimeout(timer);
     }
   }
 

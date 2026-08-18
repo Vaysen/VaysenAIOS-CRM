@@ -33,7 +33,10 @@ x-backend-env: &backend-env
   ZHIPU_API_KEY: ${ZHIPU_API_KEY}
   ZHIPU_BASE_URL: ${ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
   ZHIPU_MODEL: ${ZHIPU_MODEL:-glm-4-flash-250414}
-  BUSINESS_BRAND_NAME: ${BUSINESS_BRAND_NAME:-Example Trading Company}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+  BUSINESS_BRAND_NAME: ${BUSINESS_BRAND_NAME:-Vaysen Packaging (Vaysen包装)}
   BUSINESS_DESCRIPTION: ${BUSINESS_DESCRIPTION:-International B2B packaging manufacturer and exporter}
   BUSINESS_PRODUCT_FOCUS: ${BUSINESS_PRODUCT_FOCUS:-poly mailers, kraft paper bags, garbage bags, zip-lock bags and customizable packaging}
   BUSINESS_TARGET_CUSTOMER_PROFILE: ${BUSINESS_TARGET_CUSTOMER_PROFILE:-brands, wholesalers, distributors, e-commerce sellers, retail chains, logistics companies and procurement teams buying customizable packaging in repeat volume}
@@ -205,7 +208,7 @@ services:
       ZHIPU_API_KEY: ${ZHIPU_API_KEY}
       ZHIPU_BASE_URL: ${ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
       ZHIPU_MODEL: ${ZHIPU_MODEL:-glm-4-flash-250414}
-      VAYSEN_CRM_API_BASE_URL: http://backend:4000/api
+      VAYSEN_API_BASE_URL: http://backend:4000/api
       REACHER_API_URL: http://reacher:8080
       SEARXNG_URL: http://searxng:8080
     ports:
@@ -409,7 +412,7 @@ services:
       args:
         NODE_IMAGE: ${NODE_IMAGE:?NODE_IMAGE must be pinned to an approved digest}
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vaysen AI CRM}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vaysen 外贸系统}
       labels:
         org.opencontainers.image.revision: "${RELEASE_COMMIT:?RELEASE_COMMIT must be an immutable full SHA}"
     # 不可变版本标签 + Git SHA（实际监听端口见下方 expose: 3000）
@@ -419,7 +422,7 @@ services:
     container_name: vaysen-crm-frontend
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vaysen AI CRM}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vaysen 外贸系统}
     # 实际监听端口固定为 3000（由 frontend/Dockerfile 的 PORT=3000 决定），
     # 与 nginx upstream（frontend:3000）保持一致。
     expose:

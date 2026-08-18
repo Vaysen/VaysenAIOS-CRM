@@ -8,7 +8,7 @@ if (!allowedModes.has(providerMode)) throw new Error(`Unsupported VOICE_PROVIDER
 const server = createServer((request, response) => {
   response.setHeader('content-type', 'application/json; charset=utf-8');
   if (request.url === '/health') {
-    response.end(JSON.stringify({ ok: true, service: 'vaysen-ai-crm-voice-agent', providerMode }));
+    response.end(JSON.stringify({ ok: true, service: 'vaysen-crm-voice-agent', providerMode }));
     return;
   }
   if (request.url === '/ready') {

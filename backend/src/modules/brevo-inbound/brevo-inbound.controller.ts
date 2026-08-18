@@ -1,7 +1,20 @@
-import { Body, Controller, Get, Headers, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpException, HttpStatus, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { BrevoInboundService } from './brevo-inbound.service';
+
+const BREVO_INBOUND_PROCESSING_ERROR = 'BREVO_INBOUND_PROCESSING_FAILED';
+
+function toPublicProcessingException(error: unknown) {
+  const status = error instanceof HttpException
+    ? error.getStatus()
+    : HttpStatus.INTERNAL_SERVER_ERROR;
+  return new HttpException({
+    statusCode: status,
+    code: BREVO_INBOUND_PROCESSING_ERROR,
+    message: 'Brevo inbound processing failed',
+  }, status);
+}
 
 @ApiTags('Brevo Email Integration')
 @Controller('integrations/brevo')
@@ -24,6 +37,10 @@ export class BrevoInboundController {
     @Headers('authorization') authorization?: string,
   ) {
     this.service.assertAuthorized(authorization);
-    return this.service.ingest(payload);
+    try {
+      return await this.service.ingest(payload);
+    } catch (error) {
+      throw toPublicProcessingException(error);
+    }
   }
 }

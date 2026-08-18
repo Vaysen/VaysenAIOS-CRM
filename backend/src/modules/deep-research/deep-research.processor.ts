@@ -9,6 +9,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '@/common/prisma/prisma.service';
 import { QUEUES } from '@/common/queues/queue-names';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '@/common/security/safe-logging';
 import { BackgroundCheckAgent } from './background-check.agent';
 import { ContactDiscoveryAgent } from './contact-discovery.agent';
 import { MarketAnalysisAgent } from './market-analysis.agent';
@@ -168,7 +169,12 @@ export class DeepResearchProcessor extends WorkerHost {
         });
       }
 
-      this.logger.log(`Running deep research for ${lead.companyName} (${type || 'full'})`);
+      this.logger.log(safeLogEvent('deep_research.execution_started', {
+        status: 'active',
+        stage: 'dispatch',
+        eventType: `research.${type || 'full'}`,
+        runRef: safeDigest(agentRunId, 'agent-run'),
+      }));
       const options = { agentRunId };
       let research: ResearchAgentResult;
       switch (type) {
@@ -189,6 +195,14 @@ export class DeepResearchProcessor extends WorkerHost {
         partialFailure: this.isPartialFailure(research.json),
       });
     } catch (error) {
+      this.logger.error(safeLogEvent('deep_research.execution_failed', {
+        status: 'failed',
+        stage: 'dispatch',
+        eventType: `research.${type || 'full'}`,
+        runRef: safeDigest(run.id, 'agent-run'),
+        error,
+        errorCategory: safeErrorCategory(error),
+      }));
       await this.deleteRunReport(run.id, companyId, claim.claimId);
       await this.failRun(run.id, companyId, 'RESEARCH_EXECUTION_FAILED', undefined, claim.claimId);
       throw error;

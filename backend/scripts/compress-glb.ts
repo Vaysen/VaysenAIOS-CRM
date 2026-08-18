@@ -7,8 +7,8 @@
  *   npx tsx scripts/compress-glb.ts [input.glb] [output.glb]
  *
  * Defaults:
- *   input  = F:/示例贸易公司资料/packaging-customizer/frontend/public/models/bag-8side-opt.glb
- *   output = F:/示例贸易公司资料/packaging-customizer/frontend/public/models/bag-8side-compressed.glb
+ *   input  = F:/Vaysen包装资料/packaging-customizer/frontend/public/models/bag-8side-opt.glb
+ *   output = F:/Vaysen包装资料/packaging-customizer/frontend/public/models/bag-8side-compressed.glb
  *
  * Optimisations applied:
  *   1. dedup           — remove duplicate mesh data
@@ -38,9 +38,9 @@ const { createEncoderModule, createDecoderModule } = require('draco3d');
 // Configuration
 // ---------------------------------------------------------------------------
 const DEFAULT_INPUT =
-  'F:/示例贸易公司资料/packaging-customizer/frontend/public/models/bag-8side-opt.glb';
+  'F:/Vaysen包装资料/packaging-customizer/frontend/public/models/bag-8side-opt.glb';
 const DEFAULT_OUTPUT =
-  'F:/示例贸易公司资料/packaging-customizer/frontend/public/models/bag-8side-compressed.glb';
+  'F:/Vaysen包装资料/packaging-customizer/frontend/public/models/bag-8side-compressed.glb';
 
 const TARGET_SIZE_MB = 2; // Target: < 2 MB
 

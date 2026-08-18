@@ -20,7 +20,13 @@ import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 const mockUser = {
   id: 'user-1',
   email: 'admin@test.com',
-  companies: [{ id: 'company-1', name: 'Test Company' }],
+  activeCompanyId: 'company-1',
+  activeCompany: {
+    id: 'company-1',
+    name: 'Test Company',
+    role: 'company_admin',
+  },
+  companies: [{ id: 'company-1', name: 'Test Company', role: 'company_admin' }],
 };
 
 const templateFixture = {

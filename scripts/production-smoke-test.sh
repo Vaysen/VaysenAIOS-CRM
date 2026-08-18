@@ -4,7 +4,7 @@ echo "请使用 scripts/deploy-smoke-test.sh。" >&2
 exit 64
 
 # =============================================================================
-# Vaysen AI CRM — Production Smoke Test
+# Vaysen Pilot — Production Smoke Test
 # =============================================================================
 # Usage: bash scripts/production-smoke-test.sh
 #
@@ -47,7 +47,7 @@ header() { echo -e "\n${BOLD}--- $1 ---${NC}"; }
 cd "$PROJECT_DIR"
 
 echo -e "${YELLOW}============================================${NC}"
-echo -e "${YELLOW}  Vaysen AI CRM Production Smoke Test${NC}"
+echo -e "${YELLOW}  Vaysen Pilot Production Smoke Test${NC}"
 echo -e "${YELLOW}  $(date '+%Y-%m-%d %H:%M:%S')${NC}"
 echo -e "${YELLOW}============================================${NC}"
 

@@ -1,8 +1,7 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+﻿import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Job, Queue } from 'bullmq';
 import { Logger } from '@nestjs/common';
-import * as nodemailer from 'nodemailer';
 import { Resolver, resolveMx } from 'dns/promises';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { decrypt } from '../../common/utils/crypto.util';
@@ -11,6 +10,16 @@ import { TimelineService } from '../timeline/timeline.service';
 import { QUEUES } from '@/common/queues/queue-names';
 import { findLegacyEmailBrandReference, validateEmailContent } from './email-content.guard';
 import { prepareEmailForExternalDelivery } from './email-public-links';
+import { OutboundComplianceService } from '../outbound/outbound-compliance.service';
+import {
+  writeEmailVerificationEvidence,
+} from '../outbound/email-verification-evidence';
+import { resolveSmtpEgress } from '../email-accounts/smtp-egress.policy';
+import { safeLogEvent } from '../../common/security/safe-logging';
+import {
+  assertSmtpAcceptedTarget,
+  createAbortableSmtpTransport,
+} from '../email-accounts/smtp-delivery';
 
 type SendJob = {
   emailMessageId: string;
@@ -142,6 +151,7 @@ export class EmailSendProcessor extends WorkerHost {
     private timelineService: TimelineService,
     @InjectQueue(QUEUES.emailCompose) private emailComposeQueue: Queue,
     @InjectQueue(QUEUES.emailSend) private emailSendQueue: Queue,
+    private outbound: OutboundComplianceService,
   ) {
     super();
   }
@@ -175,6 +185,209 @@ export class EmailSendProcessor extends WorkerHost {
     });
     if (!msg || msg.deletedAt) return { success: false, reason: 'Email message not found' };
     if (msg.status === 'Sent') return { success: true, reason: 'Already sent' };
+    const durableAction = await this.prisma.externalActionOutbox.findUnique({
+      where: {
+        companyId_idempotencyKey: {
+          companyId: msg.companyId,
+          idempotencyKey: `email-message:${msg.id}`,
+        },
+      },
+    });
+    if (
+      durableAction?.status === 'SUCCEEDED'
+      && durableAction.provider
+      && durableAction.providerReceiptId
+    ) {
+      await this.prisma.emailMessage.update({
+        where: { id: msg.id },
+        data: {
+          status: 'Sent',
+          messageId: durableAction.providerReceiptId,
+          sentAt: durableAction.acceptedAt || durableAction.completedAt || new Date(),
+          failedReason: null,
+          errorMessage: null,
+        },
+      });
+      return {
+        success: true,
+        reconciledFromOutbox: true,
+        messageId: durableAction.providerReceiptId,
+        outboxId: durableAction.id,
+      };
+    }
+    if (durableAction?.status === 'UNKNOWN') {
+      await this.prisma.emailMessage.update({
+        where: { id: msg.id },
+        data: {
+          status: 'Blocked',
+          failedReason: 'OUTBOUND_UNKNOWN_RECONCILIATION_REQUIRED',
+          errorMessage: 'OUTBOUND_UNKNOWN_RECONCILIATION_REQUIRED',
+        },
+      });
+      return {
+        success: false,
+        status: 'UNKNOWN',
+        reason: 'Provider outcome requires reconciliation before retry',
+        outboxId: durableAction.id,
+      };
+    }
+    if (
+      durableAction?.status === 'EXECUTING'
+      && durableAction.leaseExpiresAt
+      && durableAction.leaseExpiresAt > new Date()
+    ) {
+      const delay = Math.max(
+        1000,
+        new Date(durableAction.leaseExpiresAt).getTime() - Date.now() + 1000,
+      );
+      await this.prisma.emailMessage.update({
+        where: { id: msg.id },
+        data: {
+          status: 'QueuedToSend',
+          failedReason: 'OUTBOUND_EXECUTION_IN_PROGRESS',
+          errorMessage: null,
+        },
+      });
+      await this.emailSendQueue.add(
+        'send-email',
+        { emailMessageId: msg.id, aiPersonalize },
+        {
+          delay,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 10000 },
+          removeOnComplete: 100,
+          removeOnFail: 100,
+        },
+      );
+      return {
+        success: false,
+        status: 'WAITING',
+        reason: 'Durable outbound execution is still leased',
+        outboxId: durableAction.id,
+      };
+    }
+    if (
+      durableAction?.status === 'EXECUTING'
+      && (
+        !durableAction.leaseExpiresAt
+        || durableAction.leaseExpiresAt <= new Date()
+      )
+    ) {
+      await this.prisma.externalActionOutbox.updateMany({
+        where: {
+          id: durableAction.id,
+          status: 'EXECUTING',
+          ...(durableAction.leaseExpiresAt
+            ? { leaseExpiresAt: { lte: new Date() } }
+            : { leaseExpiresAt: null }),
+        },
+        data: {
+          status: 'UNKNOWN',
+          lastErrorCode: 'EXECUTION_LEASE_EXPIRED',
+          lastError: 'Execution lease was missing or expired before a durable provider receipt was recorded',
+          completedAt: new Date(),
+          leaseExpiresAt: null,
+          leaseToken: null,
+        },
+      });
+      await this.prisma.emailMessage.update({
+        where: { id: msg.id },
+        data: {
+          status: 'Blocked',
+          failedReason: 'OUTBOUND_UNKNOWN_RECONCILIATION_REQUIRED',
+          errorMessage: 'OUTBOUND_UNKNOWN_RECONCILIATION_REQUIRED',
+        },
+      });
+      return {
+        success: false,
+        status: 'UNKNOWN',
+        reason: 'Stale durable execution requires reconciliation before retry',
+        outboxId: durableAction.id,
+      };
+    }
+    if (
+      durableAction?.status === 'CANCELLED'
+      || durableAction?.status === 'EXPIRED'
+      || (
+        durableAction?.status === 'FAILED'
+        && durableAction.attemptCount >= durableAction.maxAttempts
+      )
+      || (
+        durableAction?.status === 'FAILED'
+        && !durableAction.nextAttemptAt
+      )
+      || (
+        durableAction?.status === 'PENDING'
+        && durableAction.expiresAt <= new Date()
+      )
+    ) {
+      const terminal = durableAction.status === 'FAILED'
+        ? durableAction.attemptCount >= durableAction.maxAttempts
+          ? 'FAILED_EXHAUSTED'
+          : 'FAILED_MANUAL_RECONCILIATION_REQUIRED'
+        : durableAction.status;
+      await this.prisma.emailMessage.update({
+        where: { id: msg.id },
+        data: {
+          status: terminal === 'FAILED_EXHAUSTED' ? 'Failed' : 'Blocked',
+          failedReason: `OUTBOUND_${terminal}`,
+          errorMessage: `OUTBOUND_${terminal}`,
+        },
+      });
+      return {
+        success: false,
+        status: terminal,
+        reason: 'Durable outbound action is terminal',
+        outboxId: durableAction.id,
+      };
+    }
+    if (
+      durableAction?.status === 'FAILED'
+      && durableAction.nextAttemptAt
+      && durableAction.nextAttemptAt > new Date()
+    ) {
+      const delay = Math.max(
+        1000,
+        new Date(durableAction.nextAttemptAt).getTime() - Date.now(),
+      );
+      await this.prisma.emailMessage.update({
+        where: { id: msg.id },
+        data: {
+          status: 'QueuedToSend',
+          failedReason: 'OUTBOUND_RETRY_NOT_DUE',
+          errorMessage: null,
+        },
+      });
+      await this.emailSendQueue.add(
+        'send-email',
+        { emailMessageId: msg.id, aiPersonalize },
+        {
+          delay,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 10000 },
+          removeOnComplete: 100,
+          removeOnFail: 100,
+        },
+      );
+      return {
+        success: false,
+        status: 'WAITING',
+        reason: 'Durable outbound retry is not due yet',
+        outboxId: durableAction.id,
+      };
+    }
+    if (
+      durableAction?.status === 'PENDING'
+      || durableAction?.status === 'FAILED'
+    ) {
+      if (msg.status !== 'QueuedToSend') {
+        await this.prisma.emailMessage.update({
+          where: { id: msg.id },
+          data: { status: 'QueuedToSend', failedReason: null, errorMessage: null },
+        });
+        msg.status = 'QueuedToSend';
+      }
+    }
     if (msg.status !== 'QueuedToSend') {
       const reason = `Unsafe send blocked: message status is ${msg.status}, expected QueuedToSend`;
       if (aiPersonalize && ['DraftPending', 'Drafting', 'DraftReady', 'ValidationFailed'].includes(msg.status)) {
@@ -239,35 +452,89 @@ export class EmailSendProcessor extends WorkerHost {
       return { success: false, status: 'BLOCKED', reason: 'EMAIL_SEND_DISABLED' };
     }
 
-    this.logger.log(`Sending email ${msg.id} to ${msg.toEmail || msg.lead.contactEmail}`);
+    this.logger.log(safeLogEvent('email.send_started', {
+      messageId: msg.id,
+      recipientEmail: msg.toEmail || msg.lead.contactEmail,
+    }));
     await this.prisma.emailMessage.update({ where: { id: msg.id }, data: { status: 'Sending', failedReason: null } });
 
     try {
-      const transporter = nodemailer.createTransport({
-        host: msg.emailAccount.smtpHost,
-        port: msg.emailAccount.smtpPort,
-        secure: msg.emailAccount.smtpSecure,
-        auth: {
-          user: msg.emailAccount.smtpUsername,
-          pass: decrypt(msg.emailAccount.smtpPasswordEncrypted),
-        },
-      });
-
       const recipient = msg.toEmail || msg.lead.contactEmail || '';
-      const info = await transporter.sendMail({
-        from: `"${msg.emailAccount.senderName}" <${msg.emailAccount.senderEmail}>`,
-        replyTo: msg.emailAccount.replyToEmail || msg.emailAccount.senderEmail,
-        to: recipient,
+      const relation = msg.senderUserId
+        ? await this.prisma.userCompanyRelation.findFirst({
+            where: {
+              userId: msg.senderUserId,
+              companyId: msg.companyId,
+              isActive: true,
+              user: { is: { isActive: true, deletedAt: null } },
+              company: { is: { isActive: true } },
+            },
+            include: { role: { select: { name: true } } },
+          })
+        : null;
+      if (!msg.senderUserId || !relation) {
+        throw new Error('Outbound sender is no longer an active tenant member');
+      }
+      const execution = await this.outbound.execute({
+        companyId: msg.companyId,
+        operatorUser: {
+          id: msg.senderUserId,
+          activeCompanyId: msg.companyId,
+          activeCompany: { id: msg.companyId, role: relation.role.name },
+          companies: [{ id: msg.companyId, role: relation.role.name }],
+        },
+        actorType: 'WORKER',
+        channel: 'EMAIL',
+        actionType: 'MARKETING_EMAIL',
+        idempotencyKey: `email-message:${msg.id}`,
+        leadId: msg.leadId,
+        targetAddress: recipient,
+        emailAccountId: msg.emailAccountId,
         subject: msg.subject,
-        html: deliverableHtml,
-      }) as any;
+        body: deliverableHtml,
+        contentType: 'html',
+      }, async (_artifacts, envelope) => {
+        const egress = await resolveSmtpEgress(msg.emailAccount);
+        const { transporter, close } = createAbortableSmtpTransport(
+          egress,
+          {
+            user: msg.emailAccount.smtpUsername,
+            pass: decrypt(msg.emailAccount.smtpPasswordEncrypted),
+          },
+          envelope.signal,
+        );
+        let info: any;
+        try {
+          info = await transporter.sendMail({
+            from: `"${msg.emailAccount.senderName}" <${msg.emailAccount.senderEmail}>`,
+            replyTo: msg.emailAccount.replyToEmail || msg.emailAccount.senderEmail,
+            to: envelope.targetAddress,
+            subject: envelope.subject,
+            html: envelope.body,
+          }) as any;
+        } finally {
+          close();
+        }
+        const messageId = String(info.messageId || '').trim();
+        if (!messageId) throw new Error('SMTP provider returned no message id');
+        const accepted = assertSmtpAcceptedTarget(info, envelope.targetAddress);
+        return {
+          provider: 'smtp',
+          receiptId: messageId,
+          acceptedAt: new Date(),
+          metadata: {
+            acceptedCount: accepted.length,
+            rejectedCount: Array.isArray(info.rejected) ? info.rejected.length : 0,
+          },
+        };
+      });
 
       await this.prisma.emailMessage.update({
         where: { id: msg.id },
         data: {
           bodyHtml: deliverableHtml,
           status: 'Sent',
-          messageId: info.messageId,
+          messageId: execution.receipt.receiptId,
           sentAt: new Date(),
           failedReason: null,
           errorMessage: null,
@@ -287,8 +554,29 @@ export class EmailSendProcessor extends WorkerHost {
       });
 
       this.followUpRemindersService.generateForEmail(msg.id).catch(() => undefined);
-      return { success: true, messageId: info.messageId };
+      return {
+        success: true,
+        messageId: execution.receipt.receiptId,
+        outboxId: execution.outboxId,
+        deduplicated: execution.deduplicated,
+      };
     } catch (err: any) {
+      if (err?.outboundActionStatus === 'UNKNOWN') {
+        await this.prisma.emailMessage.update({
+          where: { id: msg.id },
+          data: {
+            status: 'Blocked',
+            failedReason: 'OUTBOUND_UNKNOWN_RECONCILIATION_REQUIRED',
+            errorMessage: 'OUTBOUND_UNKNOWN_RECONCILIATION_REQUIRED',
+          },
+        });
+        return {
+          success: false,
+          status: 'UNKNOWN',
+          reason: 'Provider outcome requires reconciliation before retry',
+          outboxId: err.outboxId,
+        };
+      }
       const retryCount = msg.retryCount + 1;
       const finalFailure = retryCount >= msg.maxRetries;
       await this.prisma.emailMessage.update({
@@ -458,18 +746,18 @@ export class EmailSendProcessor extends WorkerHost {
     const normalizedDomain = domain.toLowerCase();
 
     if (FREE_EMAIL_DOMAINS.has(normalizedDomain)) {
-      await this.updateLeadEmailVerification(lead.id, 'rejected', 'Free mailbox is not allowed for automatic cold email sending.');
+      await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'rejected', 'Free mailbox is not allowed for automatic cold email sending.');
       return 'rejected';
     }
 
     if (HARD_BLOCKED_MAILBOXES.has(mailbox)) {
-      await this.updateLeadEmailVerification(lead.id, 'rejected', `Mailbox "${mailbox}" is not allowed for automatic sending.`);
+      await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'rejected', `Mailbox "${mailbox}" is not allowed for automatic sending.`);
       return 'rejected';
     }
 
     const hasMx = await this.hasMxRecord(normalizedDomain);
     if (!hasMx) {
-      await this.updateLeadEmailVerification(lead.id, 'rejected', 'Email domain has no MX record.');
+      await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'rejected', 'Email domain has no MX record.');
       return 'rejected';
     }
 
@@ -477,27 +765,29 @@ export class EmailSendProcessor extends WorkerHost {
     const domainMatchesWebsite = Boolean(websiteDomain && (normalizedDomain === websiteDomain || normalizedDomain.endsWith(`.${websiteDomain}`)));
     const isBusinessMailbox = AUTO_SEND_BUSINESS_MAILBOXES.has(mailbox);
 
-    if (domainMatchesWebsite || isBusinessMailbox) {
-      const reason = domainMatchesWebsite
-        ? 'Auto verified before sending: email domain matches lead website and MX exists.'
-        : `Auto verified before sending: business mailbox "${mailbox}" and MX exists.`;
-      await this.updateLeadEmailVerification(lead.id, 'official_page_verified', reason);
-      lead.emailVerificationStatus = 'official_page_verified';
-      lead.emailVerificationReason = reason;
-      return 'official_page_verified';
-    }
-
-    const reason = 'MX exists, but mailbox role/source requires manual review before automatic sending.';
-    await this.updateLeadEmailVerification(lead.id, 'mx_domain_verified', reason);
+    const reason = domainMatchesWebsite
+      ? 'MX matches the user-supplied website, but trusted mailbox proof is still required.'
+      : isBusinessMailbox
+        ? `Business mailbox "${mailbox}" has MX, but trusted mailbox proof is still required.`
+        : 'MX exists, but mailbox role/source requires manual review before automatic sending.';
+    await this.updateLeadEmailVerification(lead.id, lead.contactEmail, 'mx_domain_verified', reason);
     lead.emailVerificationStatus = 'mx_domain_verified';
     lead.emailVerificationReason = reason;
     return 'mx_domain_verified';
   }
 
-  private async updateLeadEmailVerification(leadId: string, status: string, reason: string) {
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      data: { emailVerificationStatus: status, emailVerificationReason: reason },
+  private async updateLeadEmailVerification(
+    leadId: string,
+    expectedEmail: string,
+    status: string,
+    reason: string,
+  ) {
+    await writeEmailVerificationEvidence(this.prisma, {
+      leadId,
+      expectedEmail,
+      status,
+      reason,
+      trustedEvidence: false,
     }).catch(() => undefined);
   }
 
@@ -552,7 +842,7 @@ export class EmailSendProcessor extends WorkerHost {
           const records = await resolver.resolveMx(domain);
           if (records.length > 0) return true;
         } catch (err: any) {
-          this.logger?.error?.('MX record DNS fallback lookup failed: ' + (err?.message || err), err?.stack);
+          this.logger?.error?.(safeLogEvent('email.mx_lookup_failed', { error: err }));
         }
       }
       return false;

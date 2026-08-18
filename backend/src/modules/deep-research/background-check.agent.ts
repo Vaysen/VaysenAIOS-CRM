@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@/common/prisma/prisma.service';
-import { DataGathererService } from './data-gatherer.service';
+import { createResearchEvidenceError, DataGathererService } from './data-gatherer.service';
 import { ResearchAgentResult, ResearchExecutionOptions } from './research-agent.types';
 
 @Injectable()
@@ -22,7 +22,7 @@ export class BackgroundCheckAgent {
     );
 
     if (!gathered?.html || !gathered?.json) {
-      throw new Error(gathered?.error || '深度背调采集失败，未获得可核验的公开证据。');
+      throw createResearchEvidenceError();
     }
 
     const title = `${lead.companyName} - AI深度背调报告`;

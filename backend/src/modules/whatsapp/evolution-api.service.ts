@@ -193,12 +193,20 @@ export class EvolutionApiService {
     instanceName: string,
     number: string,
     text: string,
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    signal?: AbortSignal,
+  ): Promise<{
+    success: boolean;
+    messageId?: string;
+    error?: string;
+    deliveryOutcome?: 'REJECTED';
+    providerAccepted?: false;
+  }> {
     const config = this.assertEnabled();
     try {
       const response = await fetch(`${config.apiUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
         headers: this.getHeaders(config),
+        signal,
         body: JSON.stringify({
           number,
           text,
@@ -207,8 +215,18 @@ export class EvolutionApiService {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        return { success: false, error: `${response.status}: ${errorText}` };
+        const rejection = await this.readProvenRejection(response);
+        if (rejection) {
+          return {
+            success: false,
+            error: rejection,
+            deliveryOutcome: 'REJECTED',
+            providerAccepted: false,
+          };
+        }
+        throw new ServiceUnavailableException(
+          `Evolution provider outcome is unknown after HTTP ${response.status}`,
+        );
       }
 
       const data = await response.json();
@@ -218,7 +236,7 @@ export class EvolutionApiService {
       };
     } catch (err: any) {
       this.logger.error(`sendTextMessage failed: ${err?.message}`);
-      return { success: false, error: err?.message };
+      throw err;
     }
   }
 
@@ -235,7 +253,15 @@ export class EvolutionApiService {
       caption?: string;
       mimeType?: string;
     },
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    signal?: AbortSignal,
+  ): Promise<{
+    success: boolean;
+    messageId?: string;
+    error?: string;
+    deliveryOutcome?: 'REJECTED';
+    providerAccepted?: false;
+    metadata?: Record<string, unknown>;
+  }> {
     const config = this.assertEnabled();
     try {
       const endpoint = options.type === 'image'
@@ -267,23 +293,65 @@ export class EvolutionApiService {
       const response = await fetch(`${config.apiUrl}/message/${endpoint}/${instanceName}`, {
         method: 'POST',
         headers: this.getHeaders(config),
+        signal,
         body: JSON.stringify(body),
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        return { success: false, error: `${response.status}: ${errorText}` };
+        const rejection = await this.readProvenRejection(response);
+        if (rejection) {
+          return {
+            success: false,
+            error: rejection,
+            deliveryOutcome: 'REJECTED',
+            providerAccepted: false,
+          };
+        }
+        throw new ServiceUnavailableException(
+          `Evolution provider outcome is unknown after HTTP ${response.status}`,
+        );
       }
 
       const data = await response.json();
       return {
         success: true,
         messageId: data?.key?.id || undefined,
+        metadata: {
+          provider: 'evolution',
+          endpoint,
+          status: data?.status || data?.message?.status || 'accepted',
+          timestamp: data?.messageTimestamp || data?.timestamp || null,
+        },
       };
     } catch (err: any) {
       this.logger.error(`sendMediaMessage failed: ${err?.message}`);
-      return { success: false, error: err?.message };
+      throw err;
     }
+  }
+
+  private async readProvenRejection(response: Response): Promise<string | null> {
+    // Timeout/rate/proxy statuses can be generated after dispatch or after an
+    // accepted response was lost. They are never safe to auto-retry.
+    if ([408, 425, 429, 499].includes(response.status)) return null;
+    if (![400, 401, 403, 404, 422].includes(response.status)) return null;
+    const body = await response.json();
+    const code = String(
+      body?.code
+      || body?.errorCode
+      || body?.error?.code
+      || '',
+    ).trim().toUpperCase();
+    const provenNonSendCodes = new Set([
+      'AUTHENTICATION_ERROR',
+      'AUTHORIZATION_ERROR',
+      'INVALID_API_KEY',
+      'INSTANCE_NOT_FOUND',
+      'VALIDATION_ERROR',
+      'INVALID_REQUEST',
+      'INVALID_NUMBER',
+    ]);
+    if (!provenNonSendCodes.has(code)) return null;
+    return `Evolution provider explicitly rejected request (${code}, HTTP ${response.status})`;
   }
 
   /**

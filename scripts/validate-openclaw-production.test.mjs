@@ -84,6 +84,17 @@ test('rejects a private TypeBox pin that drifts from the OpenClaw host override'
   );
 });
 
+test('rejects stale private CRM README tool and outbound contracts', () => {
+  const staleReadme = artifacts.readme
+    .replace('`@vaysen/openclaw-crm-tools@1.3.2`', '`@vaysen/openclaw-crm-tools@1.2.1`')
+    .replace('21 个 `vaysen-crm` 工具', '4 个只读工具');
+  assert.notEqual(staleReadme, artifacts.readme);
+  assert.match(
+    validateProductionArtifacts({ ...artifacts, readme: staleReadme }).join('\n'),
+    /README must match.*21-tool.*Guard\/Outbox/i,
+  );
+});
+
 test('rejects direct conversation ids in mutating OpenClaw action schemas', () => {
   const unsafeIndex = artifacts.index.replace(
     'selectionTokenProperty = () => Type.Optional(Type.String({ maxLength: 128 }))',
@@ -167,6 +178,15 @@ test('rejects a legacy allow policy and infrastructure-bypass boundary drift', (
     validateProductionConfig(JSON.stringify(extraPluginTool)).join('\n'),
     /business-supervisor.*exact tool extension/i,
   );
+
+  for (const tool of ['browser', 'browser-automation', 'browser.click']) {
+    const browserBypass = JSON.parse(config);
+    browserBypass.tools.alsoAllow.push(tool);
+    assert.match(
+      validateProductionConfig(JSON.stringify(browserBypass)).join('\n'),
+      /must not expose general browser/i,
+    );
+  }
 });
 
 test('rejects a non-webchat CRM HTTP ingress or an unlocked owner bit', () => {
@@ -316,8 +336,8 @@ function productionEnv(overrides = {}) {
     OPENCLAW_GATEWAY_TOKEN: 'g'.repeat(64),
     OPENCLAW_CRM_HMAC_KEY_ID: 'vaysen-openclaw-v1',
     OPENCLAW_CRM_HMAC_SECRET: 'h'.repeat(64),
-    OPENCLAW_OWNER_EMAIL: 'admin@example.com',
-    OPENCLAW_OWNER_COMPANY_SLUG: 'example-trading-company',
+    OPENCLAW_OWNER_EMAIL: 'admin@vaysen.com',
+    OPENCLAW_OWNER_COMPANY_SLUG: 'vaysen-crm-packaging',
     OPENCLAW_WECHAT_OWNER_PEER_SHA256: '',
     LAN_BIND_IP: '127.0.0.1',
     APPROVED_LAN_BIND_IP: '127.0.0.1',

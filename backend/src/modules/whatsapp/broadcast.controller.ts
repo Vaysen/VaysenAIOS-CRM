@@ -1,24 +1,20 @@
-/**
- * WhatsApp 群发营销 Controller
- *
- * 提供群发任务的创建、查询、取消等功能
- * 群发任务通过 Electron 客户端逐条执行（调用 WhatsApp Web DOM 注入）
- */
-
 import {
-  Controller,
-  Get,
-  Post,
+  BadRequestException,
   Body,
-  Param,
-  Query,
-  Patch,
-  UseGuards,
+  Controller,
+  ForbiddenException,
+  Get,
   Logger,
+  Param,
+  Patch,
+  Post,
+  Query,
+  ServiceUnavailableException,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 @ApiTags('WhatsApp Broadcast')
@@ -30,61 +26,43 @@ export class BroadcastController {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * 创建群发任务
-   */
   @Post('tasks')
-  @ApiOperation({ summary: '创建 WhatsApp 群发任务' })
+  @ApiOperation({ summary: 'Create a WhatsApp broadcast task' })
   async createTask(
     @Body() body: CreateBroadcastTaskDto,
     @CurrentUser() user: any,
   ) {
-    const companyId = user.companyId || body.companyId;
+    const companyId = await this.requireActiveAdminCompany(user);
+    if (body.companyId && body.companyId !== companyId) {
+      throw new BadRequestException(
+        'Broadcast tasks can only be created in the active company',
+      );
+    }
+    this.assertOutboxBroadcastAvailable();
 
     // 验证目标人数
     if (!body.recipients || body.recipients.length === 0) {
       return { success: false, message: '请至少选择一个目标客户' };
     }
-    if (body.recipients.length > 50) {
-      return { success: false, message: '单次群发不超过 50 人' };
-    }
-
-    // 创建群发任务
-    const task = await this.prisma.whatsAppBroadcastTask.create({
-      data: {
-        companyId,
-        taskName: body.taskName || `群发任务-${new Date().toLocaleString('zh-CN')}`,
-        accountId: body.accountId || 'default',
-        template: body.template,
-        recipientCount: body.recipients.length,
-        recipients: JSON.stringify(body.recipients),
-        status: body.scheduledAt ? 'scheduled' : 'pending',
-        scheduledAt: body.scheduledAt ? new Date(body.scheduledAt) : null,
-        createdBy: user.id,
-      },
-    });
-
-    this.logger.log(`[Broadcast] 群发任务已创建: ${task.id}, 目标 ${body.recipients.length} 人`);
-
-    return { success: true, data: task };
+    throw new ServiceUnavailableException(
+      'WhatsApp broadcast creation is disabled until the trusted outbox workflow is available',
+    );
   }
 
-  /**
-   * 获取群发任务列表
-   */
   @Get('tasks')
-  @ApiOperation({ summary: '获取群发任务列表' })
+  @ApiOperation({ summary: 'List WhatsApp broadcast tasks' })
   async getTasks(
     @CurrentUser() user: any,
     @Query('status') status?: string,
     @Query('page') page = '1',
     @Query('limit') limit = '20',
   ) {
-    const companyId = user.companyId;
-    const pageNum = parseInt(page) || 1;
-    const limitNum = Math.min(parseInt(limit) || 20, 100);
+    const companyId = await this.requireActiveAdminCompany(user);
+    this.assertOutboxBroadcastAvailable();
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
 
-    const where: any = { companyId };
+    const where: { companyId: string; status?: string } = { companyId };
     if (status) {
       where.status = status;
     }
@@ -101,27 +79,23 @@ export class BroadcastController {
 
     return {
       success: true,
-      data: tasks.map((t) => ({
-        ...t,
-        recipients: JSON.parse(t.recipients || '[]'),
+      data: tasks.map((task) => ({
+        ...task,
+        recipients: JSON.parse(task.recipients || '[]'),
       })),
       pagination: { page: pageNum, limit: limitNum, total },
     };
   }
 
-  /**
-   * 获取群发任务详情
-   */
   @Get('tasks/:id')
-  @ApiOperation({ summary: '获取群发任务详情' })
+  @ApiOperation({ summary: 'Get a WhatsApp broadcast task' })
   async getTaskDetail(@Param('id') id: string, @CurrentUser() user: any) {
+    const companyId = await this.requireActiveAdminCompany(user);
+    this.assertOutboxBroadcastAvailable();
     const task = await this.prisma.whatsAppBroadcastTask.findFirst({
-      where: { id, companyId: user.companyId },
+      where: { id, companyId },
     });
-
-    if (!task) {
-      return { success: false, message: '任务不存在' };
-    }
+    if (!task) return { success: false, message: 'Task not found' };
 
     return {
       success: true,
@@ -132,81 +106,126 @@ export class BroadcastController {
     };
   }
 
-  /**
-   * 取消群发任务
-   */
   @Patch('tasks/:id/cancel')
-  @ApiOperation({ summary: '取消群发任务' })
+  @ApiOperation({ summary: 'Cancel a WhatsApp broadcast task' })
   async cancelTask(@Param('id') id: string, @CurrentUser() user: any) {
+    const companyId = await this.requireActiveAdminCompany(user);
+    this.assertOutboxBroadcastAvailable();
     const task = await this.prisma.whatsAppBroadcastTask.findFirst({
-      where: { id, companyId: user.companyId },
+      where: { id, companyId },
     });
-
-    if (!task) {
-      return { success: false, message: '任务不存在' };
-    }
-
+    if (!task) return { success: false, message: 'Task not found' };
     if (!['pending', 'scheduled', 'sending'].includes(task.status)) {
-      return { success: false, message: '任务已完成或已取消' };
+      return { success: false, message: 'Task can no longer be cancelled' };
     }
 
-    const updated = await this.prisma.whatsAppBroadcastTask.update({
-      where: { id },
+    const cancelled = await this.prisma.whatsAppBroadcastTask.updateMany({
+      where: {
+        id,
+        companyId,
+        status: { in: ['pending', 'scheduled', 'sending'] },
+      },
       data: { status: 'cancelled' },
     });
-
-    this.logger.log(`[Broadcast] 群发任务已取消: ${id}`);
+    if (cancelled.count !== 1) {
+      return { success: false, message: 'Broadcast task changed before cancellation' };
+    }
+    const updated = await this.prisma.whatsAppBroadcastTask.findFirst({
+      where: { id, companyId },
+    });
+    this.logger.log(`[Broadcast] Task cancelled: ${id}`);
     return { success: true, data: updated };
   }
 
-  /**
-   * 更新群发任务进度（Electron 客户端回调）
-   */
   @Post('tasks/:id/progress')
-  @ApiOperation({ summary: '更新群发任务进度' })
+  @ApiOperation({ summary: 'Update a WhatsApp broadcast task progress' })
   async updateProgress(
-    @Param('id') id: string,
-    @Body() body: { sentCount: number; failedCount: number; status?: string },
+    @Param('id') _id: string,
+    @Body() _body: {
+      sentCount: number;
+      failedCount: number;
+      status?: string;
+    },
     @CurrentUser() user: any,
   ) {
-    const task = await this.prisma.whatsAppBroadcastTask.findFirst({
-      where: { id, companyId: user.companyId },
-    });
-
-    if (!task) {
-      return { success: false, message: '任务不存在' };
-    }
-
-    const newStatus = body.status || (body.sentCount + body.failedCount >= task.recipientCount ? 'completed' : 'sending');
-
-    const updated = await this.prisma.whatsAppBroadcastTask.update({
-      where: { id },
-      data: {
-        sentCount: body.sentCount,
-        failedCount: body.failedCount,
-        status: newStatus,
-        completedAt: newStatus === 'completed' ? new Date() : null,
-      },
-    });
-
-    return { success: true, data: updated };
+    await this.requireActiveAdminCompany(user);
+    this.assertOutboxBroadcastAvailable();
+    throw new ServiceUnavailableException(
+      'Client-reported broadcast progress is disabled until a trusted worker is available',
+    );
   }
 
-  /**
-   * 获取群发模板列表
-   */
   @Get('templates')
-  @ApiOperation({ summary: '获取群发消息模板列表' })
+  @ApiOperation({ summary: 'List WhatsApp broadcast templates' })
   async getTemplates(@CurrentUser() user: any) {
-    // 从系统设置中获取模板（暂用固定模板）
-    const defaultTemplates = [
-      { id: 'tpl-1', name: '新品推介', content: 'Hello {name}, we have new packaging products available. Would you like to receive our latest catalog?' },
-      { id: 'tpl-2', name: '节日问候', content: 'Hi {name}, wishing you a prosperous new year! Thank you for your continued partnership.' },
-      { id: 'tpl-3', name: '促销通知', content: 'Dear {name}, special offer on selected packaging materials this month. Contact us for details.' },
-      { id: 'tpl-4', name: '跟进提醒', content: 'Hi {name}, just following up on our previous conversation about {product}. Any updates?' },
-    ];
+    await this.requireActiveAdminCompany(user);
+    this.assertOutboxBroadcastAvailable();
+    return {
+      success: true,
+      data: [
+        {
+          id: 'tpl-1',
+          name: 'New product introduction',
+          content:
+            'Hello {name}, we have new packaging products available. Would you like to receive our latest catalog?',
+        },
+        {
+          id: 'tpl-2',
+          name: 'Seasonal greeting',
+          content:
+            'Hi {name}, wishing you a prosperous new year! Thank you for your continued partnership.',
+        },
+        {
+          id: 'tpl-3',
+          name: 'Promotion notice',
+          content:
+            'Dear {name}, special offer on selected packaging materials this month. Contact us for details.',
+        },
+        {
+          id: 'tpl-4',
+          name: 'Follow-up reminder',
+          content:
+            'Hi {name}, just following up on our previous conversation about {product}. Any updates?',
+        },
+      ],
+    };
+  }
 
-    return { success: true, data: defaultTemplates };
+  private isOutboxBroadcastAvailable() {
+    return false;
+  }
+
+  private assertOutboxBroadcastAvailable() {
+    if (!this.isOutboxBroadcastAvailable()) {
+      throw new ServiceUnavailableException(
+        'WhatsApp broadcast is disabled until every recipient is reserved through ExternalActionOutbox',
+      );
+    }
+  }
+
+  private async requireActiveAdminCompany(user: any) {
+    const companyId = String(user?.activeCompanyId || '').trim();
+    if (
+      !companyId
+      || (user?.activeCompany?.id && user.activeCompany.id !== companyId)
+      || !user?.id
+    ) {
+      throw new ForbiddenException('An authenticated active company is required');
+    }
+    const relation = await this.prisma.userCompanyRelation.findFirst({
+      where: {
+        userId: user.id,
+        companyId,
+        isActive: true,
+        user: { is: { isActive: true, deletedAt: null } },
+        company: { is: { isActive: true } },
+      },
+      include: { role: { select: { name: true } } },
+    });
+    if (!['super_admin', 'company_admin'].includes(String(relation?.role?.name || ''))) {
+      throw new ForbiddenException('Company administrator role is required for WhatsApp broadcast');
+    }
+    return companyId;
   }
 }
 

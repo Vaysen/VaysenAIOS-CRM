@@ -12,8 +12,15 @@ describe('LeadsService WhatsApp identity search', () => {
     );
     const currentUser = {
       id: 'admin-1',
+      activeCompanyId: '11111111-1111-4111-8111-111111111111',
+      activeCompany: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Test',
+        role: 'company_admin',
+      },
       companies: [{
         id: '11111111-1111-4111-8111-111111111111',
+        name: 'Test',
         role: 'company_admin',
       }],
     };

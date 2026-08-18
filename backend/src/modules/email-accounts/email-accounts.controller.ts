@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   Query,
+  Headers,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -85,7 +86,11 @@ export class EmailAccountsController {
     @Param('id') id: string,
     @Body() dto: TestEmailDto,
     @CurrentUser() user: any,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.emailAccountsService.sendTest(id, dto.recipientEmail, user);
+    return this.emailAccountsService.sendTest(id, {
+      ...dto,
+      idempotencyKey: idempotencyKey || dto.idempotencyKey,
+    }, user);
   }
 }

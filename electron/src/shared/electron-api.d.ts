@@ -27,6 +27,8 @@ export interface ElectronAPI {
     getToken: () => Promise<string | null>;
     setToken: (token: string, refreshToken: string) => Promise<void>;
     clearToken: () => Promise<void>;
+    refreshSession: () => Promise<{ accessToken: string }>;
+    logoutSession: () => Promise<void>;
     getCompany: () => Promise<string | null>;
     setCompany: (companyId: string) => Promise<void>;
   };
@@ -49,7 +51,7 @@ export interface ElectronAPI {
     onCurrentChat: (callback: (chatInfo: any) => void) => () => void;
     requestCurrentChat: () => Promise<{
       requested: boolean;
-      chat: { accountId: string; name: string; phone: string; isGroup: boolean; observedAt: string; selectionProof: string } | null;
+      chat: { accountId: string; name: string; phone: string; isGroup: boolean; externalId?: string; observedAt: string; selectionProof: string } | null;
     }>;
     onAccountSwitched: (callback: (data: { accountId: string; label: string }) => void) => () => void;
     sendText: (chatId: string, text: string) => Promise<{ success: boolean; error?: string }>;
@@ -106,6 +108,7 @@ export interface ElectronAPI {
     }>;
     configSet: (config: { apiBaseUrl?: string; updateFeedUrl?: string }) =>
       Promise<{ success: boolean; config?: { apiBaseUrl: string; updateFeedUrl: string }; error?: string }>;
+    checkConnection: (apiBaseUrl: string) => Promise<import('./connection-check').ConnectionCheckResult>;
     onNeedRestart: (callback: (payload: { reason: string; next?: { apiBaseUrl: string; updateFeedUrl: string } }) => void) => () => void;
     onConfigInvalid: (callback: (payload: { field: 'apiBaseUrl' | 'updateFeedUrl'; reason: string }) => void) => () => void;
     checkUpdate: () => Promise<{ success: boolean; error?: string }>;

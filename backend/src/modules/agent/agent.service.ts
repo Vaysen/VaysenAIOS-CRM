@@ -35,6 +35,8 @@ import { buildAssistantConversationContext } from './assistant-conversation-cont
 export type AuthenticatedUser = {
   id: string;
   email?: string;
+  activeCompanyId?: string;
+  activeCompany?: { id: string; role: string };
   companies?: Array<{ id: string; role: string }>;
 };
 
@@ -181,7 +183,7 @@ export class AgentService {
       // only when no supported execution verb appears before the first
       // negation marker.
       const beforeNegation = value.slice(0, negation.index);
-      const affirmativeAction = /(?:发送|发给|发一条|回复|告诉|通知|查询|查找|搜索|读取|查看|列出|创建|新建|新增|生成|制作|开始|启动|执行|进行|调查|研究|修改|更新|补充|完善|安排|设置|send|deliver|reply|tell|message|search|read|list|create|start|run|research|update|schedule)/i;
+      const affirmativeAction = /(?:发送|发给|发一条|回复|告诉|通知|查询|查找|搜索|读取|查看|列出|创建|新建|新增|生成|制作|开始|启动|执行|调用|进行|调查|研究|修改|更新|补充|完善|安排|设置|send|deliver|reply|tell|message|search|read|list|create|start|run|invoke|use|research|update|schedule)/i;
       if (!affirmativeAction.test(beforeNegation)) return 'NEGATED';
     }
 
@@ -310,6 +312,10 @@ export class AgentService {
    */
   private openClawToolRoutingHint(message: string): string {
     const value = message.trim();
+    const explicitWorkBriefDirective = /(?:必须|务必|请|现在|立即).{0,32}(?:调用|invoke|use).{0,8}\bcrm_work_brief\b|\bcrm_work_brief\b.{0,16}(?:恰好一次|exactly\s+once)/i;
+    if (explicitWorkBriefDirective.test(value)) {
+      return '必须调用 crm_work_brief 恰好一次，并只按真实工具结果汇报。';
+    }
     if (/(?:怎么|如何|该怎么|怎样).{0,24}(?:回复|回覆|回信|回应).{0,24}(?:客户|联系人|他|她|对方)|(?:客户|联系人).{0,24}(?:怎么|如何|怎样).{0,16}(?:回复|回覆|回信|回应)|(?:回复|回覆|回信|回应).{0,20}(?:建议|草稿)/i.test(value)) {
       return '使用 CRM 实时摘要 currentWhatsapp.customerName 调用 crm_customer_search 唯一定位当前客户，再调用 crm_whatsapp_messages_read 读取最近真实对话；然后只起草建议回复，不得自动发送。';
     }
@@ -1076,7 +1082,7 @@ export class AgentService {
     const safeInstruction = redactForExternalAi(dto.message.trim());
     const draft = await this.ai.chat(
       [
-        '你是示例贸易公司的外贸业务助理。',
+        '你是Vaysen包装的外贸业务助理。',
         '把用户指令改写成一条可以直接发送给客户的专业 WhatsApp 消息。',
         '按用户指定语言输出；未指定时默认使用自然、简洁的商务英语。',
         '只输出消息正文，不要标题、解释、Markdown、引号或执行结果。',
@@ -1674,7 +1680,7 @@ export class AgentService {
     // 报价外发属于确定性业务动作：识别、授权说明和确认文案均由本地代码生成，
     // 不把电话号码、报价编号、内部 ID 或原始“发送”指令交给任何模型。
     const systemPrompt = [
-      '你是示例贸易公司的 AI 业务助理，也是可以自然连续交流的通用 Agent。直接理解并回答用户，不要用固定欢迎语、权限说明或安全模板替代正常对话。',
+      '你是Vaysen包装的 AI 业务助理，也是可以自然连续交流的通用 Agent。直接理解并回答用户，不要用固定欢迎语、权限说明或安全模板替代正常对话。',
       '你可以自由解释、分析、讨论、整理工作、提出下一步、起草内容，并使用当前会话实际提供的 CRM 工具完成业务工作。',
       '可用业务工具包括 crm_work_brief、crm_customer_search、crm_customer_get、crm_customer_add_note、crm_customer_update、crm_customer_set_stage、crm_task_create、crm_order_list、crm_order_create_draft、crm_order_update_stage、crm_quote_list、crm_quote_create_draft、crm_product_search、crm_start_background_research、crm_prepare_quote_delivery、crm_whatsapp_messages_read、crm_whatsapp_send_text、crm_whatsapp_send_quote、crm_email_messages_read、crm_email_send 和 crm_email_reply。',
       '用户明确要求某个可用 CRM 工具或受支持业务动作时，必须调用对应工具，不得只生成一段看似已执行的文字。',
@@ -1687,6 +1693,8 @@ export class AgentService {
       '系统会自动压缩较早对话并保留最近对话；压缩摘要是上下文，不是新的执行回执。',
     ].join('');
     const requiresOpenClawToolReceipt = this.requiresOpenClawToolReceipt(openClawToolRoutingHint);
+    const deterministicWorkBriefRoute = openClawToolRoutingHint
+      .startsWith('必须调用 crm_work_brief 恰好一次');
     // Put the authoritative execution contract after the user's natural
     // language. Some tool-capable models otherwise focus on the preceding CRM
     // snapshot and answer with a generic summary instead of selecting the
@@ -1771,8 +1779,19 @@ export class AgentService {
       let gatewayResult = mayUseOpenClaw
         && openClawToolReceipts.length === 0
         && !!openClawClaimToken
-        ? await this.openClaw!.chat(systemPrompt, userPrompt, sessionDigest, 900)
-        : { success: false as const, reason: openClawToolReceipts.length ? 'receipt_recovered' : 'disabled' };
+        ? deterministicWorkBriefRoute
+          ? {
+              ...(await this.openClaw!.invokeWorkBrief(sessionDigest)),
+              content: undefined,
+              model: undefined,
+            }
+          : await this.openClaw!.chat(systemPrompt, userPrompt, sessionDigest, 900)
+        : {
+            success: false as const,
+            reason: openClawToolReceipts.length ? 'receipt_recovered' : 'disabled',
+            content: undefined,
+            model: undefined,
+          };
       if (mayUseOpenClaw && openClawToolReceipts.length === 0) {
         openClawToolReceipts = await this.loadOpenClawToolReceipts(
           dto.companyId,
@@ -1785,6 +1804,7 @@ export class AgentService {
         && gatewayResult.success
         && gatewayResult.content
         && requiresOpenClawToolReceipt
+        && !deterministicWorkBriefRoute
         && openClawToolReceipts.length === 0
         && !!openClawClaimToken
       ) {
@@ -1822,6 +1842,16 @@ export class AgentService {
           content: this.openClawToolReceiptSummary(openClawToolReceipts),
           model: 'openclaw/verified-tool-receipt',
           reason: 'verified_tool_receipt',
+        };
+        responseSource = 'openclaw_gateway';
+      } else if (mayUseOpenClaw && requiresOpenClawToolReceipt) {
+        // An operational request may never degrade to a prose-only fallback.
+        // The deterministic work-brief path and model-routed tools both need a
+        // durable broker receipt before the assistant can report completion.
+        aiResult = {
+          success: false,
+          content: '',
+          reason: gatewayResult.reason,
         };
         responseSource = 'openclaw_gateway';
       } else {
@@ -2398,13 +2428,14 @@ export class AgentService {
     user: AuthenticatedUser,
   ) {
     const { lead } = await this.resolveOpenClawCustomer(companyId, conversationId, user);
-    const quote = input.quoteReferenceNo
-      ? await this.prisma.quote.findFirst({
-          where: { companyId, leadId: lead.id, referenceNo: input.quoteReferenceNo },
-        })
-      : null;
-    if (input.quoteReferenceNo && !quote) throw new ConflictException('Quote reference does not belong to the selected customer');
-    const totalAmount = input.totalAmount ?? (quote ? Number(quote.totalAmount) : 0);
+    if (input.quoteReferenceNo !== undefined) {
+      return {
+        status: 'BLOCKED',
+        reason:
+          'Quote-backed orders require the controlled quote conversion endpoint',
+      };
+    }
+    const totalAmount = input.totalAmount ?? 0;
     const profile = await this.assistantPermissions?.getProfile(companyId, user);
     const highValue = totalAmount > Number(profile?.thresholds.highValueUsd || 10_000);
     const orderNo = `ORD-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${requestKey.slice(0, 8).toUpperCase()}`;
@@ -2415,7 +2446,7 @@ export class AgentService {
       targetType: 'lead',
       targetId: lead.id,
       scope: { customerId: lead.id },
-      payload: { ...input, totalAmount, quoteReferenceNo: quote?.referenceNo || null },
+      payload: { ...input, totalAmount, quoteReferenceNo: null },
       forceApproval: highValue,
       user,
       execute: async () => {
@@ -2424,14 +2455,14 @@ export class AgentService {
             companyId,
             orderNo,
             leadId: lead.id,
-            quoteId: quote?.id || null,
+            quoteId: null,
             assignedUserId: lead.ownerUserId || user.id,
             stage: 'draft',
-            currency: input.currency || quote?.currency || 'USD',
+            currency: input.currency || 'USD',
             totalAmount,
             paidAmount: 0,
             deliveryDate: input.deliveryDate ? new Date(`${input.deliveryDate}T00:00:00.000Z`) : null,
-            shippingTerms: input.shippingTerms || quote?.tradeTerms || null,
+            shippingTerms: input.shippingTerms || null,
             notes: input.notes?.trim().slice(0, 1200) || 'AI 业务助理创建的订单草稿',
             stageHistory: [{ stage: 'draft', changedAt: new Date().toISOString(), changedBy: user.id }],
           },

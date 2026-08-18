@@ -17,6 +17,7 @@ import {
   injectPublicTrackingPixel,
   replaceLinksWithPublicTracking,
 } from './email-public-links';
+import { safeDigest, safeErrorCategory, safeLogEvent } from '@/common/security/safe-logging';
 
 type ComposeJob = {
   emailMessageId: string;
@@ -39,6 +40,22 @@ export class EmailComposeProcessor extends WorkerHost {
     @InjectQueue(QUEUES.emailValidate) private emailValidateQueue: Queue,
   ) {
     super();
+  }
+
+  private logSafe(
+    level: 'log' | 'warn' | 'error' | 'debug',
+    eventCode: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    const message = safeLogEvent(eventCode, fields);
+    if (level === 'error') this.logger.error(message);
+    else if (level === 'warn') this.logger.warn(message);
+    else if (level === 'debug') this.logger.debug(message);
+    else this.logger.log(message);
+  }
+
+  private safeRef(value: unknown, domain: string) {
+    return safeDigest(value, domain);
   }
 
   async process(job: Job<ComposeJob>): Promise<any> {
@@ -74,9 +91,17 @@ export class EmailComposeProcessor extends WorkerHost {
       const rendered = await this.generateDraft(msg, template, productName, customVariables);
       const trackingId = msg.trackingId || uuidv4();
       const unsubscribeToken = msg.unsubscribeToken || uuidv4();
-      this.logger.log(`[Save] rendered.body.length=${rendered.body.length}`);
+      this.logSafe('log', 'email.compose.body_rendered', {
+        eventType: 'body_rendered',
+        bytes: rendered.body.length,
+        stage: 'projection',
+      });
       const bodyWithTracking = this.prepareForDelivery(`${AI_DRAFT_MARKER}\n${rendered.body}`, trackingId, unsubscribeToken);
-      this.logger.log(`[Save] after prepareForDelivery: ${bodyWithTracking.length}c, first200: ${bodyWithTracking.slice(0,200)}`);
+      this.logSafe('log', 'email.compose.delivery_body_prepared', {
+        eventType: 'delivery_body_prepared',
+        bytes: bodyWithTracking.length,
+        stage: 'dispatch',
+      });
 
       const saved = await this.prisma.emailMessage.updateMany({
         where: { id: msg.id, deletedAt: null },
@@ -116,11 +141,16 @@ export class EmailComposeProcessor extends WorkerHost {
           retryCount,
           status: finalFailure ? 'DraftFailed' : 'DraftPending',
           failedAt: finalFailure ? new Date() : null,
-          failedReason: error.message || 'AI draft generation failed',
-          errorMessage: error.message || 'AI draft generation failed',
+          failedReason: 'AI draft generation failed',
+          errorMessage: 'AI draft generation failed',
         },
       });
-      this.logger.warn(`AI draft failed for ${msg.id}: ${error.message}`);
+      this.logSafe('warn', 'email.compose.draft_failed', {
+        eventType: 'draft_failed',
+        messageRef: this.safeRef(msg.id, 'email-message'),
+        errorCategory: safeErrorCategory(error),
+        stage: 'projection',
+      });
       throw error;
     }
   }
@@ -242,9 +272,18 @@ Custom variables: ${JSON.stringify(customVariables || {}, null, 2)}
     });
 
     const content = response.choices[0]?.message?.content || '';
-    this.logger.log(`[RawAI] response length=${content.length}, first500=${content.slice(0,500)}`);
+    this.logSafe('log', 'email.compose.ai_response_received', {
+      eventType: 'ai_response_received',
+      bytes: content.length,
+      stage: 'projection',
+    });
     const parsed = this.parseJsonDraft(content);
-    this.logger.log(`[RawAI] parsed: subject=${String(parsed.subject||'').length}c bodyHtml=${String(parsed.bodyHtml||'').length}c bodyText=${String(parsed.bodyText||'').length}c`);
+    this.logSafe('log', 'email.compose.ai_response_parsed', {
+      eventType: 'ai_response_parsed',
+      bytes: String(parsed.bodyHtml || '').length,
+      count: String(parsed.bodyText || '').length,
+      stage: 'projection',
+    });
     const subject = String(parsed.subject || `Cooperation options for ${msg.lead?.companyName || 'your team'}`)
       .replace(/\{\{[a-zA-Z0-9_]+\}\}/g, '')
       .slice(0, 120)
@@ -252,17 +291,34 @@ Custom variables: ${JSON.stringify(customVariables || {}, null, 2)}
     const bodyText = String(parsed.bodyText || '');
     const bodyHtml = String(parsed.bodyHtml || '');
     const effectiveBodyText = this.resolveAiBodyText(bodyText, bodyHtml, msg.lead, productName);
-    this.logger.log(`[Draft] Raw AI: subject=${subject.length}c bodyHtml=${bodyHtml.length}c bodyText=${bodyText.length}c`);
+    this.logSafe('log', 'email.compose.draft_normalized', {
+      eventType: 'draft_normalized',
+      bytes: bodyHtml.length,
+      count: bodyText.length,
+      stage: 'projection',
+    });
 
     const normalized = this.cleanAiBodyFragment(this.normalizeEmailHtml(bodyHtml, effectiveBodyText), effectiveBodyText);
-    this.logger.log(`[Draft] After cleanAiBodyFragment: ${normalized.length}c`);
+    this.logSafe('log', 'email.compose.body_cleaned', {
+      eventType: 'body_cleaned',
+      bytes: normalized.length,
+      stage: 'projection',
+    });
 
     const templateBody = template?.body || msg.bodyHtml;
     const withTemplate = this.applyAiTemplate(templateBody, normalized, effectiveBodyText, senderName, companyName, companyWebsite);
-    this.logger.log(`[Draft] After applyAiTemplate: ${withTemplate.length}c`);
+    this.logSafe('log', 'email.compose.template_applied', {
+      eventType: 'template_applied',
+      bytes: withTemplate.length,
+      stage: 'projection',
+    });
 
     const templated = this.finalizeComposedBody(withTemplate);
-    this.logger.log(`[Draft] After finalizeComposedBody: ${templated.length}c`);
+    this.logSafe('log', 'email.compose.body_finalized', {
+      eventType: 'body_finalized',
+      bytes: templated.length,
+      stage: 'projection',
+    });
 
     return { subject, body: ensureCompanyWebsite(templated, companyWebsite, companyWebsite.replace(/^https?:\/\//i, '')) };
   }
@@ -440,12 +496,12 @@ Custom variables: ${JSON.stringify(customVariables || {}, null, 2)}
   private dedupeWebsiteBlocks(html: string) {
     let seenWebsite = false;
     return (html || '')
-      .replace(/(<a\b[^>]*>\s*(?:Visit Our Website|(?:www\.)?vaysenpackaging\.com)\s*<\/a>)/gi, (match) => {
+      .replace(/(<a\b[^>]*>\s*(?:Visit Our Website|(?:www\.)?vaysen\.com)\s*<\/a>)/gi, (match) => {
         if (seenWebsite) return '';
         seenWebsite = true;
         return match;
       })
-      .replace(/<p\b[^>]*>\s*(?:https?:\/\/)?(?:www\.)?vaysenpackaging\.com\s*<\/p>/gi, (match) => {
+      .replace(/<p\b[^>]*>\s*(?:https?:\/\/)?(?:www\.)?vaysen\.com\s*<\/p>/gi, (match) => {
         if (seenWebsite) return '';
         seenWebsite = true;
         return match;

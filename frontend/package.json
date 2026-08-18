@@ -12,7 +12,7 @@
     "build:web": "next build",
     "build:electron": "node scripts/build-electron.mjs && node scripts/prepare-electron-export.mjs",
     "start": "next start -H 0.0.0.0 -p 4001",
-    "start:vaysen-packaging": "next start -H 0.0.0.0 -p 4001",
+    "start:vaysen-crm": "next start -H 0.0.0.0 -p 4001",
     "start:surfacepolish": "next start -H 0.0.0.0 -p 4002",
     "lint": "next lint",
     "lint:styles": "stylelint \"src/**/*.css\"",
@@ -40,7 +40,7 @@
     "@tailwindcss/postcss": "^4.3.0",
     "@tanstack/react-query": "^5.100.14",
     "@tanstack/react-table": "^8.21.3",
-    "axios": "^1.16.1",
+    "axios": "^1.18.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",
@@ -85,5 +85,17 @@
   },
   "optionalDependencies": {
     "@next/swc-linux-x64-gnu": "14.2.33"
+  },
+  "overrides": {
+    "@eslint/eslintrc": {
+      "js-yaml": "4.3.1"
+    },
+    "cosmiconfig": {
+      "js-yaml": "4.3.1"
+    },
+    "eslint": {
+      "js-yaml": "4.3.1"
+    },
+    "nanoid": "3.3.18"
   }
 }

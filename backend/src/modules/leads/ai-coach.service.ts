@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '@/common/prisma/prisma.service';
-import OpenAI from 'openai';
+import { AiProviderService } from '../../common/ai/ai-provider.service';
+import { ensureCompanyAccess, requireActiveCompany } from '../../common/utils/data-isolation';
 
 export interface AiCoachResult {
   stageAnalysis: string;
@@ -13,20 +14,21 @@ export interface AiCoachResult {
 @Injectable()
 export class AiCoachService {
   private readonly logger = new Logger(AiCoachService.name);
-  private readonly zhipu: OpenAI;
 
-  constructor(private readonly prisma: PrismaService) {
-    this.zhipu = new OpenAI({
-      apiKey: process.env.ZHIPU_API_KEY || 'sk-placeholder',
-      baseURL: process.env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4',
-    });
-  }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ai: AiProviderService,
+  ) {}
 
-  async analyze(leadId: string, companyId: string): Promise<AiCoachResult> {
+  async analyze(leadId: string, currentUser: any): Promise<AiCoachResult> {
+    const activeCompany = requireActiveCompany(currentUser);
+    const companyId = activeCompany.id;
+
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, companyId },
     });
-    if (!lead) throw new Error('Lead not found');
+    if (!lead) throw new NotFoundException('Lead not found');
+    this.ensureAccess(currentUser, lead.companyId);
 
     const [emails, reminders, timeline] = await Promise.all([
       this.prisma.emailMessage.findMany({
@@ -106,8 +108,7 @@ export class AiCoachService {
     };
 
     const prompt = this.buildPrompt(context);
-    const result = await this.callZhipu(prompt);
-    return result;
+    return this.callAi(prompt);
   }
 
   private buildPrompt(context: any): string {
@@ -182,7 +183,6 @@ ${remindersList}
 ${activityHistory}
 
 ---
-
 请以JSON格式返回分析结果，结构如下：
 
 \`\`\`json
@@ -210,37 +210,39 @@ ${activityHistory}
 请直接返回JSON：`;
   }
 
-  private async callZhipu(prompt: string): Promise<AiCoachResult> {
-    const response = await this.zhipu.chat.completions.create({
-      model: process.env.ZHIPU_MODEL || 'glm-4-flash-250414',
-      messages: [
-        { role: 'system', content: '你是一个专业的外贸B2B销售教练。只返回JSON数据，不返回其他任何内容。' },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 4096,
-    });
+  private async callAi(prompt: string): Promise<AiCoachResult> {
+    const result = await this.ai.chat(
+      '你是一个专业的外贸B2B销售教练。只返回JSON数据，不返回其他任何内容。',
+      prompt,
+      { task: 'ai_coach', temperature: 0.7, maxTokens: 4096 },
+    );
 
-    const content = response.choices[0]?.message?.content || '{}';
+    const content = result.content || '';
     const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    let result: any;
+    let parsed: any = null;
     try {
-      result = JSON.parse(jsonStr);
+      parsed = JSON.parse(jsonStr);
     } catch {
       const match = jsonStr.match(/\{[\s\S]*\}/);
       if (match) {
-        try { result = JSON.parse(match[0]); } catch { result = { error: 'AI JSON parse failed', raw: jsonStr }; }
-      } else {
-        result = { error: 'AI returned non-JSON', raw: jsonStr };
+        try { parsed = JSON.parse(match[0]); } catch { parsed = null; }
       }
     }
 
     return {
-      stageAnalysis: result.stageAnalysis || '',
-      recommendations: result.recommendations || [],
-      emailDraft: result.emailDraft || undefined,
-      urgencyLevel: result.urgencyLevel || 'routine',
-      reasoning: result.reasoning || '',
+      stageAnalysis: typeof parsed?.stageAnalysis === 'string' ? parsed.stageAnalysis : '',
+      recommendations: Array.isArray(parsed?.recommendations) ? parsed.recommendations : [],
+      emailDraft: parsed?.emailDraft || undefined,
+      urgencyLevel: parsed?.urgencyLevel || 'routine',
+      reasoning: typeof parsed?.reasoning === 'string' ? parsed.reasoning : '',
     };
+  }
+
+  private ensureAccess(currentUser: any, companyId: string) {
+    try {
+      ensureCompanyAccess(currentUser, companyId);
+    } catch (err: any) {
+      throw new ForbiddenException(err.message?.replace('FORBIDDEN: ', '') || 'Access denied');
+    }
   }
 }

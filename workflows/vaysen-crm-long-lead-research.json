@@ -1,0 +1,77 @@
+{
+  "id": "vaysen-crm-long-lead-research",
+  "name": "Vaysen Long Lead Research Orchestration",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.VAYSEN_API_BASE_URL || 'http://host.docker.internal:4000/api'}}/search/tasks",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Authorization", "value": "Bearer {{$json.accessToken || $env.VAYSEN_API_TOKEN || ''}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ keywords: $json.keywords || ['poly mailer buyer', 'custom packaging distributor', 'kraft paper bag importer'], targetCountry: $json.targetCountry || 'United States', customerType: $json.customerType || 'Repeat-volume customizable packaging buyer', excludeWords: ['supplier','manufacturer','factory','china','.cn','.com.cn'], searchLanguage: 'en', maxResults: $json.maxResults || 300 }) }}"
+      },
+      "id": "create-search-task",
+      "name": "Create Vaysen Search Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "minutes"
+      },
+      "id": "wait-five-minutes",
+      "name": "Wait 5 Minutes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [760, 300],
+      "webhookId": "vaysen-crm-long-search-wait"
+    },
+    {
+      "parameters": {
+        "url": "={{$env.VAYSEN_API_BASE_URL || 'http://host.docker.internal:4000/api'}}/search/tasks/{{$json.id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$json.accessToken || $env.VAYSEN_API_TOKEN || ''}}" }
+          ]
+        }
+      },
+      "id": "check-task",
+      "name": "Check Task Progress",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Create Vaysen Search Task", "type": "main", "index": 0 }]]
+    },
+    "Create Vaysen Search Task": {
+      "main": [[{ "node": "Wait 5 Minutes", "type": "main", "index": 0 }]]
+    },
+    "Wait 5 Minutes": {
+      "main": [[{ "node": "Check Task Progress", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

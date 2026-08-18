@@ -1,5 +1,5 @@
 # ============================================
-# Vaysen AI CRM Trade System — Business Smoke Test
+# Vaysen Trade System — Business Smoke Test
 # Run: powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1
 # ============================================
 $ErrorActionPreference = "Continue"
@@ -17,7 +17,7 @@ function Check($label, $scriptBlock) {
   }
 }
 
-Write-Host "`n=== Vaysen AI CRM Trade System Smoke Test ===`n" -ForegroundColor Cyan
+Write-Host "`n=== Vaysen Trade System Smoke Test ===`n" -ForegroundColor Cyan
 
 # ---- R1: Build & Schema ----
 Write-Host "--- Round 1: Build & Schema ---"

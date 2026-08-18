@@ -3,6 +3,10 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '@/common/prisma/prisma.service';
 import { QUEUES } from '@/common/queues/queue-names';
+import {
+  hasFullAccess,
+  requireActiveCompany,
+} from '@/common/utils/data-isolation';
 
 const EMAIL_PENDING_STATUSES = ['DraftPending', 'Drafting', 'DraftReady', 'ValidationFailed', 'QueuedToSend', 'Queued'];
 
@@ -16,22 +20,23 @@ export class QueuesService {
     @InjectQueue(QUEUES.prospectSearch) private prospectSearchQueue: Queue,
     @InjectQueue(QUEUES.deepResearch) private deepResearchQueue: Queue,
     @InjectQueue(QUEUES.maintenance) private maintenanceQueue: Queue,
+    @InjectQueue(QUEUES.marketingDelivery) private marketingDeliveryQueue: Queue,
   ) {}
 
   async getStatus(currentUser?: any) {
-    const companyIds = currentUser?.companies?.map((c: any) => c.id) || [];
-    const isFullAccess = currentUser?.companies?.some((c: any) => ['super_admin', 'company_admin'].includes(c.role));
+    const companyId = requireActiveCompany(currentUser).id;
+    const isFullAccess = hasFullAccess(currentUser, companyId);
     const emailWhere: any = {
       deletedAt: null,
-      ...(companyIds.length ? { companyId: { in: companyIds } } : {}),
+      companyId,
       ...(!isFullAccess && currentUser?.id ? { senderUserId: currentUser.id } : {}),
     };
     const searchWhere: any = {
-      ...(companyIds.length ? { companyId: { in: companyIds } } : {}),
+      companyId,
       ...(!isFullAccess && currentUser?.id ? { createdBy: currentUser.id } : {}),
     };
     const researchWhere: any = {
-      ...(companyIds.length ? { companyId: { in: companyIds } } : {}),
+      companyId,
       ...(!isFullAccess && currentUser?.id ? { createdBy: currentUser.id } : {}),
     };
     const queues = [
@@ -41,6 +46,7 @@ export class QueuesService {
       this.prospectSearchQueue,
       this.deepResearchQueue,
       this.maintenanceQueue,
+      this.marketingDeliveryQueue,
     ];
 
     const [queueStats, emailStatusCounts, recentFailures] = await Promise.all([

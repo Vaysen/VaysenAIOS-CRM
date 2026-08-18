@@ -23,6 +23,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IdentityResolutionService } from './identity-resolution.service';
 import { normalizeEmailIdentity } from './domain/normalize-email';
 import { sanitizeContactNameCandidate } from './domain/sanitize-display-text';
+import { safeDigest, safeLogEvent } from '../../common/security/safe-logging';
 
 /** 入站邮件身份接入命令 */
 export interface IngestEmailIdentityCommand {
@@ -85,9 +86,10 @@ export class EmailIdentityAdapter {
         include: { conversation: true },
       });
       if (existing) {
-        this.logger.debug(
-          `Idempotent re-ingest for messageId=${command.messageId}; reusing leadId=${existing.conversation?.leadId ?? null}`,
-        );
+        this.logger.debug(safeLogEvent('email_identity.reingest', {
+          messageRef: safeDigest(command.messageId, 'email-message'),
+          status: 'accepted',
+        }));
         return {
           leadId: existing.conversation?.leadId ?? null,
           contactPointId: existing.conversation?.contactPointId ?? null,
@@ -103,9 +105,10 @@ export class EmailIdentityAdapter {
 
     // ---- 3. 无效邮箱: 邮件仍入库, 但不解析身份 (leadId=null 挂待关联) ----
     if (!normalizedEmail) {
-      this.logger.warn(
-        `Invalid email identity; persisting message without lead: messageId=${command.messageId}`,
-      );
+      this.logger.warn(safeLogEvent('email_identity.invalid', {
+        messageRef: safeDigest(command.messageId, 'email-message'),
+        status: 'rejected',
+      }));
       const msgId = await this.persistInboundMessage(
         command,
         /* leadId */ null,

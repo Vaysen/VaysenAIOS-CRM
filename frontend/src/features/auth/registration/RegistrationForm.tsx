@@ -79,7 +79,7 @@ export function RegistrationForm({
         onChange={(v) => setField('password', v)}
         error={errors.password}
         required
-        placeholder="至少6位"
+        placeholder="至少12位"
         autoComplete="new-password"
         minLength={6}
       />

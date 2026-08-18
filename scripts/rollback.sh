@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vaysen AI CRM rollback using a peeled immutable revision and a complete,
+# Vaysen Pilot rollback using a peeled immutable revision and a complete,
 # persistent release archive. Relative bind mounts never resolve from /tmp.
 
 set -euo pipefail
@@ -41,6 +41,7 @@ ROLLBACK_TRUST_CHAIN=(
     scripts/runtime-link-manifest.sh
     scripts/runtime-link-contract.mjs
     scripts/run-runtime-link-contract.sh
+    scripts/verify-runtime-image-baseline.mjs
     scripts/rollback-smoke-test.sh
     docker-compose.prod.yml
     nginx/nginx.conf
@@ -61,6 +62,7 @@ USE_LATEST_DB=0
 CHECK_ONLY=0
 CHECK_APP_ONLY=0
 REV=""
+RUNTIME_BASELINE=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -70,6 +72,7 @@ while [ "$#" -gt 0 ]; do
         --check) CHECK_ONLY=1; shift ;;
         --check-app) CHECK_ONLY=1; CHECK_APP_ONLY=1; shift ;;
         --rev) [ "$#" -ge 2 ] || fail "--rev requires a tag or commit"; REV="$2"; shift 2 ;;
+        --runtime-baseline) [ "$#" -ge 2 ] || fail "--runtime-baseline requires a file"; RUNTIME_BASELINE="$2"; shift 2 ;;
         -h|--help) sed -n '1,18p' "$0"; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
@@ -144,12 +147,12 @@ if [ -n "$REV" ]; then
         || fail "revision is not a commit: $REV"
     OLD_SHORT="$(git -C "$REPO_ROOT" rev-parse --short=8 "$OLD_COMMIT")"
     OLD_RELEASE_TAG=""
-    if [[ "$REV" =~ ^vaysen-crm-lan-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]]; then
+    if [[ "$REV" =~ ^vaysen-crm-lan(-pilot)?-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]]; then
         OLD_RELEASE_TAG="$REV"
     else
         mapfile -t OLD_RELEASE_TAGS < <(
             git -C "$REPO_ROOT" tag --points-at "$OLD_COMMIT" \
-                | grep -E '^vaysen-crm-lan-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$' \
+                | grep -E '^vaysen-crm-lan(-pilot)?-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$' \
                 | sort -u || true
         )
         [ "${#OLD_RELEASE_TAGS[@]}" -eq 1 ] \
@@ -160,6 +163,25 @@ if [ -n "$REV" ]; then
         || fail "rollback release tag must be an annotated immutable tag: $OLD_RELEASE_TAG"
     [ "$(git -C "$REPO_ROOT" rev-parse --verify "${OLD_RELEASE_TAG}^{}")" = "$OLD_COMMIT" ] \
         || fail "rollback release tag does not peel to the selected commit"
+    [ -n "$RUNTIME_BASELINE" ] \
+        || fail "--runtime-baseline is mandatory for an application rollback"
+    [ -f "$RUNTIME_BASELINE" ] && [ ! -L "$RUNTIME_BASELINE" ] \
+        || fail "runtime image baseline is missing or symlinked: $RUNTIME_BASELINE"
+    RUNTIME_BASELINE_DIR="$(cd "$(dirname "$RUNTIME_BASELINE")" && pwd -P)"
+    RUNTIME_BASELINE="$RUNTIME_BASELINE_DIR/$(basename "$RUNTIME_BASELINE")"
+    case "$RUNTIME_BASELINE" in
+        "$PROJECT_DIR"/security/release-runtime-baselines/*.json) ;;
+        *) fail "runtime image baseline must be an immutable file inside the candidate release" ;;
+    esac
+    [ "$(basename "$RUNTIME_BASELINE")" = "${OLD_RELEASE_TAG}.json" ] \
+        || fail "runtime image baseline filename does not match the rollback tag"
+    RUNTIME_BASELINE_RELATIVE="${RUNTIME_BASELINE#"$PROJECT_DIR/"}"
+    require_immutable_rollback_file "$RUNTIME_BASELINE_RELATIVE"
+    node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" \
+        --baseline "$RUNTIME_BASELINE" --expected-tag "$OLD_RELEASE_TAG" \
+        --expected-commit "$OLD_COMMIT" --expected-project "$COMPOSE_PROJECT_NAME" \
+        --mode validate \
+        || fail "runtime image baseline structure or release identity is invalid"
 
     MIGRATION_PATH="${PROJECT_ARCHIVE_PATH:+$PROJECT_ARCHIVE_PATH/}backend/prisma/migrations"
     CURRENT_MIGRATION_TREE="$(git -C "$REPO_ROOT" rev-parse "HEAD:$MIGRATION_PATH" 2>/dev/null || printf 'missing')"
@@ -270,11 +292,21 @@ services:
 EOF
     chmod 600 "$RUNTIME_OVERRIDE"
 
+    IMAGE_OVERRIDE="$RELEASE_ROOT/runtime-images.override.yml"
+    [ ! -L "$IMAGE_OVERRIDE" ] \
+        || fail "runtime image override must not be a symlink"
+    node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" \
+        --baseline "$RUNTIME_BASELINE" --expected-tag "$OLD_RELEASE_TAG" \
+        --expected-commit "$OLD_COMMIT" --expected-project "$COMPOSE_PROJECT_NAME" \
+        --mode print-override > "$IMAGE_OVERRIDE" \
+        || fail "could not render the exact rollback image override"
+    chmod 600 "$IMAGE_OVERRIDE"
+
     old_compose() {
         RELEASE_COMMIT="$OLD_COMMIT" RELEASE_COMMIT_SHORT="$OLD_SHORT" RELEASE_TAG="$OLD_RELEASE_TAG" \
         docker compose --project-name "$COMPOSE_PROJECT_NAME" \
             --project-directory "$OLD_PROJECT" --env-file "$ENV_FILE" \
-            -f "$OLD_PROJECT/docker-compose.prod.yml" -f "$RUNTIME_OVERRIDE" "$@"
+            -f "$OLD_PROJECT/docker-compose.prod.yml" -f "$RUNTIME_OVERRIDE" -f "$IMAGE_OVERRIDE" "$@"
     }
     old_compose config -q || fail "old release Compose model is invalid with the current environment"
     OLD_CONFIG_JSON="$(old_compose config --format json)" \
@@ -326,39 +358,29 @@ EOF
         throw new Error("rollback healthchecks were not replaced");
       }
     ' "$LAN_BIND_IP" "$LOCAL_LAN_BIND_IP" || fail "old release rollback override violates the LAN safety contract"
-    mapfile -t OLD_IMAGES < <(old_compose config --images | sort -u)
-    [ "${#OLD_IMAGES[@]}" -gt 0 ] || fail "old release Compose model resolved no images"
-    for image in "${OLD_IMAGES[@]}"; do
-        docker image inspect "$image" >/dev/null 2>&1 \
-            || fail "required image for old release is missing: $image"
-    done
-    OLD_APP_IMAGE_OUTPUT="$(old_compose config --format json | node -e '
-      let raw = "";
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", (chunk) => { raw += chunk; });
-      process.stdin.on("end", () => {
-        const config = JSON.parse(raw);
-        const services = [
-          "backend", "frontend", "python-service", "worker-email-compose",
-          "worker-email-validate", "worker-email-send", "worker-prospect-search",
-          "worker-deep-research", "worker-maintenance",
-        ];
-        for (const service of services) {
-          const image = config.services?.[service]?.image;
-          if (typeof image !== "string" || !image) process.exit(2);
-          process.stdout.write(`${image}\n`);
-        }
-      });
-    ')" || fail "could not resolve immutable old application images"
-    mapfile -t OLD_APP_IMAGES < <(printf '%s\n' "$OLD_APP_IMAGE_OUTPUT" | sort -u)
-    [ "${#OLD_APP_IMAGES[@]}" -ge 4 ] \
-        || fail "old release did not resolve every self-built application image"
-    for image in "${OLD_APP_IMAGES[@]}"; do
-        image_revision="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image" 2>/dev/null || true)"
-        [ "$image_revision" = "$OLD_COMMIT" ] \
-            || fail "old application image does not match rollback revision $OLD_COMMIT: $image"
-    done
-    info "old application image revisions match the peeled rollback commit"
+    node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" \
+        --baseline "$RUNTIME_BASELINE" --expected-tag "$OLD_RELEASE_TAG" \
+        --expected-commit "$OLD_COMMIT" --expected-project "$COMPOSE_PROJECT_NAME" \
+        --mode verify-images \
+        || fail "one or more exact rollback images are missing or have drifted"
+    printf '%s' "$OLD_CONFIG_JSON" | node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" \
+        --baseline "$RUNTIME_BASELINE" --expected-tag "$OLD_RELEASE_TAG" \
+        --expected-commit "$OLD_COMMIT" --expected-project "$COMPOSE_PROJECT_NAME" \
+        --mode verify-compose \
+        || fail "rendered rollback Compose images do not match the runtime baseline"
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        BASELINE_CONTAINER_ARGS=(
+            --baseline "$RUNTIME_BASELINE" --expected-tag "$OLD_RELEASE_TAG"
+            --expected-commit "$OLD_COMMIT" --expected-project "$COMPOSE_PROJECT_NAME"
+            --mode verify-containers
+        )
+        if [ "$CHECK_APP_ONLY" -eq 1 ]; then
+            BASELINE_CONTAINER_ARGS+=(--require-runtime-state)
+        fi
+        node "$SCRIPT_DIR/verify-runtime-image-baseline.mjs" "${BASELINE_CONTAINER_ARGS[@]}" \
+            || fail "current rollback baseline containers are missing or have drifted"
+    fi
+    info "rollback image references, IDs, per-service revisions, and Compose model match the runtime baseline"
 fi
 
 if [ -n "$RUNTIME_BACKUP" ]; then
@@ -382,6 +404,16 @@ if [ -n "$DB_BACKUP" ]; then
 fi
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
+    if [ "$CHECK_APP_ONLY" -eq 1 ] && [ -n "$REV" ]; then
+        COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" ENV_FILE="$ENV_FILE" \
+            LAN_BIND_IP="${LAN_BIND_IP:-}" LOCAL_LAN_BIND_IP="${LOCAL_LAN_BIND_IP:-}" \
+            APP_DATA_DIR="${APP_DATA_DIR:-/var/lib/vaysen-crm/data}" \
+            ROLLBACK_EXPECTED_REVISION="$OLD_COMMIT" ROLLBACK_EXPECTED_SHORT="$OLD_SHORT" \
+            ROLLBACK_EXPECTED_TAG="$OLD_RELEASE_TAG" ROLLBACK_RUNTIME_BASELINE="$RUNTIME_BASELINE" \
+            ROLLBACK_SMOKE_MODE=current-baseline \
+            bash "$SCRIPT_DIR/rollback-smoke-test.sh" \
+            || fail "current rollback baseline failed the read-only runtime smoke"
+    fi
     info "rollback preflight passed without changing application or data"
     exit 0
 fi
@@ -477,7 +509,8 @@ fi
 if [ -n "$REV" ]; then
     COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" ENV_FILE="$ENV_FILE" LAN_BIND_IP="${LAN_BIND_IP:-}" LOCAL_LAN_BIND_IP="${LOCAL_LAN_BIND_IP:-}" APP_DATA_DIR="${APP_DATA_DIR:-/var/lib/vaysen-crm/data}" \
         ROLLBACK_EXPECTED_REVISION="${OLD_COMMIT:-}" ROLLBACK_EXPECTED_SHORT="${OLD_SHORT:-}" \
-        ROLLBACK_EXPECTED_TAG="${OLD_RELEASE_TAG:-}" \
+        ROLLBACK_EXPECTED_TAG="${OLD_RELEASE_TAG:-}" ROLLBACK_RUNTIME_BASELINE="${RUNTIME_BASELINE:-}" \
+        ROLLBACK_SMOKE_MODE=post-rollback \
         bash "$SCRIPT_DIR/rollback-smoke-test.sh" \
         || fail "post-rollback smoke test failed"
 else

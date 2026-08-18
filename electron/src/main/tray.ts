@@ -32,7 +32,7 @@ export class TrayManager {
     }
 
     this.tray = new Tray(icon);
-    this.tray.setToolTip('Vaysen AI CRM');
+    this.tray.setToolTip('Vaysen 外贸系统');
 
     const contextMenu = Menu.buildFromTemplate([
       {

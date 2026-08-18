@@ -59,8 +59,8 @@ const proposal: AssistantQuoteDeliveryProposal = {
     updatedAt: '2026-07-14T10:00:00.000Z',
   },
   target: {
-    name: 'Sample Buyer',
-    phone: '12025550123',
+    name: 'AcmeCorp',
+    phone: '8613800000000',
     conversationId: 'conversation-1',
     leadId: 'lead-1',
   },
@@ -87,7 +87,7 @@ describe('QuoteDeliveryCard', () => {
       />,
     );
 
-    expect(screen.getByText('Sample Buyer')).toBeInTheDocument();
+    expect(screen.getByText('AcmeCorp')).toBeInTheDocument();
     expect(screen.getByText('+861****4719')).toBeInTheDocument();
     expect(screen.getByText('QT-20260712-2511')).toBeInTheDocument();
     expect(screen.getByText(/这是草稿报价/)).toBeInTheDocument();
@@ -105,7 +105,7 @@ describe('QuoteDeliveryCard', () => {
         turnId="turn-e164"
         proposal={{
           ...proposal,
-          target: { ...proposal.target!, phone: '+12025550123' },
+          target: { ...proposal.target!, phone: '+8613800000000' },
         }}
         accepted={false}
         preparing={false}
@@ -131,7 +131,7 @@ describe('QuoteDeliveryCard', () => {
         prepared={{
           preparedFileId: 'prepared-1',
           quoteId: 'quote-1',
-          targetPhone: '12025550123',
+          targetPhone: '8613800000000',
           filename: 'QT-20260712-2511.pdf',
           size: 61_440,
           sha256: 'abc123',

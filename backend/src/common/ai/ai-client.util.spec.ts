@@ -33,16 +33,16 @@ describe('Zhipu AI provider routing', () => {
     expect(createAiClient('general')).toBeDefined();
   });
 
-  it('removes AI provider and Gemini from every default production route and status', () => {
+  it('removes DeepSeek and Gemini from every default production route and status', () => {
     for (const task of ['clean', 'profile', 'evidence', 'email', 'research', 'import', 'general'] as const) {
       expect(getProviderOrder(task)[0]).toBe('zhipu');
-      expect(getProviderOrder(task).join(',')).not.toMatch(/ai-provider|gemini/i);
+      expect(getProviderOrder(task).join(',')).not.toMatch(/deepseek|gemini/i);
     }
     expect(getAiProviderStatus().map((item) => item.provider)).toEqual(['zhipu', 'ollama', 'nvidia', 'openai']);
   });
 
   it('drops unknown or retired providers from an explicit route', () => {
-    process.env.AI_ROUTE_GENERAL = 'ai-provider,zhipu,gemini,zhipu,ollama';
+    process.env.AI_ROUTE_GENERAL = 'deepseek,zhipu,gemini,zhipu,ollama';
     expect(getProviderOrder('general')).toEqual(['zhipu', 'ollama']);
   });
 });

@@ -1,36 +1,71 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { hasFullAccess, requireActiveCompany } from '../../common/utils/data-isolation';
 
 @Injectable()
 export class DashboardService {
   constructor(private prisma: PrismaService) {}
 
   async getOverview(currentUser: any) {
-    const companyIds = (currentUser as any)?.companies?.map((c: any) => c.id) || [];
-    if (companyIds.length === 0) return {};
+    const companyId = requireActiveCompany(currentUser).id;
+    const isolated = !hasFullAccess(currentUser, companyId);
+    const leadWhere: any = {
+      companyId,
+      deletedAt: null,
+      ...(isolated ? { ownerUserId: currentUser.id } : {}),
+    };
+    const reminderWhere: any = {
+      companyId,
+      status: 'Pending',
+      ...(isolated ? { userId: currentUser.id } : {}),
+    };
+    const conversationWhere: any = {
+      companyId,
+      ...(isolated
+        ? {
+            OR: [
+              { assignedUserId: currentUser.id },
+              { lead: { ownerUserId: currentUser.id } },
+            ],
+          }
+        : {}),
+    };
+    const quoteWhere: any = {
+      companyId,
+      artifactType: 'quote_extraction',
+      status: 'generated',
+      ...(isolated
+        ? {
+            OR: [
+              { assistantOperatorUserId: currentUser.id },
+              { lead: { ownerUserId: currentUser.id } },
+            ],
+          }
+        : {}),
+    };
 
     const [leads, reminders, conversations, quotes] = await Promise.all([
-      this.prisma.lead.count({ where: { companyId: { in: companyIds }, deletedAt: null } }),
-      this.prisma.followUpReminder.count({ where: { companyId: { in: companyIds }, status: 'Pending' } }),
-      this.prisma.conversation.count({ where: { companyId: { in: companyIds } } }),
-      this.prisma.aiArtifact.count({ where: { companyId: { in: companyIds }, artifactType: 'quote_extraction', status: 'generated' } }),
+      this.prisma.lead.count({ where: leadWhere }),
+      this.prisma.followUpReminder.count({ where: reminderWhere }),
+      this.prisma.conversation.count({ where: conversationWhere }),
+      this.prisma.aiArtifact.count({ where: quoteWhere }),
     ]);
 
     const today = new Date(); today.setHours(0,0,0,0);
     const weekAgo = new Date(today.getTime() - 7*86400000);
     const overdueFollowUps = await this.prisma.followUpReminder.findMany({
-      where: { companyId: { in: companyIds }, status: 'Pending', dueAt: { lt: today } },
+      where: { ...reminderWhere, dueAt: { lt: today } },
       take: 10, orderBy: { dueAt: 'asc' },
       include: { lead: { select: { companyName: true } } },
     });
 
     const inactiveLeads = await this.prisma.lead.findMany({
-      where: { companyId: { in: companyIds }, deletedAt: null, lastContactedAt: { lt: weekAgo } },
+      where: { ...leadWhere, lastContactedAt: { lt: weekAgo } },
       take: 10, select: { id: true, companyName: true, lastContactedAt: true },
     });
 
     const topLeads = await this.prisma.lead.findMany({
-      where: { companyId: { in: companyIds }, deletedAt: null, leadGrade: 'A' },
+      where: { ...leadWhere, leadGrade: 'A' },
       take: 10, select: { id: true, companyName: true, country: true, leadGrade: true },
     });
 
