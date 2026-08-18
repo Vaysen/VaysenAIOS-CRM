@@ -22,7 +22,6 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CurrentUser, requireActiveCompany } from '../../common/utils/data-isolation';
 import { AgentService } from '../agent/agent.service';
 import { AnalyticsService } from '../analytics/analytics.service';
-import { MarketingExecutionService } from '../marketing-campaigns/marketing-execution.service';
 import { OpenClawGatewayClient } from '../openclaw/openclaw-gateway.client';
 
 /** GENERATING 残留的接管阈值：updatedAt 距今超过该时长视为崩溃残留，允许重算接管。 */
@@ -56,7 +55,6 @@ export class DailyDiagnosisService {
     private readonly prisma: PrismaService,
     private readonly agent: AgentService,
     private readonly analytics: AnalyticsService,
-    private readonly execution: MarketingExecutionService,
     private readonly openclaw: OpenClawGatewayClient,
   ) {}
 
@@ -236,13 +234,12 @@ export class DailyDiagnosisService {
     }
   }
 
-  /** 聚合诊断输入：agent.getBrief + analytics overview + delivery-runs + sources + whatsapp-stats。 */
+  /** 聚合诊断输入：agent.getBrief + analytics overview + sources + whatsapp-stats。 */
   private async collectMetrics(user: CurrentUser, companyId: string) {
-    const [brief, overview, deliveryRuns, sources, whatsapp] = await Promise.all([
+    const [brief, overview, sources, whatsapp] = await Promise.all([
       // agent.getBrief 期望 AuthenticatedUser（activeCompanyId 不含 null），此处宽松适配
       this.agent.getBrief(companyId, user as any),
       this.analytics.getOverview(user, {}),
-      this.execution.getDeliveryRuns(user, { limit: 20 }),
       this.analytics.getSources(user),
       this.analytics.getWhatsappStats(user),
     ]);
@@ -251,7 +248,6 @@ export class DailyDiagnosisService {
       companyId,
       brief,
       overview,
-      deliveryRuns,
       sources,
       whatsapp,
     };

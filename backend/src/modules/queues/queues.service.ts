@@ -20,7 +20,6 @@ export class QueuesService {
     @InjectQueue(QUEUES.prospectSearch) private prospectSearchQueue: Queue,
     @InjectQueue(QUEUES.deepResearch) private deepResearchQueue: Queue,
     @InjectQueue(QUEUES.maintenance) private maintenanceQueue: Queue,
-    @InjectQueue(QUEUES.marketingDelivery) private marketingDeliveryQueue: Queue,
   ) {}
 
   async getStatus(currentUser?: any) {
@@ -46,7 +45,6 @@ export class QueuesService {
       this.prospectSearchQueue,
       this.deepResearchQueue,
       this.maintenanceQueue,
-      this.marketingDeliveryQueue,
     ];
 
     const [queueStats, emailStatusCounts, recentFailures] = await Promise.all([

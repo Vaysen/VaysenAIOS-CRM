@@ -82,7 +82,6 @@ function makeService(deps: ReturnType<typeof makeDeps>) {
     deps.prisma as any,
     deps.agent as any,
     deps.analytics as any,
-    deps.execution as any,
     deps.openclaw as any,
   );
 }

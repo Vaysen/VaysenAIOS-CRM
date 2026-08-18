@@ -15,7 +15,6 @@ import { QueuesService } from './queues.service';
       { name: QUEUES.prospectSearch },
       { name: QUEUES.deepResearch },
       { name: QUEUES.maintenance },
-      { name: QUEUES.marketingDelivery },
     ),
   ],
   controllers: [QueuesController],

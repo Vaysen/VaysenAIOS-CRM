@@ -53,7 +53,6 @@ import { AssistantToolModule } from './modules/assistant-tools/assistant-tool.mo
 import { OpportunitiesModule } from './modules/opportunities/opportunities.module';
 import { SalesSequencesModule } from './modules/sales-sequences/sales-sequences.module';
 import { CustomerFactsModule } from './modules/customer-facts/customer-facts.module';
-import { MarketingCampaignsModule } from './modules/marketing-campaigns/marketing-campaigns.module';
 import { SalesDeliveryModule } from './modules/sales-delivery/sales-delivery.module';
 import { AudienceSegmentsModule } from './modules/audience-segments/audience-segments.module';
 import { DailyDiagnosisModule } from './modules/daily-diagnosis/daily-diagnosis.module';
@@ -111,7 +110,6 @@ import { ExchangeRatesModule } from './modules/exchange-rates/exchange-rates.mod
     OpportunitiesModule,
     SalesSequencesModule,
     CustomerFactsModule,
-    MarketingCampaignsModule,
     SalesDeliveryModule,
     AudienceSegmentsModule,
     DailyDiagnosisModule,

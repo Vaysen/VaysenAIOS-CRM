@@ -34,35 +34,6 @@ export interface WhatsappStats {
   readRate: number;
 }
 
-export interface DeliveryRun {
-  id: string;
-  campaignId: string;
-  campaignName: string;
-  channel: string;
-  status: string;
-  totalCount: number;
-  processedCount: number;
-  lastError: string | null;
-  executedAt: string | null;
-  createdAt: string;
-}
-
-export interface CampaignEngagementRow {
-  id: string;
-  name: string;
-  channel: string;
-  status: string;
-  memberCount: number;
-  sent: number;
-  delivered: number;
-  opened: number;
-  clicked: number;
-  replied: number;
-  openRate: number;
-  clickRate: number;
-  replyRate: number;
-}
-
 export interface DailyDiagnosis {
   id: string;
   companyId: string;
@@ -117,31 +88,6 @@ export async function getLeadSources(companyId: string): Promise<LeadSourceEntry
 export async function getWhatsappStats(companyId: string): Promise<WhatsappStats | null> {
   const response = await api.get<WhatsappStats>('/analytics/whatsapp-stats');
   return response.data || null;
-}
-
-export async function getDeliveryRuns(
-  companyId: string,
-  limit = 12,
-): Promise<{ runs: DeliveryRun[]; statusDistribution: Array<{ status: string; count: number }> }> {
-  const response = await api.get<{
-    runs?: DeliveryRun[];
-    statusDistribution?: Array<{ status: string; count: number }>;
-  }>('/marketing-execution/delivery-runs', { params: { limit } });
-  return {
-    runs: response.data?.runs || [],
-    statusDistribution: response.data?.statusDistribution || [],
-  };
-}
-
-export async function getCampaignEngagement(
-  companyId: string,
-  limit = 12,
-): Promise<CampaignEngagementRow[]> {
-  const response = await api.get<{ campaigns?: CampaignEngagementRow[] }>(
-    '/marketing-campaigns/engagement',
-    { params: { limit } },
-  );
-  return response.data?.campaigns || [];
 }
 
 export async function getDailyDiagnosis(

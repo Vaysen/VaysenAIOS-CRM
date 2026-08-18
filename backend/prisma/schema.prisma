@@ -99,19 +99,6 @@ model Company {
   customerMergeAudits     CustomerMergeAudit[]
 
   // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
-  marketingCampaigns          MarketingCampaign[]
-  marketingCampaignEvents     MarketingCampaignEvent[]
-  marketingChannelPlans       MarketingChannelPlan[]
-  marketingAudienceSnapshots  MarketingAudienceSnapshot[]
-  marketingAudienceMembers    MarketingAudienceMember[]
-  marketingContentVersions    MarketingContentVersion[]
-  marketingPreflightRuns      MarketingPreflightRun[]
-  marketingPreflightAttempts  MarketingPreflightAttempt[]
-  marketingConsents           MarketingConsent[]
-  marketingSuppressions       MarketingSuppression[]
-  marketingKillSwitches       MarketingKillSwitch[]
-  marketingAttributions       MarketingAttribution[]
-  marketingDeliveryRuns       MarketingDeliveryRun[]
 
   // wesley-ai-crm 批次3: sales-delivery 报价交付回执链 — 反向关系
   quoteRenderJobs               QuoteRenderJob[]
@@ -186,16 +173,6 @@ model User {
   createdCustomerFactEvidenceLinks   CustomerFactEvidenceLink[]
 
   // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
-  ownedMarketingCampaigns            MarketingCampaign[]             @relation("MarketingCampaignOwner")
-  createdMarketingCampaigns          MarketingCampaign[]             @relation("MarketingCampaignCreator")
-  createdMarketingCampaignEvents     MarketingCampaignEvent[]        @relation("MarketingCampaignEventCreator")
-  createdMarketingAudienceSnapshots  MarketingAudienceSnapshot[]     @relation("MarketingAudienceSnapshotCreator")
-  createdMarketingContentVersions    MarketingContentVersion[]       @relation("MarketingContentVersionCreator")
-  createdMarketingPreflightRuns      MarketingPreflightRun[]         @relation("MarketingPreflightRunCreator")
-  grantedMarketingConsents           MarketingConsent[]              @relation("MarketingConsentGrantedBy")
-  createdMarketingSuppressions       MarketingSuppression[]          @relation("MarketingSuppressionCreator")
-  activatedMarketingKillSwitches     MarketingKillSwitch[]           @relation("MarketingKillSwitchActivator")
-  deactivatedMarketingKillSwitches   MarketingKillSwitch[]           @relation("MarketingKillSwitchDeactivator")
 
   // wesley-ai-crm 批次3: sales-delivery 报价交付回执链 — 反向关系
   createdQuoteRenderJobs            QuoteRenderJob[]            @relation("SalesDeliveryRenderJobCreator")
@@ -972,11 +949,6 @@ model Lead {
   inboundReviewsResolved    EmailInboundReview[]
 
   // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
-  marketingAudienceMembers MarketingAudienceMember[]
-  marketingConsents        MarketingConsent[]
-  marketingSuppressions    MarketingSuppression[]
-  marketingAttributions    MarketingAttribution[]
-  marketingDeliveryRuns    MarketingDeliveryRun[]
 
   // wesley-ai-crm 批次A: audience-segments 客群系统 — 反向关系
   audienceSegmentMembers AudienceSegmentMember[]
@@ -2308,11 +2280,6 @@ model ContactPoint {
   externalIdentities ExternalIdentity[]
 
   // wesley-ai-crm 批次2: marketing-campaigns 营销活动 — 反向关系
-  marketingAudienceMembers MarketingAudienceMember[]
-  marketingConsents        MarketingConsent[]
-  marketingSuppressions    MarketingSuppression[]
-  marketingAttributions    MarketingAttribution[]
-  marketingDeliveryRuns    MarketingDeliveryRun[]
 
   @@unique([companyId, type, normalizedValue])
   @@index([companyId, type])
@@ -2957,407 +2924,40 @@ model CustomerMergeAudit {
 // 说明：活动排程 / 投放状态机 / 客户偏好退订管理 / 合规 kill-switch
 // ============================================================================
 
-enum MarketingCampaignStatus {
-  DRAFT
-  PLANNING
-  IN_REVIEW
-  APPROVED_PLAN
-  PAUSED
-  CANCELLED
-  ARCHIVED
-}
 
-enum MarketingCampaignEventKind {
-  CAMPAIGN_CREATED
-  CAMPAIGN_UPDATED
-  STATUS_CHANGED
-  CHANNEL_PLAN_ADDED
-  CHANNEL_PLAN_UPDATED
-  CHANNEL_PLAN_REMOVED
-  AUDIENCE_SNAPSHOTTED
-  CONTENT_VERSION_CREATED
-  CONTENT_VERSION_ACTIVATED
-  PREFLIGHT_RUN
-  PREFLIGHT_ATTEMPT
-  CAMPAIGN_APPROVED
-  CAMPAIGN_PAUSED
-  CAMPAIGN_CANCELLED
-  CAMPAIGN_ARCHIVED
-  CONSENT_UPDATED
-  SUPPRESSION_ADDED
-  SUPPRESSION_REMOVED
-  KILL_SWITCH_ACTIVATED
-  KILL_SWITCH_DEACTIVATED
-  ATTRIBUTION_RECORDED
-  DELIVERY_RUN_CREATED
-  DELIVERY_RUN_STATUS_CHANGED
-}
 
-enum MarketingConsentStatus {
-  GRANTED
-  DENIED
-  UNKNOWN
-}
 
-enum MarketingSuppressionScope {
-  LEAD
-  CONTACT_POINT
-}
 
-enum MarketingKillSwitchScope {
-  GLOBAL
-  CHANNEL_EMAIL
-  CHANNEL_WHATSAPP
-}
 
-enum MarketingPreflightStatus {
-  PENDING
-  PASSED
-  FAILED
-}
 
-enum MarketingDeliveryRunStatus {
-  PENDING
-  WAITING
-  AWAITING_APPROVAL
-  READY
-  CLAIMED
-  UNKNOWN
-  SUCCEEDED
-  FAILED
-  BLOCKED
-  DEAD_LETTER
-}
 
 // 营销活动主表（活动排程、投放状态机、审计事件）
-model MarketingCampaign {
-  id            String                  @id @default(uuid())
-  companyId     String
-  ownerUserId   String
-  name          String
-  description   String?                 @db.Text
-  channel       String? // 固定渠道：email | whatsapp（null=未定，创建时可留空，snapshot 前必填）
-  status        MarketingCampaignStatus @default(DRAFT)
-  revision      Int                     @default(1)
-  // 排程意图：materializeMarketingScheduleIntent 的输入（窗口 + 频控）
-  scheduleIntent Json?
-  windowStart   DateTime?
-  windowEnd     DateTime?
-  createdById   String?
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
-
-  company          Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  owner            User                       @relation("MarketingCampaignOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  createdBy        User?                      @relation("MarketingCampaignCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  events           MarketingCampaignEvent[]
-  channelPlans     MarketingChannelPlan[]
-  audienceSnapshot MarketingAudienceSnapshot?
-  contentVersions  MarketingContentVersion[]
-  preflightRuns    MarketingPreflightRun[]
-  attributions     MarketingAttribution[]
-  deliveryRuns     MarketingDeliveryRun[]
-  segments         MarketingCampaignSegment[]
-
-  @@unique([companyId, name])
-  @@index([companyId, status, createdAt])
-  @@index([companyId, ownerUserId])
-}
 
 // 活动 ↔ 客群关联（R111 批次B：客群驱动营销，一个活动可关联多个客群）
-model MarketingCampaignSegment {
-  id         String   @id @default(cuid())
-  companyId  String
-  campaignId String
-  segmentId  String
-  createdAt  DateTime @default(now())
-
-  campaign MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-
-  @@unique([campaignId, segmentId])
-  @@index([segmentId])
-}
 
 // 活动审计事件（revision + payloadHash 证据链）
-model MarketingCampaignEvent {
-  id          String                     @id @default(uuid())
-  companyId   String
-  campaignId  String
-  revision    Int                        @default(1)
-  kind        MarketingCampaignEventKind
-  payload     Json?
-  payloadHash String
-  createdById String?
-  createdAt   DateTime                   @default(now())
-
-  campaign  MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  createdBy User?             @relation("MarketingCampaignEventCreator", fields: [createdById], references: [id], onDelete: SetNull)
-
-  @@index([campaignId, createdAt])
-  @@index([companyId, createdAt])
-  @@index([payloadHash])
-}
 
 // 渠道投放计划（channel + 窗口 + 频控 maxPerContact/windowSeconds）
-model MarketingChannelPlan {
-  id            String   @id @default(uuid())
-  companyId     String
-  campaignId    String
-  channel       String // email / whatsapp / ...
-  windowSeconds Int      @default(0)
-  maxPerContact Int      @default(1)
-  scheduleJson  Json?
-  enabled       Boolean  @default(true)
-  status        String   @default("active") // active / paused / archived
-  version       Int      @default(1)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  campaign     MarketingCampaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  company      Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  deliveryRuns MarketingDeliveryRun[]
-  attributions MarketingAttribution[]
-
-  @@unique([campaignId, channel])
-  @@index([companyId, campaignId])
-}
 
 // 受众快照（一次活动一个快照，成员落 MarketingAudienceMember）
-model MarketingAudienceSnapshot {
-  id           String   @id @default(uuid())
-  companyId    String
-  campaignId   String   @unique
-  criteriaJson Json?
-  memberCount  Int      @default(0)
-  createdById  String?
-  createdAt    DateTime @default(now())
-
-  campaign  MarketingCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  company   Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  createdBy User?                   @relation("MarketingAudienceSnapshotCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  members   MarketingAudienceMember[]
-
-  @@index([companyId, createdAt])
-}
 
 // 受众成员（contactRef = 归一化触点值，如 email/phone）
-model MarketingAudienceMember {
-  id             String   @id @default(uuid())
-  companyId      String
-  snapshotId     String
-  leadId         String?
-  contactPointId String?
-  contactRef     String // 归一化触点值
-  channel        String
-  status         String   @default("eligible") // eligible / suppressed / skipped
-  createdAt      DateTime @default(now())
-
-  snapshot     MarketingAudienceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  lead         Lead?                     @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  contactPoint ContactPoint?             @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
-  deliveryRuns MarketingDeliveryRun[]
-
-  @@unique([snapshotId, contactRef, channel])
-  @@index([companyId, channel])
-  @@index([snapshotId])
-}
 
 // 内容版本（digest 证据，isActive 当前投放版本）
-model MarketingContentVersion {
-  id          String   @id @default(uuid())
-  companyId   String
-  campaignId  String
-  version     Int      @default(1)
-  title       String?
-  subject     String?
-  body        String   @db.Text
-  channel     String?
-  digest      String
-  isActive    Boolean  @default(false)
-  createdById String?
-  createdAt   DateTime @default(now())
-
-  campaign  MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  createdBy User?             @relation("MarketingContentVersionCreator", fields: [createdById], references: [id], onDelete: SetNull)
-
-  @@unique([campaignId, version])
-  @@index([companyId, campaignId])
-}
 
 // 投放前审计运行（十道闸逐项落 MarketingPreflightAttempt）
-model MarketingPreflightRun {
-  id          String                  @id @default(uuid())
-  companyId   String
-  campaignId  String
-  status      MarketingPreflightStatus @default(PENDING)
-  summary     Json?
-  startedAt   DateTime                @default(now())
-  finishedAt  DateTime?
-  createdById String?
-  createdAt   DateTime                @default(now())
-
-  campaign  MarketingCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  company   Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  createdBy User?                    @relation("MarketingPreflightRunCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  attempts  MarketingPreflightAttempt[]
-
-  @@index([companyId, campaignId, createdAt])
-}
 
 // 十道闸逐项结果
-model MarketingPreflightAttempt {
-  id             String   @id @default(uuid())
-  companyId      String
-  preflightRunId String
-  gate           String // migration / executionEnabled / nodeWhitelist / accountReady / consent / suppression / killSwitch / approval / frequency / window
-  passed         Boolean
-  detail         Json?
-  createdAt      DateTime @default(now())
-
-  preflightRun MarketingPreflightRun @relation(fields: [preflightRunId], references: [id], onDelete: Cascade)
-  company      Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-
-  @@index([preflightRunId])
-  @@index([companyId, gate])
-}
 
 // 客户偏好/同意（按 ContactPoint + channel + 有效期）
-model MarketingConsent {
-  id             String                 @id @default(uuid())
-  companyId      String
-  leadId         String?
-  contactPointId String?
-  contactRef     String // 归一化触点值
-  channel        String // email / whatsapp / ...
-  status         MarketingConsentStatus @default(UNKNOWN)
-  source         String? // import / form / unsubscribe / manual / campaign
-  expiresAt      DateTime?
-  grantedById    String?
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
-
-  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  contactPoint ContactPoint? @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
-  grantedBy    User?         @relation("MarketingConsentGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
-
-  @@unique([companyId, channel, contactRef])
-  @@index([companyId, channel, status])
-  @@index([companyId, leadId])
-}
 
 // 退订/抑制（Lead 级或 ContactPoint 级）
-model MarketingSuppression {
-  id             String                   @id @default(uuid())
-  companyId      String
-  scope          MarketingSuppressionScope
-  leadId         String?
-  contactPointId String?
-  contactRef     String?
-  channel        String?
-  reason         String?
-  source         String?
-  active         Boolean                  @default(true)
-  expiresAt      DateTime?
-  createdById    String?
-  createdAt      DateTime                 @default(now())
-
-  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  contactPoint ContactPoint? @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
-  createdBy    User?         @relation("MarketingSuppressionCreator", fields: [createdById], references: [id], onDelete: SetNull)
-
-  @@unique([companyId, scope, contactRef, channel])
-  @@index([companyId, active, channel])
-  @@index([companyId, leadId])
-}
 
 // 合规 kill-switch（GLOBAL / CHANNEL:EMAIL / CHANNEL:WHATSAPP）
-model MarketingKillSwitch {
-  id              String                  @id @default(uuid())
-  companyId       String
-  scope           MarketingKillSwitchScope
-  channel         String?
-  reason          String?
-  active          Boolean                 @default(true)
-  activatedById   String?
-  activatedAt     DateTime                @default(now())
-  deactivatedById String?
-  deactivatedAt   DateTime?
-  createdAt       DateTime                @default(now())
-
-  company       Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  activatedBy   User?   @relation("MarketingKillSwitchActivator", fields: [activatedById], references: [id], onDelete: SetNull)
-  deactivatedBy User?   @relation("MarketingKillSwitchDeactivator", fields: [deactivatedById], references: [id], onDelete: SetNull)
-
-  @@unique([companyId, scope, channel])
-  @@index([companyId, active])
-}
 
 // 归因（活动/渠道/触点 → 转化事件）
-model MarketingAttribution {
-  id             String   @id @default(uuid())
-  companyId      String
-  campaignId     String
-  channelPlanId  String?
-  leadId         String?
-  contactPointId String?
-  contactRef     String?
-  channel        String
-  source         String? // form_submission / reply / whatsapp_inbound / link_click
-  meta           Json?
-  attributedAt   DateTime @default(now())
-  createdAt      DateTime @default(now())
-
-  campaign     MarketingCampaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  channelPlan  MarketingChannelPlan? @relation(fields: [channelPlanId], references: [id], onDelete: SetNull)
-  company      Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  lead         Lead?                 @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  contactPoint ContactPoint?         @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
-
-  @@index([companyId, campaignId, attributedAt])
-  @@index([companyId, leadId])
-}
 
 // 投放运行（DeliveryRun 状态机：PENDING→WAITING/AWAITING_APPROVAL/READY/CLAIMED/UNKNOWN→SUCCEEDED/FAILED/BLOCKED/DEAD_LETTER）
-model MarketingDeliveryRun {
-  id               String                     @id @default(uuid())
-  companyId        String
-  campaignId       String
-  channelPlanId    String?
-  audienceMemberId String?
-  leadId           String?
-  contactPointId   String?
-  contactRef       String
-  channel          String
-  status           MarketingDeliveryRunStatus @default(PENDING)
-  attemptCount     Int                        @default(0)
-  lastError        String?
-  // R111 批次C：进度回写（执行器按成员循环发送时的批次进度；scheduledFor/claimedAt/executedAt/lastError 已覆盖排程/启动/完成/失败原因）
-  processedCount   Int                        @default(0)
-  totalCount       Int                        @default(0)
-  scheduledFor     DateTime?
-  claimedAt        DateTime?
-  executedAt       DateTime?
-  payloadJson      Json?
-  payloadHash      String?
-  createdAt        DateTime                   @default(now())
-  updatedAt        DateTime                   @updatedAt
-
-  company        Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  campaign       MarketingCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  channelPlan    MarketingChannelPlan?    @relation(fields: [channelPlanId], references: [id], onDelete: SetNull)
-  audienceMember MarketingAudienceMember? @relation(fields: [audienceMemberId], references: [id], onDelete: SetNull)
-  lead           Lead?                    @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  contactPoint   ContactPoint?            @relation(fields: [contactPointId], references: [id], onDelete: SetNull)
-
-  @@index([companyId, status, scheduledFor])
-  @@index([companyId, campaignId, status])
-  @@index([companyId, contactRef, channel])
-}
 
 // ========== wesley-ai-crm 批次3：sales-delivery 报价交付回执链 ==========
 

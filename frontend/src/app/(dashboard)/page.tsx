@@ -38,8 +38,6 @@ import { Card } from '@/components/ui/card';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/authStore';
 import { getAssistantBrief, type AssistantBrief } from '@/lib/agent-api';
-import { listMarketingCampaigns } from '@/lib/marketing-campaign-api';
-import type { MarketingCampaign } from '@/types/marketing-campaign';
 import { AGENT_KIND_LABELS, AGENT_STATUS_LABELS } from '@/types/agent';
 import { cn } from '@/lib/utils';
 import { getApiErrorMessage } from '@/lib/api-error';
@@ -47,13 +45,9 @@ import { GlobalClocks } from '@/components/dashboard/global-clocks';
 import { FxRatesBar } from '@/components/dashboard/fx-rates';
 import { DiagnosisCard } from '@/components/dashboard/diagnosis-card';
 import {
-  getCampaignEngagement,
-  getDeliveryRuns,
   getEngagementTrends,
   getLeadSources,
   getWhatsappStats,
-  type CampaignEngagementRow,
-  type DeliveryRun,
   type EngagementTrendDaily,
   type LeadSourceEntry,
   type WhatsappStats,
@@ -68,15 +62,6 @@ const statusLabels: Record<string, string> = {
   won: '已成交',
   lost: '已流失',
   unknown: '未分类',
-};
-
-const runStatusLabels: Record<string, string> = {
-  PENDING: '排队中',
-  CLAIMED: '执行中',
-  SUCCEEDED: '已完成',
-  FAILED: '失败',
-  BLOCKED: '已拦截',
-  DEAD_LETTER: '死信',
 };
 
 const sourceLabels: Record<string, string> = {
@@ -116,9 +101,6 @@ export default function DashboardPage() {
   const [engagementTrends, setEngagementTrends] = useState<EngagementTrendDaily[]>([]);
   const [sources, setSources] = useState<LeadSourceEntry[]>([]);
   const [whatsappStats, setWhatsappStats] = useState<WhatsappStats | null>(null);
-  const [campaigns, setCampaigns] = useState<MarketingCampaign[]>([]);
-  const [campaignEngagement, setCampaignEngagement] = useState<CampaignEngagementRow[]>([]);
-  const [deliveryRuns, setDeliveryRuns] = useState<DeliveryRun[]>([]);
   const [emailTrends, setEmailTrends] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -130,7 +112,7 @@ export default function DashboardPage() {
     setLoading(true);
     setError('');
     try {
-      const [briefRes, overviewRes, emailTrendRes, engagementRes, sourcesRes, whatsappRes, campaignsRes, deliveryRes] =
+      const [briefRes, overviewRes, emailTrendRes, engagementRes, sourcesRes, whatsappRes] =
         await Promise.allSettled([
           getAssistantBrief(companyId),
           api.get('/analytics/overview', { params: { days: 30 } }),
@@ -138,8 +120,6 @@ export default function DashboardPage() {
           getEngagementTrends(companyId, 14),
           getLeadSources(companyId),
           getWhatsappStats(companyId),
-          listMarketingCampaigns(),
-          getDeliveryRuns(companyId, 10),
         ]);
 
       if (briefRes.status === 'fulfilled') setBrief(briefRes.value);
@@ -153,14 +133,6 @@ export default function DashboardPage() {
       if (engagementRes.status === 'fulfilled') setEngagementTrends(engagementRes.value);
       if (sourcesRes.status === 'fulfilled') setSources(sourcesRes.value);
       if (whatsappRes.status === 'fulfilled') setWhatsappStats(whatsappRes.value);
-      if (campaignsRes.status === 'fulfilled') setCampaigns(campaignsRes.value);
-      if (deliveryRes.status === 'fulfilled') {
-        setDeliveryRuns(deliveryRes.value.runs);
-        if (deliveryRes.value.runs.length && !campaignEngagement.length) {
-          const eng = await getCampaignEngagement(companyId, 8).catch(() => []);
-          setCampaignEngagement(eng);
-        }
-      }
     } catch (err: unknown) {
       setError(getApiErrorMessage(err, '暂时无法读取首页数据'));
     } finally {
@@ -206,31 +178,6 @@ export default function DashboardPage() {
       engagementTrends.reduce((sum, item) => sum + (item[key] || 0), 0) / engagementTrends.length;
     return { openRate: avg('openRate'), clickRate: avg('clickRate'), replyRate: avg('replyRate') };
   }, [engagementTrends]);
-
-  const campaignChannelCount = useMemo(
-    () => ({
-      email: campaigns.filter((c) => c.channel === 'email').length,
-      whatsapp: campaigns.filter((c) => c.channel === 'whatsapp').length,
-    }),
-    [campaigns],
-  );
-
-  const campaignStatusData = useMemo(() => {
-    const counts: Record<string, number> = {};
-    campaigns.forEach((c) => {
-      counts[c.status] = (counts[c.status] || 0) + 1;
-    });
-    return Object.entries(counts).map(([status, count]) => ({ status, count }));
-  }, [campaigns]);
-
-  const campaignStatusLabels: Record<string, string> = {
-    DRAFT: '草稿',
-    ACTIVE: '进行中',
-    COMPLETED: '已完成',
-    ARCHIVED: '已归档',
-    PAUSED: '已暂停',
-    FAILED: '已失败',
-  };
 
   const sourceData = useMemo(
     () =>
@@ -494,8 +441,8 @@ export default function DashboardPage() {
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-3">
-        <Card className="border-slate-200 xl:col-span-2">
+      <section className="grid gap-4">
+        <Card className="border-slate-200">
           <div className="flex items-center justify-between border-b px-5 py-4">
             <div>
               <h2 className="font-semibold text-slate-900">邮件互动率趋势</h2>
@@ -533,118 +480,9 @@ export default function DashboardPage() {
             <RateSummary label="平均回复率" value={trendAvg.replyRate} tone="emerald" />
           </div>
         </Card>
-
-        <Card className="border-slate-200">
-          <div className="flex items-center justify-between border-b px-5 py-4">
-            <div>
-              <h2 className="font-semibold text-slate-900">营销活动状态</h2>
-              <p className="mt-1 text-xs text-slate-400">当前渠道与状态分布</p>
-            </div>
-            <Link href="/marketing-campaigns" className="text-xs font-medium text-indigo-700">
-              管理活动
-            </Link>
-          </div>
-          <div className="p-5">
-            <div className="flex gap-2">
-              <span className="rounded-lg bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700">
-                邮件 {campaignChannelCount.email}
-              </span>
-              <span className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
-                WhatsApp {campaignChannelCount.whatsapp}
-              </span>
-            </div>
-            <div className="mt-4 space-y-3">
-              {campaignStatusData.length ? (
-                campaignStatusData.map(({ status, count }) => (
-                  <div key={status}>
-                    <div className="mb-1 flex items-center justify-between text-xs">
-                      <span className="text-slate-600">{campaignStatusLabels[status] || status}</span>
-                      <span className="font-semibold text-slate-800">{count}</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500"
-                        style={{
-                          width: `${(count / Math.max(1, campaigns.length)) * 100}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className="py-4 text-center text-xs text-slate-400">暂无营销活动</p>
-              )}
-            </div>
-            {campaignEngagement.length > 0 && (
-              <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-3">
-                <p className="mb-2 text-[10px] font-medium text-slate-400">最近活动互动（邮件）</p>
-                {campaignEngagement.slice(0, 4).map((row) => (
-                  <div key={row.id} className="flex items-center justify-between py-1 text-xs">
-                    <span className="max-w-[55%] truncate text-slate-600">{row.name}</span>
-                    <span className="text-slate-500">
-                      打开率 <b className="text-slate-800">{row.openRate ?? 0}%</b>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </Card>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-2">
-        <Card className="border-slate-200">
-          <div className="flex items-center justify-between border-b px-5 py-4">
-            <div>
-              <h2 className="font-semibold text-slate-900">最近投放运行</h2>
-              <p className="mt-1 text-xs text-slate-400">营销活动批量执行记录</p>
-            </div>
-            <Link href="/marketing-campaigns" className="text-xs font-medium text-indigo-700">
-              全部活动
-            </Link>
-          </div>
-          <div className="divide-y">
-            {deliveryRuns.length ? (
-              deliveryRuns.map((run) => (
-                <div key={run.id} className="flex items-center gap-3 px-5 py-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-800">
-                      {run.campaignName || '未命名活动'}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-400">
-                      {run.channel === 'whatsapp' ? 'WhatsApp' : '邮件'} ·{' '}
-                      {run.processedCount}/{run.totalCount} · {formatTime(run.executedAt)}
-                    </p>
-                  </div>
-                  <span
-                    className={cn(
-                      'shrink-0 rounded-full px-2 py-1 text-[10px]',
-                      run.status === 'SUCCEEDED'
-                        ? 'bg-emerald-50 text-emerald-700'
-                        : run.status === 'FAILED'
-                          ? 'bg-red-50 text-red-700'
-                          : run.status === 'BLOCKED'
-                            ? 'bg-amber-50 text-amber-700'
-                            : run.status === 'CLAIMED'
-                              ? 'bg-indigo-50 text-indigo-700'
-                              : 'bg-slate-100 text-slate-600',
-                    )}
-                  >
-                    {runStatusLabels[run.status] || run.status}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <EmptyState
-                icon={Target}
-                text="还没有投放运行记录"
-                action="去创建营销活动"
-                href="/marketing-campaigns"
-              />
-            )}
-          </div>
-        </Card>
-
         <Card className="border-slate-200">
           <div className="flex items-center justify-between border-b px-5 py-4">
             <div>

@@ -100,7 +100,6 @@ const baseNavGroups: NavGroup[] = [
       { href: '/ai-workbench', label: 'AI 业务助理', icon: Sparkles },
       { href: '/analytics', label: '数据分析', icon: BarChart3 },
       { href: '/audience-segments', label: '客群管理', icon: Users, badge: 'new' },
-      { href: '/marketing-campaigns', label: '营销活动', icon: Megaphone, badge: 'new' },
     ],
   },
   {
